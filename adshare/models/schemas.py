@@ -427,3 +427,103 @@ class LoginStatusResponse(BaseModel):
     is_logged_in: bool
     login_info: Optional[Dict[str, Any]] = None
     uptime_seconds: Optional[float] = None
+
+
+# ============================================================
+# Historical (L3) Warehouse
+# ============================================================
+
+
+class HistoricalKlineRequest(BaseModel):
+    """Request payload for the L3 K-line endpoint."""
+
+    codes: str = Field(description="Comma-separated stock codes")
+    begin_date: int = Field(description="Start date YYYYMMDD")
+    end_date: int = Field(description="End date YYYYMMDD")
+    period: str = Field(default="day", description="Period: day, week, month")
+    limit: Optional[int] = Field(default=None, description="Max records")
+    offset: int = Field(default=0, description="Records to skip")
+    source: str = Field(
+        default="auto",
+        description="Data source: auto, warehouse, sdk",
+    )
+
+    @field_validator("codes")
+    @classmethod
+    def validate_codes(cls, v: str) -> str:
+        if not v:
+            raise ValueError("codes cannot be empty")
+        return v
+
+
+class HistoricalCalendarRequest(BaseModel):
+    """Request payload for the L3 calendar endpoint."""
+
+    market: str = Field(default="SH", description="Market code")
+    begin_date: Optional[int] = Field(default=None, description="Start date YYYYMMDD")
+    end_date: Optional[int] = Field(default=None, description="End date YYYYMMDD")
+
+
+class HistoricalCodesRequest(BaseModel):
+    """Request payload for the L3 codes endpoint."""
+
+    board: Optional[str] = Field(default=None, description="Filter by board")
+    is_listed: Optional[bool] = Field(default=None, description="Filter by listing status")
+
+
+class HistoricalSqlRequest(BaseModel):
+    """Request payload for the constrained SQL endpoint."""
+
+    sql: str = Field(description="SQL SELECT statement")
+    timeout: Optional[int] = Field(default=None, description="Override timeout seconds")
+    max_rows: Optional[int] = Field(default=None, description="Override result limit")
+
+
+class HistoricalKlineRecord(BaseModel):
+    """A single K-line record as returned by the L3 endpoint."""
+
+    code: str
+    date: int
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: int
+    amount: float
+    adj_factor: Optional[float] = None
+    is_suspended: Optional[bool] = None
+    sync_at: Optional[int] = None
+
+
+class HistoricalKlineResponse(DataResponse):
+    """Response payload for the L3 K-line endpoint."""
+
+    codes: List[str] = []
+    period: str = "day"
+    begin_date: int
+    end_date: int
+    source: str = "warehouse"
+    synced: bool = True
+    data: List[HistoricalKlineRecord] = []
+
+
+class HistoricalCalendarResponse(DataResponse):
+    """Response payload for the L3 calendar endpoint."""
+
+    market: str
+    data: List[Dict[str, Any]] = []
+
+
+class HistoricalCodesResponse(DataResponse):
+    """Response payload for the L3 codes endpoint."""
+
+    data: List[Dict[str, Any]] = []
+
+
+class HistoricalSqlResponse(DataResponse):
+    """Response payload for the constrained SQL endpoint."""
+
+    columns: List[str] = []
+    rows: List[List[Any]] = []
+    row_count: int = 0
+    truncated: bool = False

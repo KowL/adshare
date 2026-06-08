@@ -40,6 +40,8 @@ dependencies = [
     "orjson>=3.10.0",
     "scipy>=1.14.0",
     "tables>=3.9.0",
+    "duckdb>=1.0.0",
+    "apscheduler>=3.10.0",
 ]
 
 [project.optional-dependencies]

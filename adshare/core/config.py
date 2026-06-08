@@ -75,6 +75,30 @@ class Settings(BaseSettings):
     max_codes_per_query: int = Field(default=50, alias="MAX_CODES_PER_QUERY")
     default_begin_date: int = Field(default=19900101, alias="DEFAULT_BEGIN_DATE")
 
+    # Historical data warehouse (L3)
+    historical_enabled: bool = Field(default=True, alias="HISTORICAL_ENABLED")
+    historical_path: str = Field(default="./data/historical", alias="HISTORICAL_PATH")
+    historical_retention_years: int = Field(default=0, alias="HISTORICAL_RETENTION_YEARS")
+
+    # DuckDB
+    duckdb_mode: str = Field(default="memory", alias="DUCKDB_MODE")
+    duckdb_file_path: str = Field(default="./data/duckdb/adshare.duckdb", alias="DUCKDB_FILE_PATH")
+    duckdb_max_rows: int = Field(default=100000, alias="DUCKDB_MAX_ROWS")
+    duckdb_query_timeout: int = Field(default=30, alias="DUCKDB_QUERY_TIMEOUT")
+
+    # Sync scheduler
+    sync_schedule_enabled: bool = Field(default=True, alias="SYNC_SCHEDULE_ENABLED")
+    sync_kline_daily_hour: int = Field(default=19, alias="SYNC_KLINE_DAILY_HOUR")
+    sync_kline_daily_minute: int = Field(default=0, alias="SYNC_KLINE_DAILY_MINUTE")
+    sync_kline_weekly_hour: int = Field(default=19, alias="SYNC_KLINE_WEEKLY_HOUR")
+    sync_kline_weekly_minute: int = Field(default=30, alias="SYNC_KLINE_WEEKLY_MINUTE")
+    sync_kline_monthly_hour: int = Field(default=20, alias="SYNC_KLINE_MONTHLY_HOUR")
+    sync_kline_monthly_minute: int = Field(default=0, alias="SYNC_KLINE_MONTHLY_MINUTE")
+    sync_meta_codes_hour: int = Field(default=8, alias="SYNC_META_CODES_HOUR")
+    sync_meta_codes_minute: int = Field(default=0, alias="SYNC_META_CODES_MINUTE")
+    sync_workers: int = Field(default=4, alias="SYNC_WORKERS")
+    sync_retry_attempts: int = Field(default=3, alias="SYNC_RETRY_ATTEMPTS")
+
     @property
     def amazingdata_connection_string(self) -> str:
         """Return AmazingData connection info string (without password)."""

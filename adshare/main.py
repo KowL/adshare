@@ -13,7 +13,18 @@ from adshare.core.config import get_settings
 from adshare.core.logging import setup_logging
 from adshare.core.metrics import REQUEST_COUNT, REQUEST_DURATION, SERVICE_INFO, get_metrics
 from adshare.core.ratelimit import get_limiter
-from adshare.routers import financial, health, market, technical, fundamental, factor
+from adshare.historical import shutdown_scheduler, start_scheduler
+from adshare.historical.admin import router as historical_admin_router
+from adshare.historical.warehouse import get_warehouse
+from adshare.routers import (
+    factor,
+    financial,
+    fundamental,
+    health,
+    historical,
+    market,
+    technical,
+)
 
 # Setup logging
 setup_logging()
@@ -42,9 +53,27 @@ async def lifespan(app: FastAPI):
     # Set service info for metrics
     SERVICE_INFO.info({"version": settings.app_version, "name": settings.app_name})
 
+    # Initialise historical warehouse (L3)
+    try:
+        if settings.historical_enabled:
+            warehouse = get_warehouse(settings)
+            health = warehouse.health()
+            print(
+                f"📦 Historical warehouse ready: root={health['root']} "
+                f"duckdb_connected={health['duckdb_connected']}"
+            )
+            if settings.sync_schedule_enabled:
+                start_scheduler()
+                print("⏰ Historical sync scheduler started")
+        else:
+            print("ℹ️  Historical warehouse disabled (HISTORICAL_ENABLED=false)")
+    except Exception as e:
+        print(f"⚠️  Historical warehouse init failed: {e}")
+
     yield
 
     # Shutdown
+    shutdown_scheduler()
     adapter.logout()
     print("👋 adshare shutting down")
 
@@ -98,6 +127,9 @@ def create_app() -> FastAPI:
     app.include_router(technical.router)
     app.include_router(fundamental.router)
     app.include_router(factor.router)
+    if settings.historical_enabled:
+        app.include_router(historical.router)
+        app.include_router(historical_admin_router)
 
     # Metrics endpoint
     if settings.metrics_enabled:

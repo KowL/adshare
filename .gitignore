@@ -53,6 +53,7 @@ cache/*.parquet
 !cache/.gitkeep
 
 # Local data
+cache/
 data/
 !data/.gitkeep
 *.db

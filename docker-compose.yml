@@ -32,9 +32,14 @@ services:
       - REDIS_PORT=6379
       - ADSHARE_HOST=0.0.0.0
       - ADSHARE_PORT=8000
+      - HISTORICAL_ENABLED=${HISTORICAL_ENABLED:-true}
+      - HISTORICAL_PATH=${HISTORICAL_PATH:-/app/data/historical}
+      - DUCKDB_MODE=${DUCKDB_MODE:-memory}
+      - SYNC_SCHEDULE_ENABLED=${SYNC_SCHEDULE_ENABLED:-false}
     volumes:
       - ./cache:/app/cache
       - ./logs:/app/logs
+      - ./data:/app/data
     depends_on:
       redis:
         condition: service_healthy

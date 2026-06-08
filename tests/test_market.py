@@ -1,6 +1,6 @@
 """Integration tests for market data endpoints."""
 
-import pytest
+import pandas as pd
 
 
 class TestMarketCodes:
@@ -131,6 +131,23 @@ class TestMarketLimitUp:
         for stock in data["stocks"]:
             assert not stock["name"].startswith("ST")
             assert "*ST" not in stock["name"]
+
+    def test_get_limit_up_uses_code_name_columns(self, client, fake_adapter):
+        fake_adapter.get_code_info = lambda security_type="EXTRA_STOCK_A": pd.DataFrame(
+            {
+                "code": ["000001.SZ", "600000.SH", "000002.SZ"],
+                "name": ["平安银行", "浦发银行", "万科A"],
+            }
+        )
+
+        response = client.get("/market/limit-up?exclude_st=false")
+
+        assert response.status_code == 200
+        data = response.json()
+        names_by_code = {stock["code"]: stock["name"] for stock in data["stocks"]}
+        assert names_by_code["000001"] == "平安银行"
+        assert names_by_code["600000"] == "浦发银行"
+        assert names_by_code["000002"] == "万科A"
 
     def test_get_limit_up_ladder(self, client):
         response = client.get("/market/limit-up/ladder")

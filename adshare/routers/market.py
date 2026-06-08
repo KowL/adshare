@@ -84,17 +84,42 @@ async def get_kline(
     limit: Optional[int] = Query(default=None, description="Max records"),
     offset: int = Query(default=0, description="Records to skip"),
 ):
-    """Get K-line data."""
+    """Get K-line data.
+
+    Lookup order: L1 Redis -> L3 historical warehouse -> L2 temp cache -> SDK.
+    """
     try:
-        adapter = get_adapter()
-        df = adapter.get_kline(
-            codes=codes,
-            begin_date=begin_date,
-            end_date=end_date,
-            period=period,
-            limit=limit,
-            offset=offset,
-        )
+        code_list = [c.strip() for c in codes.split(",") if c.strip()]
+        df = None
+
+        # L3: historical warehouse (only day/week/month)
+        from adshare.core.config import get_settings
+        from adshare.historical.warehouse import get_warehouse
+
+        settings = get_settings()
+        if settings.historical_enabled and period in ("day", "week", "month"):
+            try:
+                warehouse = get_warehouse(settings)
+                if warehouse.is_synced(begin_date, end_date, period, code_list):
+                    df = warehouse.query_kline(
+                        code_list, begin_date, end_date, period,
+                        limit=limit, offset=offset,
+                    )
+            except Exception as e:
+                logger.debug("L3 warehouse lookup failed, falling back: %s", e)
+                df = None
+
+        # Fall back to adapter
+        if df is None or df.empty:
+            adapter = get_adapter()
+            df = adapter.get_kline(
+                codes=codes,
+                begin_date=begin_date,
+                end_date=end_date,
+                period=period,
+                limit=limit,
+                offset=offset,
+            )
 
         items = []
         for _, row in df.iterrows():
@@ -307,6 +332,47 @@ def _is_limit_up(change_pct: float, board: str) -> bool:
     return change_pct >= threshold - 0.001  # Allow small tolerance
 
 
+def _code_aliases(code: str) -> set[str]:
+    """Return equivalent code keys used by different AmazingData APIs."""
+    clean = str(code).strip()
+    if not clean:
+        return set()
+    aliases = {clean}
+    if "." in clean:
+        aliases.add(clean.split(".", 1)[0])
+    return aliases
+
+
+def _build_name_map(df_info: pd.DataFrame) -> dict[str, str]:
+    """Build a stock name map from common AmazingData code-info layouts."""
+    if not isinstance(df_info, pd.DataFrame) or df_info.empty:
+        return {}
+
+    code_columns = ("code", "MARKET_CODE", "market_code", "security_code", "SECURITY_CODE")
+    name_columns = ("name", "symbol", "SECURITY_NAME", "security_name", "SHORT_NAME", "short_name")
+
+    code_col = next((col for col in code_columns if col in df_info.columns), None)
+    name_col = next((col for col in name_columns if col in df_info.columns), None)
+    if name_col is None:
+        return {}
+
+    name_map: dict[str, str] = {}
+    if code_col is not None:
+        rows = zip(df_info[code_col], df_info[name_col])
+    else:
+        rows = zip(df_info.index, df_info[name_col])
+
+    for raw_code, raw_name in rows:
+        if pd.isna(raw_code) or pd.isna(raw_name):
+            continue
+        name = str(raw_name).strip()
+        if not name:
+            continue
+        for alias in _code_aliases(str(raw_code)):
+            name_map[alias] = name
+    return name_map
+
+
 @router.get("/limit-up", response_model=LimitUpResponse)
 async def get_limit_up(
     days: int = Query(default=1, description="Number of trading days to look back"),
@@ -341,10 +407,7 @@ async def get_limit_up(
 
         # Get stock names from code_info (single call, cached)
         df_info = adapter.get_code_info(security_type="EXTRA_STOCK_A")
-        name_map = {}
-        if hasattr(df_info, "index") and "symbol" in df_info.columns:
-            for code in df_info.index:
-                name_map[str(code)] = str(df_info.loc[code, "symbol"])
+        name_map = _build_name_map(df_info)
 
         # Get today's snapshot for all stocks
         # We query in batches to avoid overwhelming the SDK
@@ -395,7 +458,7 @@ async def get_limit_up(
                 continue
 
             # Exclude ST
-            name = name_map.get(code, code)
+            name = name_map.get(code) or name_map.get(code.split(".")[0]) or code
             if exclude_st and ("ST" in name or "*ST" in name or name.startswith("ST") or name.startswith("*ST")):
                 continue
 

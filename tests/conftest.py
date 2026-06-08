@@ -174,21 +174,33 @@ def fake_adapter():
 
 
 @pytest.fixture
-def client(fake_adapter):
+def client(fake_adapter, monkeypatch):
     """Create TestClient with mocked adapter.
 
     Patches every module-level ``from adshare.adapters.amazingdata import get_adapter``
     reference, because ``from ... import ...`` binds a local reference that
     ``mock.patch("module.func")`` will not redirect after the module has loaded.
+
+    Also disables the L3 historical warehouse so the test relies purely on
+    the (mocked) adapter — this prevents the conftest from picking up files
+    written by other test files that share ``./data/historical``.
     """
     import adshare.adapters.amazingdata as _ad_mod
     import adshare.core.cache as _cache_mod
+    import adshare.historical.warehouse as _wh_mod
     import adshare.routers.market as _market_mod
     import adshare.routers.financial as _fin_mod
     import adshare.routers.technical as _tech_mod
     import adshare.routers.fundamental as _fund_mod
     import adshare.routers.factor as _factor_mod
     import adshare.routers.health as _health_mod
+
+    # Disable the L3 warehouse and the scheduler for these tests
+    monkeypatch.setenv("HISTORICAL_ENABLED", "false")
+    monkeypatch.setenv("SYNC_SCHEDULE_ENABLED", "false")
+    from adshare.core.config import get_settings
+    get_settings.cache_clear()
+    _wh_mod.reset_warehouse()
 
     # Store originals
     originals = {
@@ -219,6 +231,7 @@ def client(fake_adapter):
         # Restore
         _ad_mod._adapter = originals["_adapter"]
         _cache_mod._cache_manager = None
+        _wh_mod.reset_warehouse()
         for mod_name, mod in [
             ("market", _market_mod),
             ("financial", _fin_mod),
