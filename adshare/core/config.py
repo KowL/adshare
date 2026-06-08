@@ -48,11 +48,9 @@ class Settings(BaseSettings):
     cache_ttl_medium: int = Field(default=3600, alias="CACHE_TTL_MEDIUM")
     cache_ttl_long: int = Field(default=86400, alias="CACHE_TTL_LONG")
     cache_local_enabled: bool = Field(default=True, alias="LOCAL_CACHE_ENABLED")
-    cache_local_path: str = Field(default="./data", alias="LOCAL_CACHE_PATH")
+    cache_local_path: str = Field(default="./data", alias="AD_LOCAL_PATH")
     cache_key_prefix: str = Field(default="adshare", alias="CACHE_KEY_PREFIX")
 
-    # AmazingData SDK local cache path (for get_backward_factor, get_hist_code_list, etc.)
-    ad_local_path: str = Field(default="./data", alias="AD_LOCAL_PATH")
 
     # Rate limiting
     rate_limit_enabled: bool = Field(default=True, alias="RATE_LIMIT_ENABLED")
