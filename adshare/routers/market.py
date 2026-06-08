@@ -1,34 +1,28 @@
 """Market data routers."""
 
-import pandas as pd
 from typing import Optional
 
+import pandas as pd
 from fastapi import APIRouter, HTTPException, Query
 
 from adshare.adapters.amazingdata import get_adapter
 from adshare.core.cache import get_cache_manager
 from adshare.core.logging import get_logger
 from adshare.models.schemas import (
-    CalendarRequest,
     CalendarResponse,
-    CodeListRequest,
     CodeListResponse,
-    ErrorResponse,
-    KlineItem,
-    KlineRequest,
     KlineResponse,
     LimitUpItem,
     LimitUpLadderItem,
     LimitUpLadderLevel,
     LimitUpLadderResponse,
     LimitUpResponse,
-    SnapshotItem,
-    SnapshotRequest,
     SnapshotResponse,
-    StockBasicRequest,
     StockBasicResponse,
     StockBasicSummary,
 )
+from adshare.services.mappers import dataframe_to_kline_items, dataframe_to_snapshot_items
+from adshare.services.market_data import get_market_data_service
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/market", tags=["market"])
@@ -40,8 +34,8 @@ async def get_code_list(
 ):
     """Get security code list."""
     try:
-        adapter = get_adapter()
-        codes = adapter.get_code_list(security_type=security_type)
+        service = get_market_data_service()
+        codes = service.get_code_list(security_type=security_type)
         return CodeListResponse(
             security_type=security_type,
             code_list=codes,
@@ -60,8 +54,8 @@ async def get_calendar(
 ):
     """Get trading calendar."""
     try:
-        adapter = get_adapter()
-        df = adapter.get_calendar(market=market, date=date)
+        service = get_market_data_service()
+        df = service.get_calendar(market=market, date=date)
         calendar = df["date"].tolist() if "date" in df.columns else []
         return CalendarResponse(
             market=market,
@@ -89,58 +83,19 @@ async def get_kline(
     Lookup order: L1 Redis -> L3 historical warehouse -> L2 temp cache -> SDK.
     """
     try:
-        code_list = [c.strip() for c in codes.split(",") if c.strip()]
-        df = None
+        service = get_market_data_service()
+        result = service.get_kline(
+            codes=codes,
+            begin_date=begin_date,
+            end_date=end_date,
+            period=period,
+            limit=limit,
+            offset=offset,
+            source="auto",
+        )
+        df = result.df
 
-        # L3: historical warehouse (only day/week/month)
-        from adshare.core.config import get_settings
-        from adshare.historical.warehouse import get_warehouse
-
-        settings = get_settings()
-        if settings.historical_enabled and period in ("day", "week", "month"):
-            try:
-                warehouse = get_warehouse(settings)
-                if warehouse.is_synced(begin_date, end_date, period, code_list):
-                    df = warehouse.query_kline(
-                        code_list, begin_date, end_date, period,
-                        limit=limit, offset=offset,
-                    )
-            except Exception as e:
-                logger.debug("L3 warehouse lookup failed, falling back: %s", e)
-                df = None
-
-        # Fall back to adapter
-        if df is None or df.empty:
-            adapter = get_adapter()
-            df = adapter.get_kline(
-                codes=codes,
-                begin_date=begin_date,
-                end_date=end_date,
-                period=period,
-                limit=limit,
-                offset=offset,
-            )
-
-        items = []
-        for _, row in df.iterrows():
-            # AmazingData returns 'kline_time' as Timestamp, convert to int YYYYMMDD
-            date_val = row.get("date") or row.get("kline_time") or 0
-            if hasattr(date_val, "strftime"):
-                date_val = int(date_val.strftime("%Y%m%d"))
-            else:
-                date_val = int(date_val) if date_val else 0
-            items.append(
-                KlineItem(
-                    code=str(row.get("code", "")),
-                    date=date_val,
-                    open=float(row.get("open", 0)),
-                    high=float(row.get("high", 0)),
-                    low=float(row.get("low", 0)),
-                    close=float(row.get("close", 0)),
-                    volume=int(row.get("volume", 0)),
-                    amount=float(row.get("amount", 0)),
-                )
-            )
+        items = dataframe_to_kline_items(df)
 
         return KlineResponse(
             codes=codes.split(","),
@@ -170,8 +125,6 @@ async def get_kline_simple(
     from datetime import datetime, timedelta
     
     try:
-        adapter = get_adapter()
-        
         # Calculate date range
         end_dt = datetime.now()
         # Rough estimate: count days + weekends + holidays buffer
@@ -180,35 +133,19 @@ async def get_kline_simple(
         begin_date = int(start_dt.strftime("%Y%m%d"))
         end_date = int(end_dt.strftime("%Y%m%d"))
         
-        df = adapter.get_kline(
+        service = get_market_data_service()
+        result = service.get_kline(
             codes=symbol,
             begin_date=begin_date,
             end_date=end_date,
             period=period,
             limit=count,
             offset=0,
+            source="auto",
         )
+        df = result.df
 
-        items = []
-        for _, row in df.iterrows():
-            # AmazingData returns 'kline_time' as Timestamp, convert to int YYYYMMDD
-            date_val = row.get("date") or row.get("kline_time") or 0
-            if hasattr(date_val, "strftime"):
-                date_val = int(date_val.strftime("%Y%m%d"))
-            else:
-                date_val = int(date_val) if date_val else 0
-            items.append(
-                KlineItem(
-                    code=str(row.get("code", symbol)),
-                    date=date_val,
-                    open=float(row.get("open", 0)),
-                    high=float(row.get("high", 0)),
-                    low=float(row.get("low", 0)),
-                    close=float(row.get("close", 0)),
-                    volume=int(row.get("volume", 0)),
-                    amount=float(row.get("amount", 0)),
-                )
-            )
+        items = dataframe_to_kline_items(df)
 
         return KlineResponse(
             codes=[symbol],
@@ -233,30 +170,9 @@ async def get_snapshot(
 ):
     """Get snapshot data."""
     try:
-        adapter = get_adapter()
-        
-        # Check if AmazingData is logged in
-        if not adapter.is_logged_in:
-            logger.warning("AmazingData not logged in, returning empty snapshot data")
-            return SnapshotResponse(count=0, data=[])
-        
-        df = adapter.get_snapshot(codes=codes, date=date, time=time)
-
-        items = []
-        for _, row in df.iterrows():
-            items.append(
-                SnapshotItem(
-                    code=str(row.get("code", "")),
-                    date=int(row.get("date", 0)),
-                    time=int(row.get("time", 0)) if "time" in row else None,
-                    open=float(row.get("open")) if "open" in row else None,
-                    high=float(row.get("high")) if "high" in row else None,
-                    low=float(row.get("low")) if "low" in row else None,
-                    close=float(row.get("close")) if "close" in row else None,
-                    volume=int(row.get("volume")) if "volume" in row else None,
-                    amount=float(row.get("amount")) if "amount" in row else None,
-                )
-            )
+        service = get_market_data_service()
+        df = service.get_snapshot(codes=codes, date=date, time=time)
+        items = dataframe_to_snapshot_items(df)
 
         return SnapshotResponse(count=len(items), data=items)
     except Exception as e:
@@ -271,8 +187,8 @@ async def get_stock_basic(
 ):
     """Get stock basic information."""
     try:
-        adapter = get_adapter()
-        df = adapter.get_stock_basic(codes=codes, summary_only=summary_only)
+        service = get_market_data_service()
+        df = service.get_stock_basic(codes=codes, summary_only=summary_only)
 
         if summary_only:
             summary = StockBasicSummary(

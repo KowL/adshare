@@ -1,8 +1,8 @@
 # adshare 开发计划
 
 > 版本: 0.1.0  
-> 更新日期: 2026-06-08  
-> 状态: Phase 3 进行中
+> 更新日期: 2026-06-09  
+> 状态: Phase 3 进行中（P0 架构收口已完成）
 
 ---
 
@@ -80,6 +80,18 @@ Phase 4: 生态与扩展       [规划中]  2026.Q3
 
 **时间线**: 2026-06 ~ 2026-08
 
+### 5.0 当前进度快照（2026-06-09）
+
+| 模块 | 状态 | 说明 |
+|------|------|------|
+| P0 架构收口 | ✅ 已完成 | `MarketDataService` 已承接 K 线、快照、代码表、日历、股票基础信息；`/market/kline` 与 `/historical/kline` 共用查询编排 |
+| Response Mapper | ✅ 已完成 | K 线、快照、历史 K 线、历史 SQL rows 转换已移入 `adshare/services/mappers.py` |
+| Service 契约测试 | ✅ 已完成 | 已覆盖 L3 命中不回源、SDK fallback、显式 warehouse 不回源、period alias、非法 source、快照未登录降级等 |
+| 市场路由瘦身 | 🟡 部分完成 | 常规市场数据已收口；`limit-up` 仍保留在 Router，下一步建议拆成 `LimitUpService` |
+| 分析服务化 | ⏳ 待开始 | 技术、基本面、因子分析仍由 Router 编排，计划迁移到 `AnalysisService` |
+| Adapter 瘦身 | ⏳ 待开始 | `AmazingDataAdapter` 仍同时承担 SDK 生命周期、缓存与数据规整 |
+| 当前验证 | ✅ 通过 | `pytest -q` 为 `136 passed`；`python3 -m compileall -q adshare tests` 通过 |
+
 ### 5.1 🔴 P0 — 缺陷修复（2 周）
 
 | 任务 | 负责人 | 说明 | 关联文件 |
@@ -89,6 +101,17 @@ Phase 4: 生态与扩展       [规划中]  2026.Q3
 | 修复 `limit-up` name_map 不完整 | - | 仅前 500 只股票有 name，后续为空 | `routers/market.py` |
 | 补充 `tables` 依赖声明 | - | 在 `pyproject.toml` 中声明或移除 | `pyproject.toml`, `Dockerfile` |
 
+### 5.1.1 🔴 P0 — 架构收口（2 周）
+
+> 详见: [`docs/architecture-review.md`](architecture-review.md)
+
+| 任务 | 负责人 | 说明 | 关联文件 |
+|------|--------|------|----------|
+| [x] 建立 `MarketDataService` | - | 已统一 K 线、快照、代码表、日历、股票基础信息的数据访问入口；K 线包含 L3/SDK 回退路径 | `adshare/services/market_data.py`, `routers/market.py`, `routers/historical.py` |
+| [x] 统一 K 线查询路径 | - | `/market/kline` 与 `/historical/kline` 已共用 service，避免 L3/SDK fallback 逻辑重复 | `adshare/services/market_data.py`, `adshare/historical/warehouse.py` |
+| [x] 建立 DataFrame -> Response mapper | - | K 线、快照、历史 K 线、历史 SQL rows mapper 已完成 | `adshare/services/mappers.py`, `models/schemas.py` |
+| [x] 补充 service 契约测试 | - | 已覆盖 L3 命中不回源、SDK fallback、显式 warehouse 不回源、period alias、非法 source | `tests/test_market_data_service.py` |
+
 ### 5.2 🟠 P1 — 性能优化（3 周）
 
 | 任务 | 目标 | 说明 |
@@ -97,6 +120,7 @@ Phase 4: 生态与扩展       [规划中]  2026.Q3
 | K 线批量缓存优化 | 缓存命中率 > 80% | 按日期范围分片缓存，支持局部命中 |
 | 本地缓存 key 安全 | 零碰撞风险 | 哈希前加盐、文件名非法字符过滤 |
 | 引擎计算向量化 | 减少 30% CPU | 检查 indicators/factors 中循环，尽量用 pandas 原生向量化 |
+| 分析服务化 | 减少重复编排 | 将技术、基本面、因子分析入口从 Router 移入 `AnalysisService` |
 
 ### 5.3 🟡 P2 — 测试与质量（3 周）
 
@@ -116,6 +140,7 @@ Phase 4: 生态与扩展       [规划中]  2026.Q3
 | OpenAPI 描述补全 | 所有参数增加 `description` 与中文说明 |
 | Skill 使用示例 | 为每套 Skill 提供 Python/TypeScript 调用示例 |
 | 部署指南视频/图文 | 针对 x86 Docker 部署的 Troubleshooting |
+| 架构评审文档维护 | 每次 Phase review 后同步更新 `docs/architecture-review.md` |
 
 ---
 
@@ -143,6 +168,7 @@ Phase 4: 生态与扩展       [规划中]  2026.Q3
 | 方向 | 说明 | 优先级 |
 |------|------|--------|
 | 多 SDK 实例负载均衡 | 支持多 AmazingData 账号并行，突破单账号连接限制 | P1 |
+| Adapter 瘦身 | 拆出 `AmazingDataSession` 与原始 SDK Client，缓存策略移入 service | P1 |
 | 异步 SDK 调用 | 评估 AmazingData SDK 是否支持异步，减少阻塞 | P2 |
 | 任务队列 | 大数据量查询（如全市场历史 K 线）转异步任务，通过回调/Webhook 返回 | P2 |
 | 插件系统 | 允许用户注册自定义指标/因子（Python 脚本热加载）| P3 |
@@ -165,13 +191,16 @@ Phase 4: 生态与扩展       [规划中]  2026.Q3
 | TD-01 | `technical.py` Pydantic 验证 Bug | 🔴 高 | Phase 3 P0 |
 | TD-02 | SDK 调用方式与手册不符 | 🟠 中高 | Phase 3 P0 |
 | TD-03 | `limit-up` 全市场遍历无缓存 | 🟠 中高 | Phase 3 P1 |
-| TD-04 | 测试覆盖率不足（无集成测试）| 🟠 中高 | Phase 3 P2 |
+| TD-04 | 测试覆盖率不足（市场/service 测试已补强，分析与错误边界仍需补齐）| 🟡 中 | Phase 3 P2 |
 | TD-05 | `tables` 依赖未声明 | 🟡 中 | Phase 3 P0 |
 | TD-06 | 本地缓存 key 哈希碰撞风险 | 🟡 中 | Phase 3 P1 |
 | TD-07 | Docker 以 root 运行 | 🟡 中 | Phase 3 P3 |
 | TD-08 | CORS 全开放 | 🟡 中 | Phase 4 |
 | TD-09 | 无变更日志 (CHANGELOG) | 🟢 低 | Phase 3 P3 |
 | TD-10 | 单指标与多指标响应 key 不统一 | 🟢 低 | Phase 3 P0 |
+| TD-11 | Router 承担数据源编排与响应转换（常规市场数据已收口，`limit-up` 与分析路由待拆） | 🟡 中 | Phase 3 P1 |
+| TD-12 | AmazingData Adapter 同时负责 SDK 生命周期、缓存和数据规整 | 🟠 中高 | Phase 4 P1 |
+| TD-13 | HTTP 与 MCP 缺少共享分析服务入口，存在行为漂移风险 | 🟠 中高 | Phase 3 P1 |
 
 ---
 
