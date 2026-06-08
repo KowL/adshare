@@ -181,7 +181,7 @@ async def analyze_technical(
                         cat_results[ind_name] = values
                     except Exception as e:
                         logger.warning(f"Indicator {ind_name} failed: {e}")
-                        cat_results[ind_name] = {"error": str(e)}
+                        continue
 
                 categories[cat_key] = {
                     "name": cat_key,

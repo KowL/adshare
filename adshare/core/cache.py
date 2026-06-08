@@ -113,7 +113,12 @@ class CacheManager:
     def _local_path(self, data_type: str, *key_parts: str) -> Path:
         """Get local cache file path."""
         key = self._make_key(data_type, *key_parts)
-        safe_key = key.replace(":", "_")
+        # Replace filesystem-unsafe chars; keep alnum, hyphen, underscore
+        safe_key = "".join(c if c.isalnum() or c in "-_" else "_" for c in key)
+        # Truncate extremely long names while keeping uniqueness via hash suffix
+        if len(safe_key) > 100:
+            short_hash = hashlib.sha256(safe_key.encode()).hexdigest()[:12]
+            safe_key = safe_key[:80] + "_" + short_hash
         return self._local_cache_path / f"{safe_key}.parquet"
 
     def get_local(self, data_type: str, *key_parts: str) -> Optional[pd.DataFrame]:

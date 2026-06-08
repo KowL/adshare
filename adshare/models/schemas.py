@@ -308,7 +308,7 @@ class TechnicalIndicatorValue(BaseModel):
     """Single indicator value."""
 
     name: str
-    values: Dict[str, float]
+    values: Dict[str, Optional[float]]
 
 
 class TechnicalCategory(BaseModel):

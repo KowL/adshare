@@ -319,33 +319,40 @@ async def get_limit_up(
     Since AmazingData SDK doesn't provide native limit-up data,
     we compute it by checking if a stock's daily change >= limit threshold.
     """
+    cache = get_cache_manager()
+    today_str = _today_str()
+    cache_key = ("limit_up", today_str, str(days), str(board_filter or "all"), str(exclude_st))
+    cached = cache.get("snapshot", *cache_key)
+    if cached is not None:
+        return LimitUpResponse(date=today_str, stocks=cached, count=len(cached), data=cached)
+
     try:
         adapter = get_adapter()
-        
+
         # Check if AmazingData is logged in
         if not adapter.is_logged_in:
             logger.warning("AmazingData not logged in, returning empty limit-up data")
-            return LimitUpResponse(date=_today_str(), stocks=[], count=0)
-        
+            return LimitUpResponse(date=today_str, stocks=[], count=0)
+
         # Get all stock codes
         codes = adapter.get_code_list(security_type="EXTRA_STOCK_A")
         if not codes:
-            return LimitUpResponse(date=_today_str(), stocks=[], count=0)
-        
+            return LimitUpResponse(date=today_str, stocks=[], count=0)
+
         # Get stock names from code_info (single call, cached)
         df_info = adapter.get_code_info(security_type="EXTRA_STOCK_A")
         name_map = {}
         if hasattr(df_info, "index") and "symbol" in df_info.columns:
             for code in df_info.index:
                 name_map[str(code)] = str(df_info.loc[code, "symbol"])
-        
+
         # Get today's snapshot for all stocks
         # We query in batches to avoid overwhelming the SDK
         batch_size = 200
         all_snapshots = []
         from datetime import datetime
         today = int(datetime.now().strftime("%Y%m%d"))
-        
+
         for i in range(0, len(codes), batch_size):
             batch = codes[i:i + batch_size]
             try:
@@ -355,20 +362,20 @@ async def get_limit_up(
             except Exception as e:
                 logger.warning(f"Snapshot batch {i}-{i+batch_size} failed: {e}")
                 continue
-        
+
         # Calculate limit-up stocks
         limit_up_stocks = []
         for row in all_snapshots:
             code = str(row.get("code", ""))
             if not code:
                 continue
-            
+
             board = _detect_board(code)
-            
+
             # Board filter
             if board_filter and board != board_filter:
                 continue
-            
+
             # Get price data
             close = float(row.get("close", 0) or 0)
             pre_close = float(row.get("pre_close", row.get("preClose", 0)) or 0)
@@ -377,26 +384,26 @@ async def get_limit_up(
             low = float(row.get("low", 0) or 0)
             volume = int(row.get("volume", 0) or 0)
             amount = float(row.get("amount", 0) or 0)
-            
+
             if pre_close <= 0:
                 continue
-            
+
             change_pct = (close - pre_close) / pre_close
-            
+
             # Check limit-up
             if not _is_limit_up(change_pct, board):
                 continue
-            
+
             # Exclude ST
             name = name_map.get(code, code)
             if exclude_st and ("ST" in name or "*ST" in name or name.startswith("ST") or name.startswith("*ST")):
                 continue
-            
+
             limit_up_stocks.append(
                 LimitUpItem(
                     code=code.split(".")[0] if "." in code else code,
                     name=name,
-                    limitUpDate=_today_str(),
+                    limitUpDate=today_str,
                     changePct=round(change_pct, 4),
                     board=board,
                     limitUpDays=1,  # We only know today's status from snapshot
@@ -416,9 +423,12 @@ async def get_limit_up(
                     concept="",
                 )
             )
-        
+
+        # Cache the result (TTL handled by cache manager for snapshot type)
+        cache.set("snapshot", limit_up_stocks, *cache_key)
+
         return LimitUpResponse(
-            date=_today_str(),
+            date=today_str,
             stocks=limit_up_stocks,
             count=len(limit_up_stocks),
             data=limit_up_stocks,
