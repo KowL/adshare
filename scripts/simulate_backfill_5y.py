@@ -9,7 +9,7 @@ Run::
 
     python scripts/simulate_backfill_5y.py
 
-It writes Parquet files into ``./data/historical`` and prints summary
+It writes Parquet files into ``./data`` and prints summary
 statistics when it finishes.
 """
 

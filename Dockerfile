@@ -26,9 +26,10 @@ RUN pip install --no-cache-dir -e "." tables
 # 复制项目代码
 COPY adshare/ ./adshare/
 COPY config/ ./config/
+COPY scripts/ ./scripts/
 
 # 创建缓存和日志目录
-RUN mkdir -p cache logs
+RUN mkdir -p cache logs data
 
 # 暴露端口
 EXPOSE 8000

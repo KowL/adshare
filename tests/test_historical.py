@@ -383,9 +383,9 @@ def _populate_kline(warehouse, period, year, code, dates=(20240101, 20240102, 20
 
 class TestWarehouse:
     def test_directory_layout_created(self, warehouse):
-        assert (warehouse.root / "A_share" / "daily" / "2024").exists()
-        assert (warehouse.root / "A_share" / "weekly" / "2024").exists()
-        assert (warehouse.root / "A_share" / "monthly" / "2024").exists()
+        assert (warehouse.root / "A_share" / "daily").exists()
+        assert (warehouse.root / "A_share" / "weekly").exists()
+        assert (warehouse.root / "A_share" / "monthly").exists()
         assert (warehouse.root / "meta").exists()
 
     def test_kline_dir(self, warehouse):
@@ -577,6 +577,25 @@ class TestSync:
         assert result.succeeded == 2
         assert fake.get_code_list.called
 
+    def test_sync_kline_batch_mode(self, warehouse, isolated_settings):
+        fake = self._fake_adapter(codes=("000001.SZ", "600000.SH"))
+        result = sync_kline_daily(
+            year=2024,
+            codes=["000001.SZ", "600000.SH"],
+            batch_size=2,
+            settings=isolated_settings,
+            warehouse=warehouse,
+            adapter=fake,
+        )
+
+        assert result.success
+        assert result.succeeded == 2
+        assert result.skipped == 0
+        assert result.failed == 0
+        assert fake.get_kline.call_count == 1
+        assert (warehouse.root / "A_share" / "daily" / "2024" / "000001.SZ.parquet").exists()
+        assert (warehouse.root / "A_share" / "daily" / "2024" / "600000.SH.parquet").exists()
+
     def test_sync_meta_codes(self, warehouse, isolated_settings):
         fake = self._fake_adapter()
         result = sync_meta_codes(
@@ -612,7 +631,10 @@ class TestSync:
             adapter=fake,
         )
         # No file should be written, but the job is still "successful" structurally
-        assert result.succeeded == 1
+        assert result.succeeded == 0
+        assert result.skipped == 1
+        assert result.failed == 0
+        assert result.success is True
         assert not (
             warehouse.root / "A_share" / "daily" / "2024" / "000001.SZ.parquet"
         ).exists()

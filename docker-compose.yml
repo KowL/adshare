@@ -33,7 +33,7 @@ services:
       - ADSHARE_HOST=0.0.0.0
       - ADSHARE_PORT=8000
       - HISTORICAL_ENABLED=${HISTORICAL_ENABLED:-true}
-      - HISTORICAL_PATH=${HISTORICAL_PATH:-/app/data/historical}
+      - HISTORICAL_PATH=${HISTORICAL_PATH:-/app/data}
       - DUCKDB_MODE=${DUCKDB_MODE:-memory}
       - SYNC_SCHEDULE_ENABLED=${SYNC_SCHEDULE_ENABLED:-false}
     volumes:

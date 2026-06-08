@@ -241,27 +241,27 @@ SELECT
     close,
     volume,
     amount
-FROM read_parquet('data/historical/A_share/daily/*/*.parquet', filename=1);
+FROM read_parquet('data/A_share/daily/*/*.parquet', filename=1);
 
 -- 周 K
 CREATE VIEW v_kline_week AS
 SELECT
     regexp_replace(filename(), '.*[/\\]([^/\\]+)\.parquet$', '\1') AS code,
     date, open, high, low, close, volume, amount
-FROM read_parquet('data/historical/A_share/weekly/*/*.parquet', filename=1);
+FROM read_parquet('data/A_share/weekly/*/*.parquet', filename=1);
 
 -- 月 K
 CREATE VIEW v_kline_month AS
 SELECT
     regexp_replace(filename(), '.*[/\\]([^/\\]+)\.parquet$', '\1') AS code,
     date, open, high, low, close, volume, amount
-FROM read_parquet('data/historical/A_share/monthly/*/*.parquet', filename=1);
+FROM read_parquet('data/A_share/monthly/*/*.parquet', filename=1);
 
 -- 交易日历
-CREATE VIEW v_calendar AS SELECT * FROM read_parquet('data/historical/meta/calendar.parquet');
+CREATE VIEW v_calendar AS SELECT * FROM read_parquet('data/meta/calendar.parquet');
 
 -- 代码表
-CREATE VIEW v_codes AS SELECT * FROM read_parquet('data/historical/meta/codes.parquet');
+CREATE VIEW v_codes AS SELECT * FROM read_parquet('data/meta/codes.parquet');
 ```
 
 ### 4.3 查询接口设计
@@ -301,7 +301,7 @@ Body: { "sql": "SELECT ..." }
 ```sql
 -- 1. 单只股票一年的日 K（极快：只读 1 个 10KB 文件）
 SELECT date, open, high, low, close, volume
-FROM read_parquet('data/historical/A_share/daily/2024/000001.SZ.parquet')
+FROM read_parquet('data/A_share/daily/2024/000001.SZ.parquet')
 ORDER BY date;
 
 -- 2. 某一天的全市场截面数据（DuckDB 并行扫描 5000 个小文件）
@@ -314,7 +314,7 @@ LIMIT 100;
 -- 3. 均线计算（DuckDB 窗口函数）
 SELECT date, close,
        AVG(close) OVER (ORDER BY date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) AS ma20
-FROM read_parquet('data/historical/A_share/daily/2024/000001.SZ.parquet')
+FROM read_parquet('data/A_share/daily/2024/000001.SZ.parquet')
 ORDER BY date;
 
 -- 4. 多只股票多年数据
@@ -377,7 +377,7 @@ def sync_kline_daily():
     codes = adapter.get_code_list("EXTRA_STOCK_A_SH_SZ")
     
     # 2. 创建当年目录
-    year_dir = Path(f"data/historical/A_share/daily/{year}")
+    year_dir = Path(f"data/A_share/daily/{year}")
     year_dir.mkdir(parents=True, exist_ok=True)
     
     # 3. 确定同步日期范围（方案 B：前复权价格）
@@ -460,7 +460,7 @@ dependencies = [
 ```python
 # Historical data warehouse
 historical_enabled: bool = Field(default=True, alias="HISTORICAL_ENABLED")
-historical_path: str = Field(default="./data/historical", alias="HISTORICAL_PATH")
+historical_path: str = Field(default="./data", alias="HISTORICAL_PATH")
 
 # DuckDB
 duckdb_mode: str = Field(default="memory", alias="DUCKDB_MODE")  # "memory" | "file"
@@ -548,7 +548,7 @@ def validate_kline_df(df: pd.DataFrame) -> pd.DataFrame:
 ### 7.3 元数据版本追踪
 
 ```json
-// data/historical/A_share/daily/_metadata.json
+// data/A_share/daily/_metadata.json
 {
   "version": "1.0",
   "schema": {
@@ -594,7 +594,7 @@ def validate_kline_df(df: pd.DataFrame) -> pd.DataFrame:
 
 ### 8.3 备份策略
 
-- **冷备份**：每月将 `data/historical/A_share/` 目录 tar.gz 压缩后上传至对象存储（S3/OSS）
+- **冷备份**：每月将 `data/A_share/` 目录 tar.gz 压缩后上传至对象存储（S3/OSS）
 - **增量备份**：仅备份新增/修改的文件（通过文件 mtime 判断）
 - **灾难恢复**：新环境启动时，从对象存储下载历史数据，APScheduler 自动补偿最近缺失的数据
 
@@ -606,7 +606,7 @@ def validate_kline_df(df: pd.DataFrame) -> pd.DataFrame:
 
 1. 合并本 PR：新增 `adshare/historical/` 模块、`duckdb` + `apscheduler` 依赖
 2. 配置变更：`.env.example` + `config/settings.yaml` 新增历史数据相关配置
-3. 初始化空目录结构：`data/historical/A_share/{daily,weekly,monthly}/`
+3. 初始化空目录结构：`data/A_share/{daily,weekly,monthly}/`
 4. 代码审查：确保 `historical_enabled=false` 时现有逻辑 100% 兼容
 
 ### Phase B：数据回填（1~2 周）

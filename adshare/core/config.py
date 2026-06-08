@@ -77,7 +77,7 @@ class Settings(BaseSettings):
 
     # Historical data warehouse (L3)
     historical_enabled: bool = Field(default=True, alias="HISTORICAL_ENABLED")
-    historical_path: str = Field(default="./data/historical", alias="HISTORICAL_PATH")
+    historical_path: str = Field(default="./data", alias="HISTORICAL_PATH")
     historical_retention_years: int = Field(default=0, alias="HISTORICAL_RETENTION_YEARS")
 
     # DuckDB

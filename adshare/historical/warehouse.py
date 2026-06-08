@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import os
 import threading
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
@@ -44,8 +43,7 @@ class HistoricalWarehouse:
 
     def _init_directory_layout(self) -> None:
         for sub in ("daily", "weekly", "monthly"):
-            for year in range(1990, datetime.now().year + 2):
-                (self.root / "A_share" / sub / str(year)).mkdir(parents=True, exist_ok=True)
+            (self.root / "A_share" / sub).mkdir(parents=True, exist_ok=True)
         (self.root / "meta").mkdir(parents=True, exist_ok=True)
         (self.root / "snapshot").mkdir(parents=True, exist_ok=True)
 

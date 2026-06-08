@@ -183,7 +183,7 @@ def client(fake_adapter, monkeypatch):
 
     Also disables the L3 historical warehouse so the test relies purely on
     the (mocked) adapter — this prevents the conftest from picking up files
-    written by other test files that share ``./data/historical``.
+    written by other test files that share ``./data``.
     """
     import adshare.adapters.amazingdata as _ad_mod
     import adshare.core.cache as _cache_mod

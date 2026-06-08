@@ -131,6 +131,7 @@ def sync_kline(
     *,
     year: Optional[int] = None,
     codes: Optional[Sequence[str]] = None,
+    batch_size: Optional[int] = None,
     settings: Optional[Settings] = None,
     warehouse: Optional[HistoricalWarehouse] = None,
     adapter=None,
@@ -173,8 +174,98 @@ def sync_kline(
     begin_date, end_date = _year_bounds(target_year, today)
 
     adapter_obj = adapter or _get_adapter_safe()
+    batch_size = int(batch_size or 1)
+    if batch_size > 1:
+        rows_written = 0
+        attempts = max(1, int(settings.sync_retry_attempts))
+        for start in range(0, len(codes), batch_size):
+            batch = codes[start : start + batch_size]
+            batch_label = f"{start + 1}-{start + len(batch)}"
+            batch_df = pd.DataFrame()
+            batch_error: Optional[str] = None
+            for attempt in range(attempts):
+                try:
+                    batch_df = adapter_obj.get_kline(
+                        codes=",".join(batch),
+                        begin_date=begin_date,
+                        end_date=end_date,
+                        period=period,
+                    )
+                    batch_error = None
+                    break
+                except Exception as e:  # noqa: BLE001
+                    batch_error = str(e)
+                    err_str = batch_error.lower()
+                    if "exceed the max limitation" in err_str or "rate limit" in err_str:
+                        time.sleep(0.5 * (attempt + 1))
+                    if attempt < attempts - 1:
+                        time.sleep(0.2 * (attempt + 1))
 
-    def _sync_one(code: str) -> tuple[str, bool, Optional[Path], Optional[str]]:
+            if batch_error is not None:
+                result.failed += len(batch)
+                result.errors.append(f"batch {batch_label}: {batch_error}")
+                continue
+
+            if batch_df is None or batch_df.empty:
+                result.skipped += len(batch)
+                continue
+
+            for code in batch:
+                if "code" in batch_df.columns:
+                    code_df = batch_df[batch_df["code"].astype(str) == str(code)]
+                else:
+                    code_df = batch_df if len(batch) == 1 else pd.DataFrame()
+                path = _persist_kline(code_df, period, target_year, code, root)
+                if path is None:
+                    result.skipped += 1
+                    continue
+                result.succeeded += 1
+                try:
+                    rows_written += len(pd.read_parquet(path))
+                except Exception:
+                    pass
+
+            logger.info(
+                "sync_kline(%s) year=%s batch=%s/%s succeeded=%d skipped=%d failed=%d rows=%d",
+                period,
+                target_year,
+                min(start + len(batch), len(codes)),
+                len(codes),
+                result.succeeded,
+                result.skipped,
+                result.failed,
+                rows_written,
+            )
+
+        result.rows = rows_written
+        result.finished_at = time.time()
+        result.success = result.failed == 0
+        try:
+            existing = _existing_codes(period, target_year, root)
+            write_metadata(
+                root,
+                period,
+                target_year,
+                file_count=len(existing),
+                total_rows=rows_written,
+                last_sync_at=int(time.time()),
+            )
+        except Exception as e:
+            logger.warning("sync_kline: failed to write metadata: %s", e)
+        warehouse.refresh_views()
+        logger.info(
+            "sync_kline(%s) year=%s succeeded=%d skipped=%d failed=%d rows=%d duration=%.2fs",
+            period,
+            target_year,
+            result.succeeded,
+            result.skipped,
+            result.failed,
+            result.rows,
+            result.duration,
+        )
+        return result
+
+    def _sync_one(code: str) -> tuple[str, str, Optional[Path], Optional[str]]:
         attempts = max(1, int(settings.sync_retry_attempts))
         for attempt in range(attempts):
             try:
@@ -185,15 +276,17 @@ def sync_kline(
                     period=period,
                 )
                 path = _persist_kline(df, period, target_year, code, root)
-                return code, True, path, None
+                if path is None:
+                    return code, "skipped", None, None
+                return code, "written", path, None
             except Exception as e:  # noqa: BLE001
                 err_str = str(e).lower()
                 if "exceed the max limitation" in err_str or "rate limit" in err_str:
                     time.sleep(0.5 * (attempt + 1))
                 if attempt == attempts - 1:
-                    return code, False, None, str(e)
+                    return code, "failed", None, str(e)
                 time.sleep(0.2 * (attempt + 1))
-        return code, False, None, "unknown"
+        return code, "failed", None, "unknown"
 
     rows_written = 0
     file_count = 0
@@ -201,16 +294,17 @@ def sync_kline(
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {pool.submit(_sync_one, c): c for c in codes}
         for fut in as_completed(futures):
-            code, ok, path, err = fut.result()
-            if ok:
+            code, status, path, err = fut.result()
+            if status == "written":
                 result.succeeded += 1
-                if path is not None:
-                    file_count += 1
-                    try:
-                        # Reload to count rows cheaply
-                        rows_written += len(pd.read_parquet(path))
-                    except Exception:
-                        pass
+                file_count += 1
+                try:
+                    # Reload to count rows cheaply
+                    rows_written += len(pd.read_parquet(path))
+                except Exception:
+                    pass
+            elif status == "skipped":
+                result.skipped += 1
             else:
                 result.failed += 1
                 if err:
@@ -245,6 +339,7 @@ def sync_kline_daily(
     *,
     year: Optional[int] = None,
     codes: Optional[Sequence[str]] = None,
+    batch_size: Optional[int] = None,
     settings: Optional[Settings] = None,
     warehouse: Optional[HistoricalWarehouse] = None,
     adapter=None,
@@ -253,6 +348,7 @@ def sync_kline_daily(
         "day",
         year=year,
         codes=codes,
+        batch_size=batch_size,
         settings=settings,
         warehouse=warehouse,
         adapter=adapter,
@@ -263,6 +359,7 @@ def sync_kline_weekly(
     *,
     year: Optional[int] = None,
     codes: Optional[Sequence[str]] = None,
+    batch_size: Optional[int] = None,
     settings: Optional[Settings] = None,
     warehouse: Optional[HistoricalWarehouse] = None,
     adapter=None,
@@ -271,6 +368,7 @@ def sync_kline_weekly(
         "week",
         year=year,
         codes=codes,
+        batch_size=batch_size,
         settings=settings,
         warehouse=warehouse,
         adapter=adapter,
@@ -281,6 +379,7 @@ def sync_kline_monthly(
     *,
     year: Optional[int] = None,
     codes: Optional[Sequence[str]] = None,
+    batch_size: Optional[int] = None,
     settings: Optional[Settings] = None,
     warehouse: Optional[HistoricalWarehouse] = None,
     adapter=None,
@@ -289,6 +388,7 @@ def sync_kline_monthly(
         "month",
         year=year,
         codes=codes,
+        batch_size=batch_size,
         settings=settings,
         warehouse=warehouse,
         adapter=adapter,

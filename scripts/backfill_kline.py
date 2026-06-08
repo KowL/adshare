@@ -77,6 +77,12 @@ def parse_args() -> argparse.Namespace:
         default="SH",
         help="Market code for the calendar sync (default: SH).",
     )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=None,
+        help="Number of codes per SDK K-line request. Default: 1, or settings.MAX_CODES_PER_QUERY when all codes.",
+    )
     return parser.parse_args()
 
 
@@ -103,6 +109,12 @@ def main() -> int:
         print(f"🔎 Restricting to {len(code_list)} codes")
     else:
         print("🔎 Backfilling all A-share codes")
+
+    batch_size = args.batch_size
+    if batch_size is None and code_list is None:
+        batch_size = int(settings.max_codes_per_query)
+    batch_size = max(1, int(batch_size or 1))
+    print(f"📚 K-line batch size: {batch_size}")
 
     begin_year = max(1990, int(args.begin_year))
     end_year = max(begin_year, int(args.end_year))
@@ -133,12 +145,12 @@ def main() -> int:
             print(f"\n--- {period}/{year} ---")
             t0 = time.time()
             try:
-                result = func(year=year, codes=code_list)
+                result = func(year=year, codes=code_list, batch_size=batch_size)
             except Exception as e:  # noqa: BLE001
                 print(f"   ❌ failed: {e}")
                 continue
             print(
-                f"   succeeded={result.succeeded} failed={result.failed} "
+                f"   succeeded={result.succeeded} skipped={result.skipped} failed={result.failed} "
                 f"rows={result.rows} duration={time.time() - t0:.2f}s"
             )
             if result.errors:
@@ -149,12 +161,17 @@ def main() -> int:
             results.append(result)
 
     total_duration = time.time() - started
-    total_rows = sum(r.rows for r in results)
+    kline_results = [r for r in results if r.job.startswith("sync_kline")]
+    total_rows = sum(r.rows for r in kline_results)
     total_files = sum(r.succeeded for r in results if r.job.startswith("sync_kline"))
+    total_skipped = sum(r.skipped for r in kline_results)
     total_failed = sum(r.failed for r in results)
     print("\n=== Backfill complete ===")
     print(f"   years={years} periods={periods} duration={total_duration:.2f}s")
-    print(f"   total_rows={total_rows} files_written={total_files} failures={total_failed}")
+    print(
+        f"   kline_rows={total_rows} files_written={total_files} "
+        f"skipped={total_skipped} failures={total_failed}"
+    )
     return 0 if total_failed == 0 else 2
 
 
