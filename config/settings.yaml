@@ -1,0 +1,80 @@
+# adshare 服务配置
+
+app:
+  name: "adshare"
+  version: "0.1.0"
+  debug: false
+  host: "0.0.0.0"
+  port: 8000
+  log_level: "INFO"
+
+# AmazingData 连接配置
+amazingdata:
+  username: "${AD_USERNAME}"
+  password: "${AD_PASSWORD}"
+  host: "${AD_HOST}"
+  port: ${AD_PORT}
+  # 连接池配置
+  pool_size: 5
+  max_retries: 3
+  retry_delay: 1.0
+  # 登录超时（秒）
+  login_timeout: 30
+
+# Redis 缓存配置
+redis:
+  host: "${REDIS_HOST:localhost}"
+  port: ${REDIS_PORT:6379}
+  db: ${REDIS_DB:0}
+  password: "${REDIS_PASSWORD:}"
+  # 连接池
+  max_connections: 50
+  socket_timeout: 5
+  socket_connect_timeout: 5
+
+# 缓存 TTL 配置（秒）
+cache:
+  # 热点数据：代码表、最新行情
+  ttl_short: 300
+  # 常规数据：K线、财务数据
+  ttl_medium: 3600
+  # 冷数据：历史代码、基础信息
+  ttl_long: 86400
+  # 本地缓存
+  local_enabled: true
+  local_path: "./cache"
+  # 缓存键前缀
+  key_prefix: "adshare"
+
+# 限流配置
+rate_limit:
+  enabled: true
+  # 每分钟请求数
+  per_minute: 120
+  # 每秒请求数
+  per_second: 10
+
+# API 认证
+auth:
+  enabled: false
+  api_key: "${ADSHARE_API_KEY:}"
+
+# MCP 配置
+mcp:
+  enabled: true
+  transport: "sse"  # sse 或 stdio
+  path: "/mcp"
+
+# 监控配置
+metrics:
+  enabled: true
+  path: "/metrics"
+
+# 数据配置
+data:
+  # K线默认返回条数限制
+  kline_max_limit: 10000
+  # 批量查询最大代码数
+  max_codes_per_query: 50
+  # 默认日期范围
+  default_begin_date: 19900101

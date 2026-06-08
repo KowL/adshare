@@ -1,0 +1,365 @@
+# adshare 项目功能手册
+
+> 版本: 0.1.0  
+> 适用对象: 前端开发者、AI Agent 开发者、数据分析师、运维工程师
+
+---
+
+## 1. 功能全景图
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              客户端 (任意平台)                               │
+│  (Vibe-Trading, ruo-cli, 浏览器, Jupyter, AI Agent ...)                    │
+└─────────────────────────────────┬───────────────────────────────────────────┘
+                                  │ HTTP / MCP
+┌─────────────────────────────────▼───────────────────────────────────────────┐
+│                              adshare 服务层                                  │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐        │
+│  │  Market     │  │ Financial   │  │ Technical   │  │ Fundamental │        │
+│  │  市场数据   │  │ 财务数据    │  │ 技术分析    │  │ 基本面分析  │        │
+│  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘        │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐                         │
+│  │ Factor      │  │ MCP Server  │  │ Health      │                         │
+│  │ 因子分析    │  │ 协议接入    │  │ 监控运维    │                         │
+│  └─────────────┘  └─────────────┘  └─────────────┘                         │
+└─────────────────────────────────┬───────────────────────────────────────────┘
+                                  │
+┌─────────────────────────────────▼───────────────────────────────────────────┐
+│                            数据与基础设施层                                  │
+│  ┌──────────────────────────────────────┐  ┌──────────────────────────┐    │
+│  │  AmazingData SDK Adapter             │  │  Cache Manager           │    │
+│  │  (Linux/amd64 only)                  │  │  L1 Redis + L2 Parquet   │    │
+│  └──────────────────────────────────────┘  └──────────────────────────┘    │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 2. 市场数据 (Market)
+
+**路由前缀**: `/market`
+
+### 2.1 证券代码表
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/codes` | GET | 获取全市场代码列表，支持沪深北 A 股、ETF、期货、期权等 |
+
+**请求参数**:
+- `security_type`: 代码类型，如 `EXTRA_STOCK_A`（默认）、`EXTRA_ETF`、`EXTRA_INDEX_A`
+
+**响应示例**:
+```json
+{
+  "security_type": "EXTRA_STOCK_A",
+  "code_list": ["000001.SZ", "600000.SH", ...],
+  "count": 5354,
+  "data": ["000001.SZ", "600000.SH", ...]
+}
+```
+
+**对应 SDK**: `BaseData.get_code_list()` — 见 AmazingData 开发手册 §3.5.2.2
+
+---
+
+### 2.2 K 线数据
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/kline` | GET | 标准 K 线查询，支持多代码、多周期 |
+| `/kline/simple` | GET | 简化查询，仅需 `symbol` + `count`，自动推算日期范围 |
+
+**周期支持**:
+
+| 参数值 | 说明 | SDK Period Code |
+|--------|------|-----------------|
+| `tick` | Tick | 0 |
+| `min1` | 1 分钟 | 10000 |
+| `min5` | 5 分钟 | 10002 |
+| `min15` | 15 分钟 | 10004 |
+| `min30` | 30 分钟 | 10005 |
+| `min60` | 60 分钟 | 10006 |
+| `day` | 日线（默认） | 10008 |
+| `week` | 周线 | 10009 |
+| `month` | 月线 | 10010 |
+
+**对应 SDK**: `MarketData.query_kline()` — 见开发手册 §3.5.4.2
+
+---
+
+### 2.3 快照数据
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/snapshot` | GET | 查询指定代码的最新 Level-1 快照 |
+
+**字段覆盖**: open, high, low, close, volume, amount, bid_price, ask_price 等
+
+**对应 SDK**: `MarketData.query_snapshot()` — 见开发手册 §3.5.4.1
+
+---
+
+### 2.4 证券基础信息
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/stock/basic` | GET | 个股详细资料：上市日期、退市日期、板块、上市状态 |
+
+**对应 SDK**: `InfoData.get_stock_basic()` — 见开发手册 §3.5.2.9
+
+---
+
+### 2.5 交易日历
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/calendar` | GET | 查询指定市场的交易日历 |
+
+- `market`: `SH`（上海，默认）、`SZ`（深圳）、`BJ`（北京）
+
+**对应 SDK**: `BaseData.get_calendar()` — 见开发手册 §3.5.2.8
+
+---
+
+### 2.6 涨停榜
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/limit-up` | GET | 当日涨停股票列表（基于快照实时计算） |
+| `/limit-up/ladder` | GET | 涨停梯队（连板层级统计） |
+
+**计算逻辑**:
+- 主板 / 中小板: 涨幅 ≥ 10%
+- 创业板 / 科创板: 涨幅 ≥ 20%
+- 自动过滤 ST/*ST（可配置 `exclude_st=false` 保留）
+
+**⚠️ 注意**: 该端点遍历全市场 A 股，查询量较大，建议增加客户端缓存。
+
+---
+
+## 3. 财务数据 (Financial)
+
+**路由前缀**: `/financial`
+
+### 3.1 财务报表
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/statement` | GET | 资产负债表 / 利润表 / 现金流量表 / 业绩快报 / 业绩预告 |
+
+**参数**:
+- `codes`: 逗号分隔股票代码
+- `statement_type`: `balance`（资产负债表）、`income`（利润表）、`cashflow`（现金流量表）、`profit_express`（业绩快报）、`profit_notice`（业绩预告）
+
+**对应 SDK**:
+- `InfoData.get_balance_sheet()` — §3.5.5.1
+- `InfoData.get_income()` — §3.5.5.3
+- `InfoData.get_cash_flow()` — §3.5.5.2
+
+---
+
+### 3.2 股东数据
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/shareholder` | GET | 十大股东信息 |
+
+**对应 SDK**: `InfoData.get_share_holder()` — §3.5.6.1
+
+---
+
+## 4. 技术分析 (Technical)
+
+**路由前缀**: `/technical`
+
+### 4.1 指标列表
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/indicators` | GET | 返回全部 57 个指标的分类清单 |
+
+### 4.2 单股分析
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/analyze` | GET | 对指定股票计算全部或指定类别/指定指标的技术指标 |
+
+**查询参数**:
+- `code`: 股票代码，如 `000001.SZ`
+- `begin_date` / `end_date`: 日期范围 `YYYYMMDD`
+- `indicator`: 指定单个指标，如 `MACD`（可选）
+- `category`: 指定类别，如 `trend`（可选）
+
+**指标分类**:
+
+| 类别 | 英文名 | 指标数 | 代表指标 |
+|------|--------|--------|----------|
+| 超买超卖 | overbought_oversold | 14 | KDJ, RSI, WR, CCI, BIAS |
+| 趋势型 | trend | 14 | MACD, DMI, DMA, TRIX, UOS |
+| 能量型 | energy | 5 | CR, PSY, MASS, WAD |
+| 成交量型 | volume | 10 | OBV, VR, VOLMA, VRSI |
+| 均线型 | ma | 4 | MA, EXPMA, BBI, AMV |
+| 路径型 | path | 6 | BOLL, ENE, MIKE, PBX, SAR |
+| 其他 | other | 4 | ATR, CDP, ASI |
+
+**实现特点**:
+- 全部使用 **纯 pandas/numpy** 实现，不依赖 AmazingData 的 `TimeSeriesFunction`
+- 因此该模块**可在任意平台运行**（包括 ARM Mac），不受 SDK 平台限制
+
+---
+
+## 5. 基本面分析 (Fundamental)
+
+**路由前缀**: `/fundamental`
+
+### 5.1 因子列表
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/factors` | GET | 返回全部 90 个基本面因子的分类清单 |
+
+### 5.2 单股分析
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/analyze` | GET | 计算指定股票的全部或指定类别基本面因子 |
+
+**因子分类**:
+
+| 类别 | 英文名 | 指标数 | 代表因子 |
+|------|--------|--------|----------|
+| 盈利能力 | profitability | 9 | ROE TTM, ROA TTM, 资本回报率 TTM |
+| 成长能力 | growth | 21 | 营收增速、净利润增速、EPS 增速（单季/TTM/同比/环比）|
+| 营运效率 | efficiency | 15 | 资产周转率、存货周转率、毛利率、净利率 |
+| 盈利质量 | earnings_quality | 8 | 应计利润占比、现金比率、经营现金流比营收 |
+| 偿债安全 | safety | 14 | 资产负债率、流动比率、速动比率、产权比率 |
+| 公司治理 | governance | 2 | 流通股占比、股利支付率 |
+| 估值 | valuation | 12 | PE, PB, PS, PCF, 股息率, PEG |
+| 股东 | shareholder | 4 | 股东数目 Z-Score、机构持仓变化、股权分散度 |
+| 规模 | size | 5 | 流通市值、总市值、市值对数 |
+
+**实现特点**:
+- 基于财务报表（资产负债表、利润表、现金流量表）+ K 线数据 + 股本结构数据计算
+- TTM（滚动 12 个月）、单季度、同比、环比自动处理
+- 纯 pandas 实现，同样**无 SDK 平台依赖**
+
+---
+
+## 6. 因子分析 (Factor)
+
+**路由前缀**: `/factor`
+
+### 6.1 能力清单
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/capabilities` | GET | 列出支持的预处理方法与分析模型 |
+
+### 6.2 单因子分析
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/analyze` | POST | 对指定股票列表进行单因子检验 |
+
+**支持方法**:
+- **IC 分析**: 信息系数（Pearson / Spearman）、IC 序列、ICIR
+- **回归分析**: 因子收益率、显著性检验
+- **分层回测**: 按因子值分组，计算各组累积收益
+- **拥挤度**: 因子波动率与换手率监测
+
+### 6.3 多因子复合
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/composite` | POST | 多因子加权复合评分 |
+
+**加权方法**:
+- `ic_ir`: 按 IC_IR 加权（默认）
+- `equal`: 等权
+- `custom`: 自定义权重
+
+**可选处理**:
+- 正交化（去除因子间共线性）
+
+---
+
+## 7. 服务治理与运维
+
+### 7.1 健康检查
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/health` | GET | 服务整体健康状态 |
+| `/login/status` | GET | AmazingData 登录状态 |
+| `/login` | POST | 手动触发登录 |
+| `/logout` | POST | 手动登出 |
+
+**Health 响应字段**:
+- `status`: `ok` / `degraded`
+- `amazingdata_connected`: SDK 是否在线
+- `redis_connected`: Redis 是否可达
+- `auth_enabled`: 认证是否开启
+- `rate_limit_enabled`: 限流是否开启
+
+### 7.2 监控指标
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/metrics` | GET | Prometheus 格式指标 |
+
+**暴露指标**:
+- `adshare_request_total`: 请求计数（按 method, endpoint, status）
+- `adshare_request_duration_seconds`: 请求耗时直方图
+- `adshare_info`: 服务版本信息
+
+### 7.3 限流
+
+- 默认: 120 req/min, 10 req/sec
+- 基于客户端 IP 限流（SlowAPI）
+- 超出限制返回 `429 Too Many Requests`
+
+---
+
+## 8. MCP 协议支持
+
+**路径**: `/mcp`（SSE 传输）
+
+adshare 同时暴露 **Model Context Protocol (MCP)** 服务端，使 AI Agent 可以直接通过 MCP 客户端调用数据能力，无需手写 HTTP 请求。
+
+**适用场景**:
+- Claude / Cursor / 其他 MCP 兼容 Agent
+- 自动工具发现与调用
+
+---
+
+## 9. 功能对照表: adshare API ↔ AmazingData SDK
+
+| adshare 端点 | AmazingData 类 | SDK 方法 | 手册章节 |
+|--------------|----------------|----------|----------|
+| `/market/codes` | `BaseData` | `get_code_list()` | §3.5.2.2 |
+| `/market/calendar` | `BaseData` | `get_calendar()` | §3.5.2.8 |
+| `/market/kline` | `MarketData` | `query_kline()` | §3.5.4.2 |
+| `/market/snapshot` | `MarketData` | `query_snapshot()` | §3.5.4.1 |
+| `/market/stock/basic` | `InfoData` | `get_stock_basic()` | §3.5.2.9 |
+| `/financial/statement?type=balance` | `InfoData` | `get_balance_sheet()` | §3.5.5.1 |
+| `/financial/statement?type=income` | `InfoData` | `get_income()` | §3.5.5.3 |
+| `/financial/statement?type=cashflow` | `InfoData` | `get_cash_flow()` | §3.5.5.2 |
+| `/financial/shareholder` | `InfoData` | `get_share_holder()` | §3.5.6.1 |
+
+> **注意**: 技术分析与基本面分析的 57+90 个指标为 adshare **原生实现**，不直接调用 SDK 的时序算子，因此跨平台可用。
+
+---
+
+## 10. 缓存与性能特性
+
+| 功能 | 说明 |
+|------|------|
+| 双层缓存 | Redis (L1, 内存) + Parquet (L2, 磁盘) |
+| 智能 TTL | 热点数据 5min / 常规数据 1h / 冷数据 24h |
+| 缓存降级 | Redis 故障时自动透传查询 SDK，服务不中断 |
+| 批量查询 | K 线支持多代码拼接，快照自动按 200 只分批 |
+
+---
+
+*本文档随版本迭代更新。新增功能上线后须在 3 个工作日内补充至此文档。*
