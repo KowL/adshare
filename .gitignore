@@ -54,6 +54,7 @@ cache/*.parquet
 
 # Local data
 data/
+!data/.gitkeep
 *.db
 *.sqlite3
 

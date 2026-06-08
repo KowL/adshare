@@ -42,7 +42,7 @@ cache:
   ttl_long: 86400
   # 本地缓存
   local_enabled: true
-  local_path: "./cache"
+  local_path: "./data"
   # 缓存键前缀
   key_prefix: "adshare"
 
