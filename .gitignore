@@ -56,3 +56,6 @@ cache/*.parquet
 data/
 *.db
 *.sqlite3
+
+# Binary dependencies (amazingdata SDK wheels)
+*.whl
