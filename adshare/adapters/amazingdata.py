@@ -186,8 +186,9 @@ class AmazingDataAdapter:
             return cached
 
         def _fetch():
-            client = self._get_client()
-            return client.get_code_info(security_type=security_type)
+            self._get_client()
+            self._ensure_base_data()
+            return self._base_data.get_code_info(security_type=security_type)
 
         result = self._with_retry(_fetch)
         self._cache.set("code_info", result, *cache_key)
@@ -203,10 +204,20 @@ class AmazingDataAdapter:
             return cached
 
         def _fetch():
-            client = self._get_client()
-            return client.get_calendar(market=market, date=date)
+            self._get_client()
+            self._ensure_base_data()
+            # get_calendar returns List[int] per SDK manual §3.5.2.8
+            calendar_list = self._base_data.get_calendar(market=market)
+            if isinstance(calendar_list, pd.DataFrame):
+                return calendar_list
+            if isinstance(calendar_list, list):
+                return pd.DataFrame({"date": calendar_list})
+            return pd.DataFrame({"date": []})
 
         result = self._with_retry(_fetch)
+        # Filter by specific date if requested
+        if date is not None and "date" in result.columns:
+            result = result[result["date"] == date]
         self._cache.set("calendar", result, *cache_key)
         return result
 

@@ -39,6 +39,7 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "orjson>=3.10.0",
     "scipy>=1.14.0",
+    "tables>=3.9.0",
 ]
 
 [project.optional-dependencies]

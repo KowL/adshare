@@ -332,13 +332,12 @@ async def get_limit_up(
         if not codes:
             return LimitUpResponse(date=_today_str(), stocks=[], count=0)
         
-        # Get stock basic info for names
-        df_basic = adapter.get_stock_basic(codes=",".join(codes[:500]))  # Batch 500 at a time
+        # Get stock names from code_info (single call, cached)
+        df_info = adapter.get_code_info(security_type="EXTRA_STOCK_A")
         name_map = {}
-        if hasattr(df_basic, "iterrows"):
-            for _, row in df_basic.iterrows():
-                c = str(row.get("code", ""))
-                name_map[c] = str(row.get("name", c))
+        if hasattr(df_info, "index") and "symbol" in df_info.columns:
+            for code in df_info.index:
+                name_map[str(code)] = str(df_info.loc[code, "symbol"])
         
         # Get today's snapshot for all stocks
         # We query in batches to avoid overwhelming the SDK

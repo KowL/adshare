@@ -185,7 +185,10 @@ async def analyze_technical(
 
                 categories[cat_key] = {
                     "name": cat_key,
-                    "indicators": cat_results,
+                    "indicators": [
+                        {"name": name, "values": vals}
+                        for name, vals in cat_results.items()
+                    ],
                 }
 
         return TechnicalResponse(
