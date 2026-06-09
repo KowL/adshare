@@ -16,10 +16,10 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/realtime", tags=["realtime"])
 
 REALTIME_QUOTE_KEY = "realtime:quote"
-
+REALTIME_KLINE_KEY = "realtime:kline"
 
 # ============================================================
-# REST API
+# REST API — Snapshot Quotes
 # ============================================================
 
 
@@ -66,6 +66,66 @@ async def get_realtime_quotes(
     except Exception as e:
         logger.error("get_realtime_quotes failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================
+# REST API — Realtime K-line
+# ============================================================
+
+
+@router.get("/kline/{code}", response_model=RealtimeQuotesResponse)
+async def get_realtime_kline(
+    code: str,
+    period: str = Query(default="min1", description="K-line period: min1, min5, min15, min30, min60, day, week, month"),
+):
+    """Get the latest real-time K-line tick for a single stock from Redis cache.
+
+    Data is pushed by AmazingData SubscribeData OnKLine callback (§3.5.3.9).
+    """
+    try:
+        cache = get_cache_manager()
+        data = cache.get_realtime_market(REALTIME_KLINE_KEY, period, code)
+        if data is None:
+            return RealtimeQuotesResponse(
+                count=0,
+                data=[],
+                message=f"No realtime kline cached for {code} ({period})",
+            )
+        return RealtimeQuotesResponse(
+            count=1,
+            data=[{"code": code, "period": period, **data}],
+        )
+    except Exception as e:
+        logger.error("get_realtime_kline failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/kline", response_model=RealtimeQuotesResponse)
+async def get_realtime_kline_batch(
+    codes: str = Query(..., description="Comma-separated stock codes"),
+    period: str = Query(default="min1", description="K-line period"),
+):
+    """Get latest real-time K-line ticks for multiple stocks."""
+    try:
+        code_list = [c.strip() for c in codes.split(",") if c.strip()]
+        cache = get_cache_manager()
+        results: List[Dict[str, Any]] = []
+        for code in code_list:
+            data = cache.get_realtime_market(REALTIME_KLINE_KEY, period, code)
+            if data is not None:
+                results.append({"code": code, "period": period, **data})
+        return RealtimeQuotesResponse(
+            count=len(results),
+            data=results,
+        )
+    except Exception as e:
+        logger.error("get_realtime_kline_batch failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================
+# Stats
+# ============================================================
 
 
 @router.get("/stats", response_model=RealtimeStatsResponse)

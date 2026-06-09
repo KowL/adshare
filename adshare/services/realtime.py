@@ -24,6 +24,21 @@ from adshare.core.logging import get_logger
 logger = get_logger(__name__)
 
 REALTIME_QUOTE_KEY = "realtime:quote"
+REALTIME_KLINE_KEY = "realtime:kline"
+
+# Period map: string -> AmazingData constant value
+KLINE_PERIOD_MAP = {
+    "min1": 10000,
+    "min3": 10001,
+    "min5": 10002,
+    "min10": 10003,
+    "min15": 10004,
+    "min30": 10005,
+    "min60": 10006,
+    "day": 10008,
+    "week": 10009,
+    "month": 10010,
+}
 
 
 class WSConnectionManager:
@@ -181,14 +196,30 @@ class RealtimeSubscriber:
                     time.sleep(5)
 
     def _setup_callbacks(self) -> None:
-        """Register SDK callbacks for snapshot data."""
+        """Register SDK callbacks for snapshot and kline data."""
         import AmazingData as ad
 
+        # Snapshot callback
         @self._subscribe_data.register(code_list=self._code_list, period=ad.constant.Period.snapshot.value)
         def on_snapshot(data, period_val):  # noqa: N806
-            self._handle_data(data, period_val)
+            self._handle_snapshot(data, period_val)
 
-    def _handle_data(self, data: Any, period: int) -> None:
+        # K-line callbacks (min1 by default; configurable via env)
+        settings = get_settings()
+        kline_periods = getattr(settings, "realtime_kline_periods", ["min1"])
+        for period_str in kline_periods:
+            period_val = KLINE_PERIOD_MAP.get(period_str)
+            if period_val is None:
+                logger.warning("Unknown kline period: %s, skipping", period_str)
+                continue
+            self._register_kline_callback(period_str, period_val)
+
+    def _register_kline_callback(self, period_str: str, period_val: int) -> None:
+        @self._subscribe_data.register(code_list=self._code_list, period=period_val)
+        def on_kline(data, pval):  # noqa: N806
+            self._handle_kline(data, pval, period_str)
+
+    def _handle_snapshot(self, data: Any, period: int) -> None:
         """Process a single tick of snapshot data."""
         try:
             self.stats["total_received"] += 1
@@ -220,7 +251,43 @@ class RealtimeSubscriber:
                     pass
 
         except Exception as e:
-            logger.error("Handle realtime data error: %s", e)
+            logger.error("Handle snapshot data error: %s", e)
+            self.stats["failed"] += 1
+
+    def _handle_kline(self, data: Any, period: int, period_str: str) -> None:
+        """Process a single tick of kline data."""
+        try:
+            self.stats["total_received"] += 1
+
+            code = self._extract_code(data)
+            if not code:
+                return
+
+            serialized = self._serialize_data(data)
+
+            # Persist to Redis
+            cache = get_cache_manager()
+            if cache.set_realtime_market(serialized, REALTIME_KLINE_KEY, period_str, code):
+                self.stats["saved_to_redis"] += 1
+
+            # Enqueue for WebSocket broadcast
+            subscribers = self.ws_manager.get_subscribers_for_code(code)
+            if subscribers and self._loop is not None:
+                msg = {
+                    "type": "kline",
+                    "code": code,
+                    "period": period,
+                    "period_str": period_str,
+                    "data": serialized,
+                    "timestamp": datetime.now().isoformat(),
+                }
+                try:
+                    self._broadcast_queue.put_nowait((subscribers, msg))
+                except queue.Full:
+                    pass
+
+        except Exception as e:
+            logger.error("Handle kline data error: %s", e)
             self.stats["failed"] += 1
 
     def _extract_code(self, data: Any) -> Optional[str]:

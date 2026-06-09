@@ -70,6 +70,9 @@ class Settings(BaseSettings):
     max_codes_per_query: int = Field(default=50, alias="MAX_CODES_PER_QUERY")
     default_begin_date: int = Field(default=19900101, alias="DEFAULT_BEGIN_DATE")
 
+    # Realtime subscription settings
+    realtime_kline_periods: List[str] = Field(default=["min1"], alias="REALTIME_KLINE_PERIODS")
+
     # Historical data warehouse (L3)
     historical_enabled: bool = Field(default=True, alias="HISTORICAL_ENABLED")
     historical_path: str = Field(default="./data", alias="HISTORICAL_PATH")
