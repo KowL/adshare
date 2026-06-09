@@ -25,6 +25,7 @@ logger = get_logger(__name__)
 
 REALTIME_QUOTE_KEY = "realtime:quote"
 REALTIME_KLINE_KEY = "realtime:kline"
+REALTIME_INDEX_KEY = "realtime:index"
 
 # Period map: string -> AmazingData constant value
 KLINE_PERIOD_MAP = {
@@ -118,6 +119,7 @@ class RealtimeSubscriber:
         self._subscribe_data: Optional[Any] = None
         self._base_data: Optional[Any] = None
         self._code_list: List[str] = []
+        self._index_code_list: List[str] = []
         self._running = False
         self._subscribe_thread: Optional[threading.Thread] = None
         self.ws_manager = WSConnectionManager()
@@ -151,6 +153,14 @@ class RealtimeSubscriber:
             if not self._code_list:
                 self._code_list = ["000001.SZ", "600000.SH", "600519.SH"]
             logger.info("Realtime subscriber: fetched %s A-share codes", len(self._code_list))
+
+            # Index codes (§3.5.3.1 指数实时快照)
+            try:
+                self._index_code_list = self._base_data.get_code_list(security_type="EXTRA_INDEX_A")
+                logger.info("Realtime subscriber: fetched %s index codes", len(self._index_code_list))
+            except Exception as e:
+                logger.warning("Failed to fetch index codes: %s", e)
+                self._index_code_list = []
 
             self._subscribe_data = ad.SubscribeData()
             self._setup_callbacks()
@@ -196,13 +206,19 @@ class RealtimeSubscriber:
                     time.sleep(5)
 
     def _setup_callbacks(self) -> None:
-        """Register SDK callbacks for snapshot and kline data."""
+        """Register SDK callbacks for snapshot, index snapshot and kline data."""
         import AmazingData as ad
 
-        # Snapshot callback
+        # Stock snapshot callback (§3.5.3.2)
         @self._subscribe_data.register(code_list=self._code_list, period=ad.constant.Period.snapshot.value)
         def on_snapshot(data, period_val):  # noqa: N806
             self._handle_snapshot(data, period_val)
+
+        # Index snapshot callback (§3.5.3.1 指数实时快照)
+        if self._index_code_list:
+            @self._subscribe_data.register(code_list=self._index_code_list, period=ad.constant.Period.snapshot.value)
+            def on_index_snapshot(data, period_val):  # noqa: N806
+                self._handle_index_snapshot(data, period_val)
 
         # K-line callbacks (min1 by default; configurable via env)
         settings = get_settings()
@@ -252,6 +268,41 @@ class RealtimeSubscriber:
 
         except Exception as e:
             logger.error("Handle snapshot data error: %s", e)
+            self.stats["failed"] += 1
+
+    def _handle_index_snapshot(self, data: Any, period: int) -> None:
+        """Process a single tick of index snapshot data (§3.5.3.1)."""
+        try:
+            self.stats["total_received"] += 1
+
+            code = self._extract_code(data)
+            if not code:
+                return
+
+            serialized = self._serialize_data(data)
+
+            # Persist to Redis
+            cache = get_cache_manager()
+            if cache.set_realtime_market(serialized, REALTIME_INDEX_KEY, code):
+                self.stats["saved_to_redis"] += 1
+
+            # Enqueue for WebSocket broadcast
+            subscribers = self.ws_manager.get_subscribers_for_code(code)
+            if subscribers and self._loop is not None:
+                msg = {
+                    "type": "index",
+                    "code": code,
+                    "period": period,
+                    "data": serialized,
+                    "timestamp": datetime.now().isoformat(),
+                }
+                try:
+                    self._broadcast_queue.put_nowait((subscribers, msg))
+                except queue.Full:
+                    pass
+
+        except Exception as e:
+            logger.error("Handle index snapshot data error: %s", e)
             self.stats["failed"] += 1
 
     def _handle_kline(self, data: Any, period: int, period_str: str) -> None:

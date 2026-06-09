@@ -17,6 +17,7 @@ router = APIRouter(prefix="/realtime", tags=["realtime"])
 
 REALTIME_QUOTE_KEY = "realtime:quote"
 REALTIME_KLINE_KEY = "realtime:kline"
+REALTIME_INDEX_KEY = "realtime:index"
 
 # ============================================================
 # REST API — Snapshot Quotes
@@ -65,6 +66,59 @@ async def get_realtime_quotes(
         )
     except Exception as e:
         logger.error("get_realtime_quotes failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================
+# REST API — Index Snapshot (§3.5.3.1)
+# ============================================================
+
+
+@router.get("/index/{code}", response_model=RealtimeQuotesResponse)
+async def get_realtime_index(
+    code: str,
+):
+    """Get the latest real-time index snapshot from Redis cache.
+
+    Data is pushed by AmazingData SubscribeData for EXTRA_INDEX_A (§3.5.3.1).
+    """
+    try:
+        cache = get_cache_manager()
+        data = cache.get_realtime_market(REALTIME_INDEX_KEY, code)
+        if data is None:
+            return RealtimeQuotesResponse(
+                count=0,
+                data=[],
+                message=f"No realtime index data cached for {code}",
+            )
+        return RealtimeQuotesResponse(
+            count=1,
+            data=[{"code": code, **data}],
+        )
+    except Exception as e:
+        logger.error("get_realtime_index failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/index", response_model=RealtimeQuotesResponse)
+async def get_realtime_index_batch(
+    codes: str = Query(..., description="Comma-separated index codes"),
+):
+    """Get latest real-time index snapshots for multiple indices."""
+    try:
+        code_list = [c.strip() for c in codes.split(",") if c.strip()]
+        cache = get_cache_manager()
+        results: List[Dict[str, Any]] = []
+        for code in code_list:
+            data = cache.get_realtime_market(REALTIME_INDEX_KEY, code)
+            if data is not None:
+                results.append({"code": code, **data})
+        return RealtimeQuotesResponse(
+            count=len(results),
+            data=results,
+        )
+    except Exception as e:
+        logger.error("get_realtime_index_batch failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
