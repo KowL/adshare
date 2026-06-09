@@ -11,7 +11,6 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
-from adshare.core.cache import get_cache_manager
 from adshare.core.config import Settings, get_settings
 from adshare.core.logging import get_logger
 
@@ -43,7 +42,6 @@ class AmazingDataAdapter:
         self._login_info: Optional[Dict[str, Any]] = None
         self._lock = threading.RLock()
         self._initialized = True
-        self._cache = get_cache_manager()
 
     # ============================================================
     # Connection Management
@@ -164,50 +162,34 @@ class AmazingDataAdapter:
 
     def get_code_list(self, security_type: str = "EXTRA_STOCK_A") -> List[str]:
         """Get list of security codes."""
-        cache_key = ("code_list", security_type)
-        cached = self._cache.get("code_list", *cache_key)
-        if cached is not None:
-            return cached
-
         def _fetch():
             self._get_client()
             self._ensure_base_data()
-            return list(self._base_data.get_code_list("EXTRA_STOCK_A_SH_SZ"))
+            return list(self._base_data.get_code_list(security_type=security_type))
 
-        result = self._with_retry(_fetch)
-        self._cache.set("code_list", result, *cache_key)
-        return result
+        return self._with_retry(_fetch)
 
     def get_code_info(self, security_type: str = "EXTRA_STOCK_A") -> pd.DataFrame:
         """Get security code information."""
-        cache_key = ("code_info", security_type)
-        cached = self._cache.get("code_info", *cache_key)
-        if cached is not None:
-            return cached
-
         def _fetch():
             self._get_client()
             self._ensure_base_data()
             return self._base_data.get_code_info(security_type=security_type)
 
-        result = self._with_retry(_fetch)
-        self._cache.set("code_info", result, *cache_key)
-        return result
+        return self._with_retry(_fetch)
 
     def get_calendar(
         self, market: str = "SH", date: Optional[int] = None
     ) -> pd.DataFrame:
         """Get trading calendar."""
-        cache_key = ("calendar", market, str(date or "all"))
-        cached = self._cache.get("calendar", *cache_key)
-        if cached is not None:
-            return cached
-
         def _fetch():
             self._get_client()
             self._ensure_base_data()
             # get_calendar returns List[int] per SDK manual §3.5.2.8
-            calendar_list = self._base_data.get_calendar(market=market)
+            try:
+                calendar_list = self._base_data.get_calendar(market=market)
+            except TypeError:
+                calendar_list = self._base_data.get_calendar()
             if isinstance(calendar_list, pd.DataFrame):
                 return calendar_list
             if isinstance(calendar_list, list):
@@ -218,7 +200,6 @@ class AmazingDataAdapter:
         # Filter by specific date if requested
         if date is not None and "date" in result.columns:
             result = result[result["date"] == date]
-        self._cache.set("calendar", result, *cache_key)
         return result
 
     def get_kline(
@@ -231,11 +212,6 @@ class AmazingDataAdapter:
         offset: int = 0,
     ) -> pd.DataFrame:
         """Get K-line data."""
-        cache_key = ("kline", codes, str(begin_date), str(end_date), period, str(limit), str(offset))
-        cached = self._cache.get_unified("kline", *cache_key)
-        if cached is not None:
-            return cached
-
         period_map = {
             "tick": 0, "min1": 10000, "min3": 10001, "min5": 10002,
             "min10": 10003, "min15": 10004, "min30": 10005, "min60": 10006,
@@ -268,9 +244,7 @@ class AmazingDataAdapter:
                 df = df.iloc[offset:offset + limit]
             return df
 
-        result = self._with_retry(_fetch)
-        self._cache.set_unified("kline", result, *cache_key)
-        return result
+        return self._with_retry(_fetch)
 
     def get_snapshot(
         self,
@@ -279,11 +253,6 @@ class AmazingDataAdapter:
         time: Optional[int] = None,
     ) -> pd.DataFrame:
         """Get snapshot data."""
-        cache_key = ("snapshot", codes, str(date or "latest"), str(time or "latest"))
-        cached = self._cache.get_unified("snapshot", *cache_key)
-        if cached is not None:
-            return cached
-
         def _fetch():
             self._get_client()
             self._ensure_base_data()
@@ -312,19 +281,12 @@ class AmazingDataAdapter:
                 df = pd.DataFrame()
             return df
 
-        result = self._with_retry(_fetch)
-        self._cache.set_unified("snapshot", result, *cache_key)
-        return result
+        return self._with_retry(_fetch)
 
     def get_stock_basic(
         self, codes: Optional[str] = None, summary_only: bool = False
     ) -> pd.DataFrame:
         """Get stock basic information."""
-        cache_key = ("stock_basic", codes or "all", str(summary_only))
-        cached = self._cache.get("stock_basic", *cache_key)
-        if cached is not None:
-            return cached
-
         def _fetch():
             self._get_client()
             if codes:
@@ -348,9 +310,7 @@ class AmazingDataAdapter:
                 df = df[["code", "name"]]
             return df
 
-        result = self._with_retry(_fetch)
-        self._cache.set("stock_basic", result, *cache_key)
-        return result
+        return self._with_retry(_fetch)
 
     def get_financial(
         self,
@@ -367,17 +327,6 @@ class AmazingDataAdapter:
             begin_date: Start date YYYYMMDD (optional)
             end_date: End date YYYYMMDD (optional)
         """
-        cache_key = (
-            "financial",
-            codes,
-            statement_type,
-            str(begin_date or "all"),
-            str(end_date or "all"),
-        )
-        cached = self._cache.get_unified("financial", *cache_key)
-        if cached is not None:
-            return cached
-
         def _fetch():
             self._get_client()
             code_list = [c.strip() for c in codes.split(",")] if "," in codes else [codes]
@@ -396,9 +345,7 @@ class AmazingDataAdapter:
             df = method(code_list=code_list)
             return df
 
-        result = self._with_retry(_fetch)
-        self._cache.set_unified("financial", result, *cache_key)
-        return result
+        return self._with_retry(_fetch)
 
     def get_shareholder(
         self,
@@ -407,65 +354,37 @@ class AmazingDataAdapter:
         end_date: Optional[int] = None,
     ) -> pd.DataFrame:
         """Get shareholder data."""
-        cache_key = ("shareholder", codes, str(begin_date or "all"), str(end_date or "all"))
-        cached = self._cache.get_unified("shareholder", *cache_key)
-        if cached is not None:
-            return cached
-
         def _fetch():
             self._get_client()
             code_list = [c.strip() for c in codes.split(",")] if "," in codes else [codes]
             df = self._info_data.get_share_holder(code_list=code_list)
             return df
 
-        result = self._with_retry(_fetch)
-        self._cache.set_unified("shareholder", result, *cache_key)
-        return result
+        return self._with_retry(_fetch)
 
     def get_index_component(self, index_code: str) -> pd.DataFrame:
         """Get index component stocks."""
-        cache_key = ("index_component", index_code)
-        cached = self._cache.get("index_component", *cache_key)
-        if cached is not None:
-            return cached
-
         def _fetch():
             client = self._get_client()
             return client.get_index_component(index_code=index_code)
 
-        result = self._with_retry(_fetch)
-        self._cache.set("index_component", result, *cache_key)
-        return result
+        return self._with_retry(_fetch)
 
     def get_industry_list(self, industry_type: str = "sw") -> pd.DataFrame:
         """Get industry classification list."""
-        cache_key = ("industry_list", industry_type)
-        cached = self._cache.get("industry_list", *cache_key)
-        if cached is not None:
-            return cached
-
         def _fetch():
             client = self._get_client()
             return client.get_industry_list(industry_type=industry_type)
 
-        result = self._with_retry(_fetch)
-        self._cache.set("industry_list", result, *cache_key)
-        return result
+        return self._with_retry(_fetch)
 
     def get_industry_component(self, industry_code: str) -> pd.DataFrame:
         """Get industry component stocks."""
-        cache_key = ("industry_component", industry_code)
-        cached = self._cache.get("industry_component", *cache_key)
-        if cached is not None:
-            return cached
-
         def _fetch():
             client = self._get_client()
             return client.get_industry_component(industry_code=industry_code)
 
-        result = self._with_retry(_fetch)
-        self._cache.set("industry_component", result, *cache_key)
-        return result
+        return self._with_retry(_fetch)
 
     # ============================================================
     # Health Check

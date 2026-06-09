@@ -43,14 +43,9 @@ class Settings(BaseSettings):
     redis_password: Optional[str] = Field(default=None, alias="REDIS_PASSWORD")
     redis_max_connections: int = Field(default=50, alias="REDIS_MAX_CONNECTIONS")
 
-    # Cache settings
-    cache_ttl_short: int = Field(default=300, alias="CACHE_TTL_SHORT")
-    cache_ttl_medium: int = Field(default=3600, alias="CACHE_TTL_MEDIUM")
-    cache_ttl_long: int = Field(default=86400, alias="CACHE_TTL_LONG")
-    cache_local_enabled: bool = Field(default=True, alias="LOCAL_CACHE_ENABLED")
-    cache_local_path: str = Field(default="./data", alias="AD_LOCAL_PATH")
+    # Redis cache settings. Redis is reserved for real-time/subscription market data.
+    cache_ttl_realtime: int = Field(default=300, alias="CACHE_TTL_REALTIME")
     cache_key_prefix: str = Field(default="adshare", alias="CACHE_KEY_PREFIX")
-
 
     # Rate limiting
     rate_limit_enabled: bool = Field(default=True, alias="RATE_LIMIT_ENABLED")

@@ -1,13 +1,14 @@
-"""Multi-layer cache manager for adshare."""
+"""Redis cache manager for real-time market data.
+
+Historical K-line and metadata persistence belongs to
+``adshare.historical``. This module intentionally does not maintain a local
+request-result cache.
+"""
 
 import hashlib
-import json
 import pickle
-from datetime import datetime, timedelta
-from pathlib import Path
 from typing import Any, Optional
 
-import pandas as pd
 import redis
 from redis.connection import ConnectionPool
 
@@ -15,14 +16,12 @@ from adshare.core.config import Settings, get_settings
 
 
 class CacheManager:
-    """Manages L1 (Redis) and L2 (local file) caches."""
+    """Manage Redis values used for real-time market data."""
 
     def __init__(self, settings: Optional[Settings] = None) -> None:
         self.settings = settings or get_settings()
         self._redis: Optional[redis.Redis] = None
         self._redis_pool: Optional[ConnectionPool] = None
-        self._local_cache_path = Path(self.settings.cache_local_path)
-        self._local_cache_path.mkdir(parents=True, exist_ok=True)
 
     @property
     def redis(self) -> redis.Redis:
@@ -52,25 +51,19 @@ class CacheManager:
     def _get_ttl(self, data_type: str) -> int:
         """Get TTL based on data type."""
         ttl_map = {
-            "code_list": self.settings.cache_ttl_short,
-            "code_info": self.settings.cache_ttl_short,
-            "snapshot": self.settings.cache_ttl_short,
-            "kline": self.settings.cache_ttl_medium,
-            "financial": self.settings.cache_ttl_long,
-            "shareholder": self.settings.cache_ttl_long,
-            "technical": self.settings.cache_ttl_medium,
-            "fundamental": self.settings.cache_ttl_medium,
-            "factor": self.settings.cache_ttl_medium,
-            "calendar": self.settings.cache_ttl_long,
+            "realtime": self.settings.cache_ttl_realtime,
+            "realtime_snapshot": self.settings.cache_ttl_realtime,
+            "subscription": self.settings.cache_ttl_realtime,
+            "snapshot": self.settings.cache_ttl_realtime,
         }
-        return ttl_map.get(data_type, self.settings.cache_ttl_medium)
+        return ttl_map.get(data_type, self.settings.cache_ttl_realtime)
 
     # ============================================================
-    # L1: Redis Cache
+    # Redis real-time market state
     # ============================================================
 
     def get(self, data_type: str, *key_parts: str) -> Optional[Any]:
-        """Get data from L1 cache."""
+        """Get data from Redis."""
         try:
             key = self._make_key(data_type, *key_parts)
             data = self.redis.get(key)
@@ -87,7 +80,7 @@ class CacheManager:
         *key_parts: str,
         ttl: Optional[int] = None,
     ) -> bool:
-        """Set data in L1 cache."""
+        """Set data in Redis."""
         try:
             key = self._make_key(data_type, *key_parts)
             ttl = ttl or self._get_ttl(data_type)
@@ -98,7 +91,7 @@ class CacheManager:
             return False
 
     def delete(self, data_type: str, *key_parts: str) -> bool:
-        """Delete data from L1 cache."""
+        """Delete data from Redis."""
         try:
             key = self._make_key(data_type, *key_parts)
             self.redis.delete(key)
@@ -106,87 +99,18 @@ class CacheManager:
         except Exception:
             return False
 
-    # ============================================================
-    # L2: Local File Cache (Parquet/JSON)
-    # ============================================================
+    def get_realtime_market(self, *key_parts: str) -> Optional[Any]:
+        """Get real-time market data from Redis."""
+        return self.get("realtime", *key_parts)
 
-    def _local_path(self, data_type: str, *key_parts: str) -> Path:
-        """Get local cache file path."""
-        key = self._make_key(data_type, *key_parts)
-        # Replace filesystem-unsafe chars; keep alnum, hyphen, underscore
-        safe_key = "".join(c if c.isalnum() or c in "-_" else "_" for c in key)
-        # Truncate extremely long names while keeping uniqueness via hash suffix
-        if len(safe_key) > 100:
-            short_hash = hashlib.sha256(safe_key.encode()).hexdigest()[:12]
-            safe_key = safe_key[:80] + "_" + short_hash
-        return self._local_cache_path / f"{safe_key}.parquet"
-
-    def get_local(self, data_type: str, *key_parts: str) -> Optional[pd.DataFrame]:
-        """Get DataFrame from L2 cache."""
-        if not self.settings.cache_local_enabled:
-            return None
-        path = self._local_path(data_type, *key_parts)
-        if not path.exists():
-            return None
-        try:
-            # Check if cache is too old (1 day)
-            mtime = datetime.fromtimestamp(path.stat().st_mtime)
-            if datetime.now() - mtime > timedelta(days=1):
-                path.unlink(missing_ok=True)
-                return None
-            return pd.read_parquet(path)
-        except Exception:
-            return None
-
-    def set_local(
-        self, data_type: str, df: pd.DataFrame, *key_parts: str
-    ) -> bool:
-        """Save DataFrame to L2 cache."""
-        if not self.settings.cache_local_enabled:
-            return False
-        try:
-            path = self._local_path(data_type, *key_parts)
-            df.to_parquet(path, compression="zstd")
-            return True
-        except Exception:
-            return False
-
-    # ============================================================
-    # Unified Get/Set with L1 -> L2 fallback
-    # ============================================================
-
-    def get_unified(self, data_type: str, *key_parts: str) -> Optional[Any]:
-        """Try L1 first, then L2."""
-        # Try L1 (Redis)
-        data = self.get(data_type, *key_parts)
-        if data is not None:
-            return data
-
-        # Try L2 (Local) - only for DataFrame-like data
-        if data_type in ("kline", "snapshot", "financial"):
-            df = self.get_local(data_type, *key_parts)
-            if df is not None:
-                # Promote to L1
-                self.set(data_type, df, *key_parts)
-                return df
-
-        return None
-
-    def set_unified(
+    def set_realtime_market(
         self,
-        data_type: str,
         value: Any,
         *key_parts: str,
         ttl: Optional[int] = None,
     ) -> bool:
-        """Set in both L1 and L2."""
-        l1_ok = self.set(data_type, value, *key_parts, ttl=ttl)
-
-        # Also save DataFrames to L2
-        if isinstance(value, pd.DataFrame):
-            self.set_local(data_type, value, *key_parts)
-
-        return l1_ok
+        """Set real-time market data in Redis."""
+        return self.set("realtime", value, *key_parts, ttl=ttl)
 
     def clear(self, pattern: str = "*") -> int:
         """Clear cache by pattern."""
@@ -212,18 +136,8 @@ class CacheManager:
         return {
             "redis_connected": redis_ok,
             "redis_memory": redis_info.get("used_memory_human", "unknown"),
-            "local_cache_enabled": self.settings.cache_local_enabled,
-            "local_cache_path": str(self._local_cache_path),
-            "local_cache_size_mb": self._get_local_cache_size(),
+            "purpose": "real_time_market_data",
         }
-
-    def _get_local_cache_size(self) -> float:
-        """Get total size of local cache in MB."""
-        total = 0
-        for f in self._local_cache_path.rglob("*"):
-            if f.is_file():
-                total += f.stat().st_size
-        return round(total / (1024 * 1024), 2)
 
 
 # Singleton instance

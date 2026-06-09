@@ -21,7 +21,7 @@ amazingdata:
   # 登录超时（秒）
   login_timeout: 30
 
-# Redis 缓存配置
+# Redis 配置：仅用于实时/订阅行情短期状态，不缓存历史请求结果
 redis:
   host: "${REDIS_HOST:localhost}"
   port: ${REDIS_PORT:6379}
@@ -32,17 +32,10 @@ redis:
   socket_timeout: 5
   socket_connect_timeout: 5
 
-# 缓存 TTL 配置（秒）
+# 实时行情 Redis TTL 配置（秒）
 cache:
-  # 热点数据：代码表、最新行情
-  ttl_short: 300
-  # 常规数据：K线、财务数据
-  ttl_medium: 3600
-  # 冷数据：历史代码、基础信息
-  ttl_long: 86400
-  # 本地缓存
-  local_enabled: true
-  local_path: "./data"
+  # 实时/订阅行情状态
+  ttl_realtime: 300
   # 缓存键前缀
   key_prefix: "adshare"
 

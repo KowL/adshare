@@ -168,6 +168,28 @@ class HistoricalWarehouse:
                 found = {f.stem for f in parquet_files}
                 if not expected.issubset(found):
                     return False
+        if codes and subdir == "daily":
+            try:
+                local = self.query_kline(codes, begin_date, end_date, period)
+            except Exception as e:  # noqa: BLE001
+                logger.debug("is_synced coverage check failed: %s", e)
+                return False
+            if local.empty or "code" not in local.columns or "date" not in local.columns:
+                return False
+            dates = pd.to_numeric(local["date"], errors="coerce").fillna(0).astype(int)
+            local = local.assign(date=dates)
+            for code in codes:
+                code_df = local[local["code"].astype(str) == str(code)]
+                if code_df.empty:
+                    return False
+                if int(begin_date) == int(end_date):
+                    if not (code_df["date"] == int(begin_date)).any():
+                        return False
+                    continue
+                if int(code_df["date"].min()) > int(begin_date):
+                    return False
+                if int(code_df["date"].max()) < int(end_date):
+                    return False
         return True
 
     # ------------------------------------------------------------------

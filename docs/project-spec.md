@@ -14,7 +14,7 @@
 
 - **单一数据源**: 多客户端共享同一个 AmazingData 登录会话与连接池
 - **平台解耦**: 下游可在任意平台（ARM Mac、云函数、浏览器）通过 HTTP 调用，不受 SDK x86 限制
-- **缓存分层**: Redis L1 + 本地 Parquet L2，减少重复查询开销
+- **缓存边界清晰**: Redis 仅保存实时/订阅行情短期状态；本地 Parquet 仅由定时任务维护历史行情与元数据
 - **可观测性**: Prometheus Metrics + 结构化日志，全链路可监控
 
 ---
@@ -26,8 +26,8 @@
 | 运行时 | Python | >=3.11 | 充分利用 `typing`、`asyncio`、`match` 等新特性 |
 | Web 框架 | FastAPI | >=0.115 | 自动 OpenAPI 生成、Pydantic v2 原生支持 |
 | 数据验证 | Pydantic | >=2.9 | 所有请求/响应必须定义 BaseModel |
-| 缓存 | Redis | 7.x | 用于热点数据与限流计数 |
-| 本地存储 | Parquet (pyarrow) | >=18 | DataFrame 序列化，压缩率高 |
+| 实时状态 | Redis | 7.x | 仅用于实时/订阅行情短期状态与限流计数 |
+| 本地历史仓 | Parquet (pyarrow) | >=18 | 定时任务保存历史行情与元数据 |
 | 监控 | Prometheus Client | >=0.21 | `/metrics` 暴露标准指标 |
 | 容器 | Docker + Compose | - | 必须指定 `platform: linux/amd64` |
 | 日志 | structlog | >=24.4 | JSON 结构化输出，支持日志轮转 |
@@ -74,13 +74,13 @@
   - `403` API Key 错误
   - `404` 资源不存在（如股票代码无数据）
   - `500` 服务端内部错误（SDK 异常、计算错误）
-  - `503` Redis 或 AmazingData 连接中断
+  - `503` AmazingData 连接中断；实时订阅接口可在 Redis 不可用时返回降级状态
 
 ### 3.4 日志规范
 
 - 统一使用 `adshare.core.logging.get_logger(__name__)` 获取 logger
 - 日志级别规范:
-  - `DEBUG`: 详细的中间计算值、缓存命中/未命中
+  - `DEBUG`: 详细的中间计算值、历史仓命中/SDK 回源、实时 Redis miss
   - `INFO`: 服务启动/停止、SDK 登录/登出、请求完成
   - `WARNING`: 降级处理（如 SDK 未登录返回空数据）、重试警告
   - `ERROR`: 接口调用失败、Pydantic 验证失败、未捕获异常
@@ -95,7 +95,7 @@ adshare/
 ├── main.py              # FastAPI 入口，仅做组装，不写业务逻辑
 ├── core/                # 基础设施层（配置、缓存、日志、限流、认证、指标）
 │   ├── config.py        # Pydantic Settings，环境变量统一管理
-│   ├── cache.py         # CacheManager: L1 Redis + L2 Local Parquet
+│   ├── cache.py         # CacheManager: Redis real-time market state only
 │   ├── logging.py       # structlog 配置
 │   ├── ratelimit.py     # SlowAPI / 自定义限流
 │   ├── auth.py          # API Key 认证中间件
@@ -197,30 +197,27 @@ config/                  # 运行时配置
 
 ---
 
-## 6. 缓存规范
+## 6. 缓存与历史存储规范
 
-### 6.1 缓存分层策略
+### 6.1 职责边界
 
-| 数据类型 | L1 Redis TTL | L2 Parquet | 说明 |
-|----------|-------------|------------|------|
-| code_list | 300s | ❌ | 每日 9 点前更新，短 TTL |
-| code_info | 300s | ❌ | 热点证券信息 |
-| snapshot | 300s | ✅ | 日内高频，本地加速 |
-| kline | 3600s | ✅ | 历史数据不变，长期缓存 |
-| financial | 86400s | ✅ | 财报按季更新 |
-| shareholder | 86400s | ✅ | 季度更新 |
-| calendar | 86400s | ❌ | 交易日历极少变化 |
+| 存储 | 保存内容 | 说明 |
+|------|----------|------|
+| Redis | 实时/订阅行情短期状态 | TTL 默认 300s；不保存 K 线、财务、代码表等请求结果 |
+| Historical Parquet | 历史 K 线、交易日历、代码表、元数据 | 由每日定时任务写入；通过 DuckDB 查询 |
+| SDK | 未同步或实时查询的回源数据 | 不在 adapter 层做通用缓存 |
 
-### 6.2 缓存 Key 规范
+### 6.2 Redis Key 规范
 
 - 格式: `adshare:{data_type}:{params...}`
 - 超过 200 字符自动 SHA-256 哈希取前 16 位，前缀改为 `adshare:hash:`
 - 涉及股票代码列表时，代码按字母排序后拼接，保证幂等性
 
-### 6.3 缓存穿透/击穿防护
+### 6.3 禁止事项
 
-- SDK 查询返回空 DataFrame 时，**禁止缓存空结果**（除非显式配置 `cache_empty=True`）
-- Redis 不可用时，服务应降级至直接查询 SDK（日志标记 `redis_unavailable`），而非直接 503
+- 禁止将 K 线、财务报表、股东数据、代码表等普通查询结果写入 Redis。
+- 禁止通过 `CacheManager` 写本地 Parquet。历史文件只能由 `adshare.historical` 定时同步与仓库模块维护。
+- Redis 不可用时，实时行情缓存降级为 miss，不应影响历史仓或 SDK 查询路径。
 
 ---
 
@@ -287,7 +284,7 @@ class TestMarket:
 
 - 服务端口: `8000`
 - 健康检查: `curl -f http://localhost:8000/health`
-- 日志目录 `/app/logs` 与缓存目录 `/app/cache` 必须挂载为 Volume
+- 日志目录 `/app/logs` 与历史仓目录 `/app/data` 必须挂载为 Volume
 - 建议以非 root 用户运行（待实施）
 
 ### 9.3 部署检查清单

@@ -1,0 +1,493 @@
+"""Application service for limit-up stock calculations from daily K-lines."""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta
+from decimal import Decimal, ROUND_HALF_UP
+from pathlib import Path
+from typing import Optional, Sequence
+
+import pandas as pd
+
+from adshare.adapters.amazingdata import get_adapter
+from adshare.core.config import get_settings
+from adshare.core.logging import get_logger
+from adshare.historical.models import (
+    CODES_COLUMNS,
+    kline_file_path,
+    standardize_codes_df,
+    standardize_kline_df,
+    validate_kline_df,
+)
+from adshare.historical.warehouse import get_warehouse
+from adshare.models.schemas import (
+    LimitUpItem,
+    LimitUpLadderItem,
+    LimitUpLadderLevel,
+    LimitUpLadderResponse,
+    LimitUpResponse,
+)
+
+logger = get_logger(__name__)
+
+LIMIT_UP_RATES = {
+    "主板": Decimal("0.10"),
+    "创业板": Decimal("0.20"),
+    "科创板": Decimal("0.30"),
+    "北交所": Decimal("0.30"),
+}
+
+
+class LimitUpService:
+    """Calculate limit-up lists and ladder views from daily K-lines."""
+
+    def __init__(self, adapter=None, warehouse=None, batch_size: int = 200) -> None:
+        self.adapter = adapter
+        self.warehouse = warehouse
+        self.batch_size = batch_size
+
+    def get_limit_up(
+        self,
+        days: int = 1,
+        date: Optional[int] = None,
+        board_filter: Optional[str] = None,
+        exclude_st: bool = True,
+    ) -> LimitUpResponse:
+        """Return the current limit-up stocks."""
+        target_date = int(date or _today_int())
+        date_str = _date_str(target_date)
+        df_info = self._get_code_info()
+        codes = _codes_from_info(df_info)
+        if not codes:
+            return LimitUpResponse(date=date_str, stocks=[], count=0)
+
+        name_map = build_name_map(df_info)
+        board_map = build_board_map(df_info)
+        codes = _filter_codes_by_board(codes, board_map, board_filter)
+        if not codes:
+            return LimitUpResponse(date=date_str, stocks=[], count=0)
+        kline = self._get_daily_kline(codes, target_date)
+        stocks = self._calculate_limit_up_stocks(
+            kline,
+            name_map,
+            board_map,
+            date_str,
+            target_date,
+            board_filter,
+            exclude_st,
+        )
+
+        return LimitUpResponse(date=date_str, stocks=stocks, count=len(stocks), data=stocks)
+
+    def get_ladder(
+        self,
+        days: int = 15,
+        date: Optional[int] = None,
+        board_filter: Optional[str] = None,
+        exclude_st: bool = True,
+    ) -> LimitUpLadderResponse:
+        """Return the current limit-up ladder.
+
+        Today this is daily-K-line based, so every hit is classified as first-board.
+        ``days`` remains part of the public contract for future consecutive-day
+        calculation.
+        """
+        limit_up = self.get_limit_up(days=1, date=date, board_filter=board_filter, exclude_st=exclude_st)
+        stocks = limit_up.stocks
+        if not stocks:
+            return LimitUpLadderResponse(date=_date_str(int(date or _today_int())), total=0, maxLevel=0, levels=[])
+
+        stocks_by_level = {1: sorted(stocks, key=lambda item: item.changePct, reverse=True)}
+        levels = [
+            LimitUpLadderLevel(
+                level=level,
+                name="首板" if level == 1 else f"{level}连板",
+                count=len(level_stocks),
+                stocks=[
+                    LimitUpLadderItem(
+                        code=stock.code,
+                        name=stock.name,
+                        level=level,
+                        industry=stock.industry,
+                        firstTime=stock.firstTime,
+                        finalTime=stock.finalTime,
+                        reason=stock.reason,
+                        price=stock.price,
+                        changePct=stock.changePct,
+                        limitUpDate=stock.limitUpDate,
+                    )
+                    for stock in level_stocks
+                ],
+            )
+            for level, level_stocks in sorted(stocks_by_level.items(), reverse=True)
+        ]
+
+        return LimitUpLadderResponse(
+            date=_date_str(int(date or _today_int())),
+            total=len(stocks),
+            maxLevel=1,
+            levels=levels,
+        )
+
+    def _get_code_info(self) -> pd.DataFrame:
+        warehouse = self._get_warehouse()
+        if warehouse is not None:
+            try:
+                local = warehouse.query_codes(is_listed=True)
+                if isinstance(local, pd.DataFrame) and not local.empty:
+                    return local
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Local code metadata lookup failed: %s", e)
+
+        adapter = self._get_adapter()
+        raw = pd.DataFrame()
+        try:
+            raw = adapter.get_code_info(security_type="EXTRA_STOCK_A")
+        except Exception as e:  # noqa: BLE001
+            logger.warning("AmazingData get_code_info failed: %s", e)
+
+        if raw is None or raw.empty:
+            try:
+                codes = adapter.get_code_list(security_type="EXTRA_STOCK_A")
+                raw = pd.DataFrame({"code": codes, "name": codes})
+            except Exception as e:  # noqa: BLE001
+                logger.warning("AmazingData get_code_list failed: %s", e)
+                raw = pd.DataFrame(columns=list(CODES_COLUMNS))
+
+        std = standardize_codes_df(raw)
+        if warehouse is not None and not std.empty:
+            _persist_codes(std, warehouse)
+        return std
+
+    def _get_daily_kline(self, codes: Sequence[str], target_date: int) -> pd.DataFrame:
+        begin_date = _lookback_begin_date(target_date)
+        warehouse = self._get_warehouse()
+        local = pd.DataFrame()
+        if warehouse is not None:
+            try:
+                local = warehouse.query_kline(codes, begin_date, target_date, period="day")
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Local daily K-line lookup failed: %s", e)
+                local = pd.DataFrame()
+
+        missing_codes = _codes_missing_target(local, codes, target_date)
+        if missing_codes:
+            remote = self._fetch_remote_kline(missing_codes, begin_date, target_date)
+            if not remote.empty:
+                if warehouse is not None:
+                    _persist_kline_to_warehouse(remote, warehouse)
+                    warehouse.refresh_views()
+                local = pd.concat([local, remote], ignore_index=True) if not local.empty else remote
+
+        return local
+
+    def _fetch_remote_kline(self, codes: Sequence[str], begin_date: int, end_date: int) -> pd.DataFrame:
+        adapter = self._get_adapter()
+        frames: list[pd.DataFrame] = []
+        code_list = list(codes)
+        for i in range(0, len(code_list), self.batch_size):
+            batch = code_list[i : i + self.batch_size]
+            try:
+                df = adapter.get_kline(
+                    codes=",".join(batch),
+                    begin_date=begin_date,
+                    end_date=end_date,
+                    period="day",
+                )
+                if isinstance(df, pd.DataFrame) and not df.empty:
+                    frames.append(df)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("K-line batch %s-%s failed: %s", i, i + len(batch), e)
+        return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+    def _calculate_limit_up_stocks(
+        self,
+        kline: pd.DataFrame,
+        name_map: dict[str, str],
+        board_map: dict[str, str],
+        date_str: str,
+        target_date: int,
+        board_filter: Optional[str],
+        exclude_st: bool,
+    ) -> list[LimitUpItem]:
+        stocks: list[LimitUpItem] = []
+        for row, pre_close in _iter_target_rows_with_pre_close(kline, target_date):
+            item = build_limit_up_item(row, pre_close, name_map, board_map, date_str, board_filter, exclude_st)
+            if item is not None:
+                stocks.append(item)
+        return stocks
+
+    def _get_adapter(self):
+        if self.adapter is None:
+            self.adapter = get_adapter()
+        return self.adapter
+
+    def _get_warehouse(self):
+        if self.warehouse is False:
+            return None
+        if self.warehouse is None:
+            if not get_settings().historical_enabled:
+                self.warehouse = False
+                return None
+            try:
+                self.warehouse = get_warehouse()
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Historical warehouse unavailable: %s", e)
+                self.warehouse = False
+                return None
+        return self.warehouse
+
+
+def get_limit_up_service() -> LimitUpService:
+    """Create a limit-up service for the current process."""
+    return LimitUpService()
+
+
+def build_limit_up_item(
+    row: dict,
+    pre_close: float,
+    name_map: dict[str, str],
+    board_map: dict[str, str],
+    date_str: str,
+    board_filter: Optional[str],
+    exclude_st: bool,
+) -> Optional[LimitUpItem]:
+    """Build a limit-up response item from one daily K-line row."""
+    code = str(row.get("code", ""))
+    if not code:
+        return None
+
+    board = board_map.get(code) or board_map.get(code.split(".")[0]) or detect_board(code)
+    if board_filter and board != board_filter:
+        return None
+
+    close = float(row.get("close", 0) or 0)
+    open_price = float(row.get("open", 0) or 0)
+    high = float(row.get("high", 0) or 0)
+    low = float(row.get("low", 0) or 0)
+    volume = int(row.get("volume", 0) or 0)
+    amount = float(row.get("amount", 0) or 0)
+
+    if pre_close <= 0:
+        return None
+
+    limit_up_price = calculate_limit_up_price(pre_close, board)
+    if not is_limit_up_price(close, limit_up_price):
+        return None
+
+    change_pct = (close - pre_close) / pre_close
+    name = name_map.get(code) or name_map.get(code.split(".")[0]) or code
+    if exclude_st and ("ST" in name or "*ST" in name or name.startswith("ST") or name.startswith("*ST")):
+        return None
+
+    return LimitUpItem(
+        code=code.split(".")[0] if "." in code else code,
+        name=name,
+        limitUpDate=date_str,
+        changePct=round(change_pct, 4),
+        board=board,
+        limitUpDays=1,
+        price=round(close, 2),
+        preClose=round(pre_close, 2),
+        open=round(open_price, 2),
+        high=round(high, 2),
+        low=round(low, 2),
+        amount=round(amount, 2),
+        volume=volume,
+        amplitude=round((high - low) / pre_close, 4) if pre_close > 0 else 0,
+        turnover=0,
+        firstTime="",
+        finalTime="",
+        reason="",
+        industry="",
+        concept="",
+    )
+
+
+def detect_board(code: str) -> str:
+    """Detect stock board from code."""
+    clean = code.split(".")[0] if "." in code else code
+    if clean.startswith("68"):
+        return "科创板"
+    if clean.startswith("8") or clean.startswith("4"):
+        return "北交所"
+    if clean.startswith("30"):
+        return "创业板"
+    if clean.startswith("60") or clean.startswith("00"):
+        return "主板"
+    return "主板"
+
+
+def calculate_limit_up_price(pre_close: float, board: str) -> float:
+    """Calculate the theoretical limit-up price rounded to cents."""
+    rate = LIMIT_UP_RATES.get(board, LIMIT_UP_RATES["主板"])
+    price = Decimal(str(pre_close)) * (Decimal("1") + rate)
+    return float(price.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+
+def is_limit_up_price(close: float, limit_up_price: float) -> bool:
+    """Check if close reached the theoretical limit-up price."""
+    return Decimal(str(close)) >= Decimal(str(limit_up_price))
+
+
+def code_aliases(code: str) -> set[str]:
+    """Return equivalent code keys used by different AmazingData APIs."""
+    clean = str(code).strip()
+    if not clean:
+        return set()
+    aliases = {clean}
+    if "." in clean:
+        aliases.add(clean.split(".", 1)[0])
+    return aliases
+
+
+def build_name_map(df_info: pd.DataFrame) -> dict[str, str]:
+    """Build a stock name map from common AmazingData code-info layouts."""
+    if not isinstance(df_info, pd.DataFrame) or df_info.empty:
+        return {}
+
+    code_columns = ("code", "MARKET_CODE", "market_code", "security_code", "SECURITY_CODE")
+    name_columns = ("name", "symbol", "SECURITY_NAME", "security_name", "SHORT_NAME", "short_name")
+
+    code_col = next((col for col in code_columns if col in df_info.columns), None)
+    name_col = next((col for col in name_columns if col in df_info.columns), None)
+    if name_col is None:
+        return {}
+
+    name_map: dict[str, str] = {}
+    if code_col is not None:
+        rows = zip(df_info[code_col], df_info[name_col])
+    else:
+        rows = zip(df_info.index, df_info[name_col])
+
+    for raw_code, raw_name in rows:
+        if pd.isna(raw_code) or pd.isna(raw_name):
+            continue
+        name = str(raw_name).strip()
+        if not name:
+            continue
+        for alias in code_aliases(str(raw_code)):
+            name_map[alias] = name
+    return name_map
+
+
+def build_board_map(df_info: pd.DataFrame) -> dict[str, str]:
+    """Build code -> board map from standardized or raw code metadata."""
+    if not isinstance(df_info, pd.DataFrame) or df_info.empty:
+        return {}
+    code_columns = ("code", "MARKET_CODE", "market_code", "security_code", "SECURITY_CODE")
+    code_col = next((col for col in code_columns if col in df_info.columns), None)
+    if code_col is None:
+        rows = zip(df_info.index, df_info.get("board", pd.Series(dtype=str)))
+    elif "board" in df_info.columns:
+        rows = zip(df_info[code_col], df_info["board"])
+    else:
+        return {}
+
+    board_map: dict[str, str] = {}
+    for raw_code, raw_board in rows:
+        if pd.isna(raw_code) or pd.isna(raw_board):
+            continue
+        board = str(raw_board).strip()
+        if not board:
+            continue
+        for alias in code_aliases(str(raw_code)):
+            board_map[alias] = board
+    return board_map
+
+
+def _codes_from_info(df_info: pd.DataFrame) -> list[str]:
+    if not isinstance(df_info, pd.DataFrame) or df_info.empty:
+        return []
+    if "code" in df_info.columns:
+        return [str(code).strip() for code in df_info["code"].tolist() if str(code).strip()]
+    return [str(code).strip() for code in df_info.index.tolist() if str(code).strip()]
+
+
+def _filter_codes_by_board(
+    codes: Sequence[str],
+    board_map: dict[str, str],
+    board_filter: Optional[str],
+) -> list[str]:
+    if not board_filter:
+        return list(codes)
+    matched = []
+    for code in codes:
+        board = board_map.get(code) or board_map.get(code.split(".")[0]) or detect_board(code)
+        if board == board_filter:
+            matched.append(code)
+    return matched
+
+
+def _codes_missing_target(local: pd.DataFrame, codes: Sequence[str], target_date: int) -> list[str]:
+    if local is None or local.empty or "code" not in local.columns or "date" not in local.columns:
+        return list(codes)
+    target = local[pd.to_numeric(local["date"], errors="coerce").fillna(0).astype(int) == int(target_date)]
+    present = {str(code) for code in target["code"].tolist()}
+    return [code for code in codes if code not in present]
+
+
+def _iter_target_rows_with_pre_close(kline: pd.DataFrame, target_date: int):
+    if kline is None or kline.empty or "code" not in kline.columns or "date" not in kline.columns:
+        return
+    df = kline.copy()
+    df["date"] = pd.to_numeric(df["date"], errors="coerce").fillna(0).astype(int)
+    df = df.sort_values(["code", "date"])
+    for code, group in df.groupby("code"):
+        group = group[group["date"] <= int(target_date)]
+        current = group[group["date"] == int(target_date)]
+        if current.empty:
+            continue
+        previous = group[group["date"] < int(target_date)]
+        if previous.empty:
+            continue
+        row = current.iloc[-1].to_dict()
+        row["code"] = str(code)
+        yield row, float(previous.iloc[-1].get("close", 0) or 0)
+
+
+def _persist_codes(df: pd.DataFrame, warehouse) -> None:
+    path = warehouse.meta_dir() / "codes.parquet"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_parquet(path, engine="pyarrow", compression="zstd", index=False)
+    warehouse.refresh_views()
+
+
+def _persist_kline_to_warehouse(df: pd.DataFrame, warehouse) -> None:
+    if df is None or df.empty:
+        return
+    if "code" not in df.columns:
+        return
+    root = Path(warehouse.root)
+    for code, code_df in df.groupby(df["code"].astype(str)):
+        std = standardize_kline_df(code_df, code=code)
+        if std.empty:
+            continue
+        std["year"] = std["date"].astype(str).str[:4].astype(int)
+        for year, year_df in std.groupby("year"):
+            year_df = year_df.drop(columns=["year"])
+            path = kline_file_path(root, "day", int(year), code)
+            if path.exists():
+                try:
+                    existing = pd.read_parquet(path)
+                    year_df = pd.concat([existing, year_df], ignore_index=True)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("Failed to read existing K-line file %s: %s", path, e)
+            year_df = validate_kline_df(year_df)
+            if year_df.empty:
+                continue
+            path.parent.mkdir(parents=True, exist_ok=True)
+            year_df.to_parquet(path, engine="pyarrow", compression="zstd", index=False)
+
+
+def _lookback_begin_date(target_date: int, days: int = 14) -> int:
+    dt = datetime.strptime(str(int(target_date)), "%Y%m%d")
+    return int((dt - timedelta(days=days)).strftime("%Y%m%d"))
+
+
+def _today_int() -> int:
+    return int(datetime.now().strftime("%Y%m%d"))
+
+
+def _date_str(date: int) -> str:
+    return datetime.strptime(str(int(date)), "%Y%m%d").strftime("%Y-%m-%d")

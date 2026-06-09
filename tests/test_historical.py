@@ -398,7 +398,12 @@ class TestWarehouse:
     def test_is_synced_true(self, warehouse):
         _populate_kline(warehouse, "day", 2024, "000001.SZ")
         warehouse.refresh_views()
-        assert warehouse.is_synced(20240101, 20240131, "day", ["000001.SZ"])
+        assert warehouse.is_synced(20240101, 20240103, "day", ["000001.SZ"])
+
+    def test_is_synced_false_when_file_does_not_cover_range(self, warehouse):
+        _populate_kline(warehouse, "day", 2024, "000001.SZ")
+        warehouse.refresh_views()
+        assert not warehouse.is_synced(20240101, 20240131, "day", ["000001.SZ"])
 
     def test_is_synced_missing_code(self, warehouse):
         _populate_kline(warehouse, "day", 2024, "000001.SZ")

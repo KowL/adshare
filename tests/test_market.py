@@ -139,8 +139,24 @@ class TestMarketLimitUp:
                 "name": ["平安银行", "浦发银行", "万科A"],
             }
         )
+        fake_adapter.get_kline = lambda codes, begin_date, end_date, period="day", **kwargs: pd.DataFrame(
+            [
+                {
+                    "code": code,
+                    "date": date,
+                    "open": close - 0.1,
+                    "high": close,
+                    "low": close - 0.2,
+                    "close": close,
+                    "volume": 100,
+                    "amount": close * 100,
+                }
+                for code in codes.split(",")
+                for date, close in [(20240606, 10.0), (20240607, 11.0)]
+            ]
+        )
 
-        response = client.get("/market/limit-up?exclude_st=false")
+        response = client.get("/market/limit-up?date=20240607&exclude_st=false")
 
         assert response.status_code == 200
         data = response.json()

@@ -144,13 +144,31 @@ def test_get_kline_rejects_unknown_source(historical_settings):
         )
 
 
-def test_get_code_list_delegates_to_adapter(historical_settings):
+def test_get_code_list_uses_local_metadata_before_adapter(historical_settings):
+    warehouse = MagicMock()
+    warehouse.query_codes.return_value = pd.DataFrame({"code": ["000001.SZ"], "is_listed": [True]})
     adapter = MagicMock()
-    adapter.get_code_list.return_value = ["000001.SZ"]
-    service = MarketDataService(settings=historical_settings, adapter=adapter)
+    service = MarketDataService(settings=historical_settings, adapter=adapter, warehouse=warehouse)
 
     assert service.get_code_list("EXTRA_STOCK_A") == ["000001.SZ"]
-    adapter.get_code_list.assert_called_once_with(security_type="EXTRA_STOCK_A")
+    adapter.get_code_info.assert_not_called()
+    adapter.get_code_list.assert_not_called()
+
+
+def test_get_code_list_falls_back_to_adapter_and_persists_metadata(historical_settings, tmp_path):
+    warehouse = MagicMock()
+    warehouse.query_codes.return_value = pd.DataFrame()
+    warehouse.meta_dir.return_value = tmp_path / "meta"
+    adapter = MagicMock()
+    adapter.get_code_info.return_value = pd.DataFrame(
+        {"code": ["000001.SZ"], "name": ["平安银行"], "is_listed": [True]}
+    )
+    service = MarketDataService(settings=historical_settings, adapter=adapter, warehouse=warehouse)
+
+    assert service.get_code_list("EXTRA_STOCK_A") == ["000001.SZ"]
+    assert (tmp_path / "meta" / "codes.parquet").exists()
+    adapter.get_code_info.assert_called_once_with(security_type="EXTRA_STOCK_A")
+    adapter.get_code_list.assert_not_called()
 
 
 def test_get_calendar_delegates_to_adapter(historical_settings):

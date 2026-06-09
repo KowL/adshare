@@ -6,7 +6,6 @@ import pandas as pd
 from fastapi import APIRouter, HTTPException, Query
 
 from adshare.adapters.amazingdata import get_adapter
-from adshare.core.cache import get_cache_manager
 from adshare.core.logging import get_logger
 from adshare.engines.factor.analysis import (
     build_factor_report_data,
@@ -40,7 +39,6 @@ def _get_factor_data(
 ):
     """Get factor data from adapter or compute from K-line."""
     adapter = get_adapter()
-    cache = get_cache_manager()
 
     # For now, compute simple factor from K-line
     # In production, this would load pre-computed factors

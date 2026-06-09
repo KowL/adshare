@@ -15,6 +15,7 @@ import pandas as pd
 from adshare.adapters.amazingdata import get_adapter
 from adshare.core.config import Settings, get_settings
 from adshare.core.logging import get_logger
+from adshare.historical.models import standardize_codes_df
 from adshare.historical.models import normalize_period
 from adshare.historical.warehouse import get_warehouse
 
@@ -113,7 +114,30 @@ class MarketDataService:
 
     def get_code_list(self, security_type: str = "EXTRA_STOCK_A") -> list[str]:
         """Return the market code list via the current data source policy."""
-        return list(self._get_adapter().get_code_list(security_type=security_type))
+        warehouse = self._get_warehouse()
+        if warehouse is not None:
+            try:
+                df = warehouse.query_codes(is_listed=True)
+                if isinstance(df, pd.DataFrame) and not df.empty and "code" in df.columns:
+                    return [str(code) for code in df["code"].tolist()]
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Local code metadata lookup failed: %s", e)
+
+        adapter = self._get_adapter()
+        try:
+            raw = adapter.get_code_info(security_type=security_type)
+            std = standardize_codes_df(raw)
+            if not std.empty and "code" in std.columns:
+                if warehouse is not None:
+                    path = warehouse.meta_dir() / "codes.parquet"
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    std.to_parquet(path, engine="pyarrow", compression="zstd", index=False)
+                    warehouse.refresh_views()
+                return [str(code) for code in std["code"].tolist()]
+        except Exception as e:  # noqa: BLE001
+            logger.warning("AmazingData code metadata lookup failed: %s", e)
+
+        return list(adapter.get_code_list(security_type=security_type))
 
     def get_calendar(self, market: str = "SH", date: Optional[int] = None) -> pd.DataFrame:
         """Return the trading calendar via the current data source policy."""

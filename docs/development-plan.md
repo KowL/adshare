@@ -37,7 +37,7 @@ Phase 4: 生态与扩展       [规划中]  2026.Q3
 - [x] FastAPI 应用骨架（生命周期管理、中间件、路由注册）
 - [x] 市场数据路由: `/market/codes`, `/kline`, `/snapshot`, `/stock/basic`, `/calendar`
 - [x] 财务数据路由: `/financial/statement`, `/shareholder`
-- [x] Redis L1 + Parquet L2 双层缓存体系
+- [x] Redis 实时行情状态 + Parquet/DuckDB 历史仓体系
 - [x] Docker Compose 部署（含 Redis、健康检查、日志挂载）
 - [x] Prometheus Metrics 埋点
 - [x] API Key 认证框架（可选开启）
@@ -68,8 +68,8 @@ Phase 4: 生态与扩展       [规划中]  2026.Q3
 
 ### 4.2 遗留问题
 
-- `TechnicalResponse` 在 category/all 模式下存在 Pydantic 验证 Bug（500 错误）
-- 涨停榜 (`/market/limit-up`) 性能差，无缓存，仅遍历全市场
+- `TechnicalResponse` 在 category/all 模式下存在 Pydantic 验证 Bug（已修复）
+- 涨停榜 (`/market/limit-up`) 编排曾长期停留在 Router（已迁移到 service）
 - 基本面分析缺少完整的端到端测试
 
 ---
@@ -87,19 +87,20 @@ Phase 4: 生态与扩展       [规划中]  2026.Q3
 | P0 架构收口 | ✅ 已完成 | `MarketDataService` 已承接 K 线、快照、代码表、日历、股票基础信息；`/market/kline` 与 `/historical/kline` 共用查询编排 |
 | Response Mapper | ✅ 已完成 | K 线、快照、历史 K 线、历史 SQL rows 转换已移入 `adshare/services/mappers.py` |
 | Service 契约测试 | ✅ 已完成 | 已覆盖 L3 命中不回源、SDK fallback、显式 warehouse 不回源、period alias、非法 source、快照未登录降级等 |
-| 市场路由瘦身 | 🟡 部分完成 | 常规市场数据已收口；`limit-up` 仍保留在 Router，下一步建议拆成 `LimitUpService` |
-| 分析服务化 | ⏳ 待开始 | 技术、基本面、因子分析仍由 Router 编排，计划迁移到 `AnalysisService` |
-| Adapter 瘦身 | ⏳ 待开始 | `AmazingDataAdapter` 仍同时承担 SDK 生命周期、缓存与数据规整 |
-| 当前验证 | ✅ 通过 | `pytest -q` 为 `136 passed`；`python3 -m compileall -q adshare tests` 通过 |
+| 市场路由瘦身 | ✅ 已完成 | 常规市场数据与 `limit-up` 已收口到 service；Router 只负责 HTTP 参数与响应 |
+| 分析服务化 | 🟡 部分完成 | 技术分析已迁移到 `TechnicalAnalysisService`；基本面、因子分析与 MCP 复用仍待迁移 |
+| 缓存边界收口 | ✅ 已完成 | Adapter 不再缓存普通查询结果；Redis 仅用于实时/订阅行情状态；历史文件由定时任务维护 |
+| Adapter 瘦身 | 🟡 部分完成 | 普通查询缓存已移除；`AmazingDataAdapter` 仍同时承担 SDK 生命周期与数据规整 |
+| 当前验证 | ✅ 通过 | `pytest -q` 为 `157 passed`；`PYTHONPYCACHEPREFIX=/private/tmp/adshare_pycache python3 -m compileall -q adshare tests` 通过 |
 
 ### 5.1 🔴 P0 — 缺陷修复（2 周）
 
 | 任务 | 负责人 | 说明 | 关联文件 |
 |------|--------|------|----------|
-| 修复 `TechnicalResponse` 验证错误 | - | category/all 模式下 `indicators` 应为 List | `routers/technical.py` |
-| 统一 SDK 调用方式 | - | `get_calendar` / `get_code_info` 改为 `BaseData` 实例调用 | `adapters/amazingdata.py` |
-| 修复 `limit-up` name_map 不完整 | - | 仅前 500 只股票有 name，后续为空 | `routers/market.py` |
-| 补充 `tables` 依赖声明 | - | 在 `pyproject.toml` 中声明或移除 | `pyproject.toml`, `Dockerfile` |
+| [x] 修复 `TechnicalResponse` 验证错误 | - | category/all 模式已由端到端测试覆盖，`indicators` 为 List | `routers/technical.py`, `tests/test_technical_e2e.py` |
+| [x] 统一 SDK 调用方式 | - | `get_code_list` / `get_code_info` / `get_calendar` 已统一走 `BaseData` 实例调用；`get_calendar` 兼容有/无 `market` 参数的 SDK 版本 | `adapters/amazingdata.py`, `tests/test_amazingdata_adapter.py` |
+| [x] 修复 `limit-up` name_map 不完整 | - | 已支持 code/name、索引/symbol 等常见返回布局，并抽入 `LimitUpService` | `services/limit_up.py`, `tests/test_limit_up_service.py` |
+| [x] 补充 `tables` 依赖声明 | - | `tables>=3.9.0` 已声明于运行时依赖；后续只需评估 Dockerfile 是否保留重复安装 | `pyproject.toml`, `Dockerfile` |
 
 ### 5.1.1 🔴 P0 — 架构收口（2 周）
 
@@ -116,11 +117,11 @@ Phase 4: 生态与扩展       [规划中]  2026.Q3
 
 | 任务 | 目标 | 说明 |
 |------|------|------|
-| 涨停榜缓存 | 响应时间 < 2s | Redis 缓存全市场快照聚合结果，TTL 300s |
-| K 线批量缓存优化 | 缓存命中率 > 80% | 按日期范围分片缓存，支持局部命中 |
-| 本地缓存 key 安全 | 零碰撞风险 | 哈希前加盐、文件名非法字符过滤 |
+| [x] 涨停榜服务化 | 路由瘦身 | 已由 `LimitUpService` 基于日线 K 线计算；优先读取本地历史仓，缺失时回源 AmazingData 并落盘 |
+| K 线历史仓局部命中优化 | SDK 回源更少 | 对已同步年份走 Parquet/DuckDB，缺口区间才回源 SDK |
+| 历史文件路径安全 | 零非法路径风险 | 保持 historical 仓文件名净化和元数据校验 |
 | 引擎计算向量化 | 减少 30% CPU | 检查 indicators/factors 中循环，尽量用 pandas 原生向量化 |
-| 分析服务化 | 减少重复编排 | 将技术、基本面、因子分析入口从 Router 移入 `AnalysisService` |
+| 🟡 分析服务化 | 减少重复编排 | 技术分析已迁移到 `TechnicalAnalysisService`；后续迁移基本面、因子分析，并让 MCP 直接复用 service |
 
 ### 5.3 🟡 P2 — 测试与质量（3 周）
 
@@ -168,7 +169,7 @@ Phase 4: 生态与扩展       [规划中]  2026.Q3
 | 方向 | 说明 | 优先级 |
 |------|------|--------|
 | 多 SDK 实例负载均衡 | 支持多 AmazingData 账号并行，突破单账号连接限制 | P1 |
-| Adapter 瘦身 | 拆出 `AmazingDataSession` 与原始 SDK Client，缓存策略移入 service | P1 |
+| Adapter 瘦身 | 拆出 `AmazingDataSession` 与原始 SDK Client，保持 adapter 只做 SDK 生命周期与原始查询 | P1 |
 | 异步 SDK 调用 | 评估 AmazingData SDK 是否支持异步，减少阻塞 | P2 |
 | 任务队列 | 大数据量查询（如全市场历史 K 线）转异步任务，通过回调/Webhook 返回 | P2 |
 | 插件系统 | 允许用户注册自定义指标/因子（Python 脚本热加载）| P3 |
@@ -188,19 +189,19 @@ Phase 4: 生态与扩展       [规划中]  2026.Q3
 
 | 编号 | 债务描述 | 严重程度 | 计划解决阶段 |
 |------|----------|----------|--------------|
-| TD-01 | `technical.py` Pydantic 验证 Bug | 🔴 高 | Phase 3 P0 |
-| TD-02 | SDK 调用方式与手册不符 | 🟠 中高 | Phase 3 P0 |
-| TD-03 | `limit-up` 全市场遍历无缓存 | 🟠 中高 | Phase 3 P1 |
-| TD-04 | 测试覆盖率不足（市场/service 测试已补强，分析与错误边界仍需补齐）| 🟡 中 | Phase 3 P2 |
-| TD-05 | `tables` 依赖未声明 | 🟡 中 | Phase 3 P0 |
-| TD-06 | 本地缓存 key 哈希碰撞风险 | 🟡 中 | Phase 3 P1 |
+| TD-01 | `technical.py` Pydantic 验证 Bug | ✅ 已完成 | Phase 3 P0 |
+| TD-02 | SDK 调用方式与手册不符 | ✅ 已完成 | Phase 3 P0 |
+| TD-03 | `limit-up` 全市场遍历无缓存 | ✅ 已完成 | Phase 3 P1 |
+| TD-04 | 测试覆盖率不足（市场、技术分析 service 测试已补强；基本面、因子与错误边界仍需补齐）| 🟡 中 | Phase 3 P2 |
+| TD-05 | `tables` 依赖未声明 | ✅ 已完成 | Phase 3 P0 |
+| TD-06 | 本地请求缓存 key 哈希碰撞风险 | ✅ 已完成 | Phase 3 P1 |
 | TD-07 | Docker 以 root 运行 | 🟡 中 | Phase 3 P3 |
 | TD-08 | CORS 全开放 | 🟡 中 | Phase 4 |
-| TD-09 | 无变更日志 (CHANGELOG) | 🟢 低 | Phase 3 P3 |
+| TD-09 | 无变更日志 (CHANGELOG) | ✅ 已完成 | Phase 3 P3 |
 | TD-10 | 单指标与多指标响应 key 不统一 | 🟢 低 | Phase 3 P0 |
-| TD-11 | Router 承担数据源编排与响应转换（常规市场数据已收口，`limit-up` 与分析路由待拆） | 🟡 中 | Phase 3 P1 |
-| TD-12 | AmazingData Adapter 同时负责 SDK 生命周期、缓存和数据规整 | 🟠 中高 | Phase 4 P1 |
-| TD-13 | HTTP 与 MCP 缺少共享分析服务入口，存在行为漂移风险 | 🟠 中高 | Phase 3 P1 |
+| TD-11 | Router 承担数据源编排与响应转换（市场与技术分析已收口，基本面/因子路由待拆） | 🟡 中 | Phase 3 P1 |
+| TD-12 | AmazingData Adapter 同时负责 SDK 生命周期和数据规整 | 🟡 中 | Phase 4 P1 |
+| TD-13 | HTTP 与 MCP 缺少共享分析服务入口（技术分析 service 已建立，MCP/基本面/因子仍待迁移） | 🟠 中高 | Phase 3 P1 |
 
 ---
 
@@ -209,10 +210,10 @@ Phase 4: 生态与扩展       [规划中]  2026.Q3
 | 风险 | 可能性 | 影响 | 应对策略 |
 |------|--------|------|----------|
 | AmazingData SDK 升级导致接口不兼容 | 中 | 高 | 建立 SDK 版本锁定机制；升级前在 staging 环境全量回归测试 |
-| SDK 服务端限流/封禁 | 中 | 高 | 多账号负载均衡；增加请求间隔与 jitter；缓存最大化 |
+| SDK 服务端限流/封禁 | 中 | 高 | 多账号负载均衡；增加请求间隔与 jitter；优先使用历史仓减少回源 |
 | Docker x86 模拟性能不足 | 高（ARM Mac）| 中 | 明确仅支持 x86 服务器生产部署；ARM 仅用于代码评审 |
 | Redis 单点故障 | 低 | 中 | 短期内日志告警 + 手动恢复；长期评估 Redis Sentinel |
-| 全市场快照查询拖垮服务 | 中 | 高 | 增加并发限制、超时保护、结果缓存 |
+| 全市场快照查询拖垮服务 | 中 | 高 | 增加并发限制、超时保护、客户端缓存或实时订阅聚合 |
 
 ---
 
@@ -220,8 +221,8 @@ Phase 4: 生态与扩展       [规划中]  2026.Q3
 
 | 日期 | 里程碑 | 验收标准 |
 |------|--------|----------|
-| 2026-06-22 | Phase 3 P0 完成 | TD-01/02/05 修复，CI 通过 |
-| 2026-07-13 | Phase 3 P1 完成 | limit-up 响应 < 2s，缓存命中率 > 80% |
+| 2026-06-22 | Phase 3 P0 完成 | P0 缺陷修复完成，CI 通过 |
+| 2026-07-13 | Phase 3 P1 完成 | limit-up 服务化完成，历史仓优先查询稳定 |
 | 2026-08-03 | Phase 3 P2 完成 | 集成测试覆盖率 > 80%，无已知 P0/P1 Bug |
 | 2026-08-17 | Phase 3 结束 | 文档齐全，生产环境稳定运行 2 周无事故 |
 | 2026-09-01 | Phase 4 启动 | 完成实时行情订阅技术方案评审 |

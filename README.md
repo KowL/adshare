@@ -13,7 +13,8 @@ adshare is a standalone data service that wraps the AmazingData SDK (Linux/amd64
 - **Technical Analysis**: 56 indicators (MACD, KDJ, RSI, BOLL, DMI, etc.)
 - **Fundamental Analysis**: 90 factors (ROE, PE, growth, safety, valuation, etc.)
 - **Factor Analysis**: IC analysis, stratified backtest, multi-factor composite
-- **Caching**: Redis L1 + local Parquet/HDF5 L2
+- **Real-time State**: Redis for subscription/snapshot short-lived market data
+- **Historical Warehouse**: Local Parquet + DuckDB written by scheduled sync jobs
 - **Monitoring**: Prometheus metrics at `/metrics`
 - **Rate Limiting**: SlowAPI with configurable limits
 - **Auth**: API Key authentication (optional)
@@ -101,8 +102,8 @@ See `/docs` for full OpenAPI documentation.
 │   Client    │────▶│  adshare    │────▶│  AmazingData    │
 │  (Vibe-     │     │  (FastAPI)  │     │  SDK (Linux/    │
 │  Trading,   │◀────│             │◀────│  amd64 only)    │
-│  ruo-cli)   │     │  - Redis    │     │                 │
-│             │     │  - Cache    │     │                 │
+│  ruo-cli)   │     │  - Redis RT │     │                 │
+│             │     │  - Warehouse│     │                 │
 └─────────────┘     └─────────────┘     └─────────────────┘
 ```
 

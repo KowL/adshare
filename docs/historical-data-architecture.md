@@ -8,7 +8,7 @@
 
 ## 1. 设计目标
 
-当前 adshare 的 L2 缓存（`CacheManager.set_local`）是**临时缓存**：Parquet 文件 1 天过期、Key 为请求参数哈希、无结构化 Schema，仅用于**避免短期内重复请求 SDK**。它无法支撑以下场景：
+当前 adshare 不再维护临时请求缓存。Redis 只保存实时/订阅行情短期状态；本地 Parquet 文件只作为历史数据仓，由定时任务写入并通过 DuckDB 查询。普通查询结果不写入 Redis，也不通过 `CacheManager` 写本地文件。历史仓需要支撑以下场景：
 
 1. **跨交易日回溯**：查询 2024 年全年某只股票的日 K，每次都要穿透到 SDK
 2. **离线分析**：外部量化脚本直接读取本地文件，不经过 HTTP API
@@ -35,10 +35,10 @@
                     ┌───────────────┼───────────────┐
                     ▼               ▼               ▼
 ┌──────────────────────┐  ┌──────────────┐  ┌──────────────────────┐
-│   L1: Redis Cache    │  │ L2: Temp     │  │   L3: Historical     │
-│   (TTL 300s~1day)    │  │ Parquet      │  │   Data Warehouse     │
-│   热点请求加速        │  │ (1-day expiry)│  │   (永久存储)          │
-└──────────────────────┘  └──────────────┘  └──────────────────────┘
+│ Redis Real-time State │                    │ Historical Warehouse │
+│ (subscription/snapshot)│                    │ (persistent files)   │
+│ 实时行情短期状态       │                    │ 历史行情与元数据      │
+└──────────────────────┘                    └──────────────────────┘
                                                     │
                     ┌───────────────────────────────┴───────────────┐
                     ▼                                               ▼
@@ -66,10 +66,10 @@
 
 | 优先级 | 层级 | 命中条件 | 延迟 |
 |--------|------|----------|------|
-| 1 | L1 Redis | 完全相同的请求参数近期被查询过 | ~1ms |
-| 2 | L3 DuckDB + Parquet | 请求的时间范围已同步到本地 | ~10ms~500ms |
-| 3 | L2 Temp Parquet | 完全相同的请求参数在 1 天内被缓存 | ~50ms |
-| 4 | SDK 回源 | 数据未同步或强制刷新 | ~1s~10s |
+| 1 | DuckDB + Parquet | 请求的历史时间范围已同步到本地 | ~10ms~500ms |
+| 2 | SDK 回源 | 数据未同步或强制刷新 | ~1s~10s |
+
+Redis 不参与历史 K 线、财务、代码表等普通请求缓存；仅用于实时/订阅行情状态。
 
 ---
 
@@ -80,7 +80,7 @@
 **核心原则：一股票一文件，按年分目录。**
 
 ```
-${AD_LOCAL_PATH}/historical/           # 统一使用 AD_LOCAL_PATH
+${HISTORICAL_PATH}/historical/         # 统一使用 HISTORICAL_PATH
 ├── A_share/
 │   ├── daily/                       # 日线
 │   │   ├── 2024/                    # 按年目录
@@ -477,27 +477,20 @@ historical_retention_years: int = Field(default=0, alias="HISTORICAL_RETENTION_Y
 
 ### 6.3 现有接口改造
 
-对现有 `/market/kline` 等接口做**透明增强**：查询逻辑改为 L1 → L3 → L2 → SDK。
+对现有 `/market/kline` 等接口做**透明增强**：查询逻辑改为 HistoricalWarehouse → SDK。
 
 ```python
 # adshare/routers/market.py (改造后)
 async def get_kline(...):
-    cache = get_cache_manager()
     warehouse = get_historical_warehouse()  # 新增
-    
-    # 1. L1 Redis
-    cached = cache.get("kline", *cache_key)
-    if cached: return cached
-    
-    # 2. L3 Historical Warehouse（仅当时间范围完全在已同步区间内）
+
+    # 1. Historical Warehouse（仅当时间范围完全在已同步区间内）
     if warehouse.is_synced(begin_date, end_date, period):
         df = warehouse.query_kline(codes, begin_date, end_date, period)
-        cache.set("kline", df, *cache_key)
         return df
-    
-    # 3. SDK 回源（现有逻辑）
+
+    # 2. SDK 回源（现有逻辑）
     df = adapter.get_kline(...)
-    cache.set_unified("kline", df, *cache_key)
     return df
 ```
 
@@ -622,7 +615,7 @@ def validate_kline_df(df: pd.DataFrame) -> pd.DataFrame:
 
 ### Phase C：接口切换（1 周）
 
-1. 改造 `/market/kline`：增加 L3 查询路径（L1 → L3 → L2 → SDK）
+1. 改造 `/market/kline`：增加 HistoricalWarehouse → SDK 查询路径
 2. 新增 `/historical/*` 接口（仅 L3）
 3. 灰度验证：对比 `/market/kline` 与 SDK 回源结果，确保价格一致
 4. 开启 APScheduler 定时任务，观察 1 周无异常后全量启用

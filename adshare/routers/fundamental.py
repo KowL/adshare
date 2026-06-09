@@ -6,7 +6,6 @@ import pandas as pd
 from fastapi import APIRouter, HTTPException, Query
 
 from adshare.adapters.amazingdata import get_adapter
-from adshare.core.cache import get_cache_manager
 from adshare.core.logging import get_logger
 from adshare.engines.fundamental.factors import (
     CATEGORY_MAP,
@@ -26,7 +25,6 @@ router = APIRouter(prefix="/fundamental", tags=["fundamental"])
 def _get_stock_data(code: str, begin_date: Optional[int], end_date: Optional[int]):
     """Get all necessary data for fundamental analysis."""
     adapter = get_adapter()
-    cache = get_cache_manager()
 
     if end_date is None:
         from datetime import datetime

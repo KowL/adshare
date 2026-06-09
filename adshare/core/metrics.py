@@ -32,19 +32,6 @@ AD_REQUEST_DURATION = Histogram(
     buckets=[0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0],
 )
 
-CACHE_HIT_COUNT = Counter(
-    "adshare_cache_hits_total",
-    "Cache hits",
-    ["cache_type"],
-)
-
-CACHE_MISS_COUNT = Counter(
-    "adshare_cache_misses_total",
-    "Cache misses",
-    ["cache_type"],
-)
-
-
 def get_metrics() -> bytes:
     """Generate Prometheus metrics output."""
     return generate_latest()

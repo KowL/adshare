@@ -11,7 +11,6 @@ from typing import Any, Dict, List, Optional
 from fastmcp import FastMCP
 
 from adshare.adapters.amazingdata import get_adapter
-from adshare.core.cache import get_cache_manager
 from adshare.core.config import get_settings
 
 # Create FastMCP instance
