@@ -527,3 +527,27 @@ class HistoricalSqlResponse(DataResponse):
     rows: List[List[Any]] = []
     row_count: int = 0
     truncated: bool = False
+
+
+# ============================================================
+# Real-time Data
+# ============================================================
+
+
+class RealtimeQuotesResponse(DataResponse):
+    """Response for real-time snapshot quotes."""
+
+    data: List[Dict[str, Any]] = []
+
+
+class RealtimeStatsResponse(BaseResponse):
+    """Realtime subscriber and WebSocket statistics."""
+
+    ws_connections: int = 0
+    ws_subscribed_codes: int = 0
+    ws_total_subscriptions: int = 0
+    total_received: int = 0
+    saved_to_redis: int = 0
+    ws_broadcasts: int = 0
+    failed: int = 0
+    start_time: Optional[str] = None

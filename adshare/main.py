@@ -23,6 +23,7 @@ from adshare.routers import (
     health,
     historical,
     market,
+    realtime,
     technical,
 )
 
@@ -70,9 +71,36 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠️  Historical warehouse init failed: {e}")
 
+    # Initialise realtime subscriber
+    broadcast_task = None
+    try:
+        from adshare.services.realtime import get_realtime_subscriber
+
+        subscriber = get_realtime_subscriber()
+        if subscriber.initialize():
+            subscriber._loop = asyncio.get_running_loop()
+            broadcast_task = asyncio.create_task(subscriber.broadcast_loop())
+            print("📡 Realtime subscriber started")
+        else:
+            print("⚠️  Realtime subscriber init failed")
+    except Exception as e:
+        print(f"⚠️  Realtime subscriber init error: {e}")
+
     yield
 
     # Shutdown
+    if broadcast_task is not None:
+        broadcast_task.cancel()
+        try:
+            await broadcast_task
+        except asyncio.CancelledError:
+            pass
+    try:
+        from adshare.services.realtime import get_realtime_subscriber
+
+        get_realtime_subscriber().shutdown()
+    except Exception:
+        pass
     shutdown_scheduler()
     adapter.logout()
     print("👋 adshare shutting down")
@@ -127,6 +155,7 @@ def create_app() -> FastAPI:
     app.include_router(technical.router)
     app.include_router(fundamental.router)
     app.include_router(factor.router)
+    app.include_router(realtime.router)
     if settings.historical_enabled:
         app.include_router(historical.router)
         app.include_router(historical_admin_router)
@@ -145,6 +174,8 @@ def create_app() -> FastAPI:
             "docs": "/docs",
             "health": "/health",
             "metrics": settings.metrics_path if settings.metrics_enabled else None,
+            "realtime": "/realtime",
+            "websocket": "/realtime/ws",
         }
 
     return app
