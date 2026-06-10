@@ -95,6 +95,12 @@ class MarketDataService:
 
         if (df is None or df.empty) and source in {"auto", "sdk"}:
             adapter = self._get_adapter()
+            if not adapter.is_logged_in:
+                logger.warning(
+                    "AmazingData not logged in, skipping SDK fallback for %s codes",
+                    len(code_list),
+                )
+                return KlineQueryResult(pd.DataFrame(), "none", False)
             sdk_period = _sdk_period(period)
             df = adapter.get_kline(
                 codes=",".join(code_list),
@@ -124,6 +130,10 @@ class MarketDataService:
                 logger.warning("Local code metadata lookup failed: %s", e)
 
         adapter = self._get_adapter()
+        if not adapter.is_logged_in:
+            logger.warning("AmazingData not logged in, returning empty code list")
+            return []
+
         try:
             raw = adapter.get_code_info(security_type=security_type)
             std = standardize_codes_df(raw)
@@ -141,7 +151,11 @@ class MarketDataService:
 
     def get_calendar(self, market: str = "SH", date: Optional[int] = None) -> pd.DataFrame:
         """Return the trading calendar via the current data source policy."""
-        return self._get_adapter().get_calendar(market=market, date=date)
+        adapter = self._get_adapter()
+        if not adapter.is_logged_in:
+            logger.warning("AmazingData not logged in, returning empty calendar")
+            return pd.DataFrame()
+        return adapter.get_calendar(market=market, date=date)
 
     def get_snapshot(
         self,
@@ -162,7 +176,11 @@ class MarketDataService:
         summary_only: bool = False,
     ) -> pd.DataFrame:
         """Return stock basic information via the current data source policy."""
-        return self._get_adapter().get_stock_basic(codes=codes, summary_only=summary_only)
+        adapter = self._get_adapter()
+        if not adapter.is_logged_in:
+            logger.warning("AmazingData not logged in, returning empty stock basic")
+            return pd.DataFrame()
+        return adapter.get_stock_basic(codes=codes, summary_only=summary_only)
 
     def _warehouse_eligible(self, period: str) -> bool:
         if not self.settings.historical_enabled:

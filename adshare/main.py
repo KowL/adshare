@@ -1,4 +1,10 @@
-"""FastAPI application entry point for adshare."""
+"""FastAPI application entry point for adshare.
+
+This is the API-only service. It does NOT connect to AmazingData SDK directly.
+It reads from:
+- L3 historical warehouse (Parquet/DuckDB) for historical data
+- Redis for real-time data (written by amazingdata-worker)
+"""
 
 import asyncio
 import time
@@ -13,7 +19,6 @@ from adshare.core.config import get_settings
 from adshare.core.logging import setup_logging
 from adshare.core.metrics import REQUEST_COUNT, REQUEST_DURATION, SERVICE_INFO, get_metrics
 from adshare.core.ratelimit import get_limiter
-from adshare.historical import shutdown_scheduler, start_scheduler
 from adshare.historical.admin import router as historical_admin_router
 from adshare.historical.warehouse import get_warehouse
 from adshare.routers import (
@@ -36,80 +41,26 @@ async def lifespan(app: FastAPI):
     """Application lifespan manager."""
     settings = get_settings()
 
-    # Startup
-    from adshare.adapters.amazingdata import get_adapter
-
-    adapter = get_adapter()
-    # Login on startup (local Mac has enough memory)
-    try:
-        login_ok = adapter.login()
-        if login_ok:
-            print("✅ AmazingData startup login successful")
-        else:
-            print("⚠️  AmazingData startup login failed, will retry on first request")
-    except Exception as e:
-        print(f"⚠️  AmazingData startup login error: {e}, will retry on first request")
-        login_ok = False
-
     # Set service info for metrics
     SERVICE_INFO.info({"version": settings.app_version, "name": settings.app_name})
 
-    # Initialise historical warehouse (L3)
+    # Initialise historical warehouse (L3) — API reads from local Parquet files
     try:
         if settings.historical_enabled:
             warehouse = get_warehouse(settings)
-            health = warehouse.health()
+            health_info = warehouse.health()
             print(
-                f"📦 Historical warehouse ready: root={health['root']} "
-                f"duckdb_connected={health['duckdb_connected']}"
+                f"📦 Historical warehouse ready: root={health_info['root']} "
+                f"duckdb_connected={health_info['duckdb_connected']}"
             )
-            if settings.sync_schedule_enabled:
-                start_scheduler()
-                print("⏰ Historical sync scheduler started")
         else:
             print("ℹ️  Historical warehouse disabled (HISTORICAL_ENABLED=false)")
     except Exception as e:
         print(f"⚠️  Historical warehouse init failed: {e}")
 
-    # Initialise realtime subscriber
-    import os
-
-    broadcast_task = None
-    realtime_enabled = os.environ.get("REALTIME_ENABLED", "true").lower() in ("true", "1", "yes")
-    if realtime_enabled:
-        try:
-            from adshare.services.realtime import get_realtime_subscriber
-
-            subscriber = get_realtime_subscriber()
-            if subscriber.initialize():
-                subscriber._loop = asyncio.get_running_loop()
-                broadcast_task = asyncio.create_task(subscriber.broadcast_loop())
-                print("📡 Realtime subscriber started")
-            else:
-                print("⚠️  Realtime subscriber init failed")
-        except Exception as e:
-            print(f"⚠️  Realtime subscriber init error: {e}")
-    else:
-        print("ℹ️  Realtime subscriber disabled (REALTIME_ENABLED=false)")
-
     yield
 
-    # Shutdown
-    if broadcast_task is not None:
-        broadcast_task.cancel()
-        try:
-            await broadcast_task
-        except asyncio.CancelledError:
-            pass
-    try:
-        from adshare.services.realtime import get_realtime_subscriber
-
-        get_realtime_subscriber().shutdown()
-    except Exception:
-        pass
-    shutdown_scheduler()
-    adapter.logout()
-    print("👋 adshare shutting down")
+    print("👋 adshare api shutting down")
 
 
 def create_app() -> FastAPI:
@@ -119,7 +70,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title=settings.app_name,
         version=settings.app_version,
-        description="AmazingData shared data service - Financial data middleware",
+        description="AmazingData shared data service - Financial data middleware (API only)",
         docs_url="/docs",
         redoc_url="/redoc",
         lifespan=lifespan,
@@ -177,6 +128,7 @@ def create_app() -> FastAPI:
         return {
             "name": settings.app_name,
             "version": settings.app_version,
+            "mode": "api",
             "docs": "/docs",
             "health": "/health",
             "metrics": settings.metrics_path if settings.metrics_enabled else None,

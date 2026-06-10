@@ -1,0 +1,47 @@
+# AmazingData Worker — 独立数据拉取服务
+# 
+# 职责:
+#   - 连接 AmazingData SDK (必须 linux/amd64)
+#   - 实时行情订阅 → 写入 Redis
+#   - 定时同步 K线/代码表/日历 → 写入 L3 仓库 (./data/)
+#
+# 部署前准备:
+#   1. 确保 .env 文件包含 AD_USERNAME, AD_PASSWORD, AD_HOST, AD_PORT
+#   2. 确保 Redis 已部署并可访问 (修改 REDIS_HOST/REDIS_PORT)
+#   3. 首次运行建议设置 SYNC_ON_START=true 拉取基础数据
+#
+# 构建命令:
+#   docker-compose -f docker-compose.worker.yml build
+# 启动命令:
+#   docker-compose -f docker-compose.worker.yml up -d
+
+version: "3.8"
+
+services:
+  amazingdata-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    platform: linux/amd64
+    container_name: amazingdata-worker
+    environment:
+      - AD_USERNAME=${AD_USERNAME}
+      - AD_PASSWORD=${AD_PASSWORD}
+      - AD_HOST=${AD_HOST}
+      - AD_PORT=${AD_PORT}
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - REDIS_DB=${REDIS_DB:-0}
+      - HISTORICAL_ENABLED=true
+      - HISTORICAL_PATH=/app/data
+      - DUCKDB_MODE=${DUCKDB_MODE:-memory}
+      - SYNC_SCHEDULE_ENABLED=${SYNC_SCHEDULE_ENABLED:-true}
+      - SYNC_ON_START=${SYNC_ON_START:-false}
+      - REALTIME_ENABLED=${REALTIME_ENABLED:-true}
+      - ADSHARE_LOG_LEVEL=${ADSHARE_LOG_LEVEL:-INFO}
+    volumes:
+      - ./data:/app/data
+      - ./cache:/app/cache
+      - ./logs:/app/logs
+    restart: unless-stopped

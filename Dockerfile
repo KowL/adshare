@@ -15,12 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # 复制依赖文件
 COPY pyproject.toml README.md ./
 
-# 复制并安装 AmazingData SDK（本地 whl 文件）
-COPY AmazingData-1.1.8-cp311-none-any.whl tgw-1.0.8.7-py3-none-any.whl ./
-RUN pip install --no-cache-dir tgw-1.0.8.7-py3-none-any.whl \
-    AmazingData-1.1.8-cp311-none-any.whl
-
-# 安装 Python 依赖
+# 安装 Python 依赖（API 服务不安装 AmazingData SDK，由独立 worker 负责）
 RUN pip install --no-cache-dir -e "." tables
 
 # 复制项目代码

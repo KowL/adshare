@@ -1,49 +1,42 @@
+# adshare API Service — 纯 API 服务，不连接 AmazingData SDK
+#
+# 职责:
+#   - FastAPI HTTP/WebSocket API
+#   - 读取 L3 历史仓库 (Parquet/DuckDB)
+#   - 读取 Redis 实时缓存 (由 amazingdata-worker 写入)
+#
+# 前提条件:
+#   - Redis 已部署并可访问 (配置 REDIS_HOST/REDIS_PORT)
+#   - L3 仓库数据已存在 (由 amazingdata-worker 生成)
+#
+# 启动命令:
+#   docker-compose up -d
+
 version: "3.8"
 
 services:
-  redis:
-    image: redis:7-alpine
-    container_name: adshare-redis
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    command: redis-server --appendonly yes
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-
   adshare:
     build:
       context: .
       dockerfile: Dockerfile
-    platform: linux/amd64
     container_name: adshare
     ports:
       - "8000:8000"
     environment:
-      - AD_USERNAME=${AD_USERNAME}
-      - AD_PASSWORD=${AD_PASSWORD}
-      - AD_HOST=${AD_HOST}
-      - AD_PORT=${AD_PORT}
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - REDIS_DB=${REDIS_DB:-0}
       - ADSHARE_HOST=0.0.0.0
       - ADSHARE_PORT=8000
       - HISTORICAL_ENABLED=${HISTORICAL_ENABLED:-true}
       - HISTORICAL_PATH=${HISTORICAL_PATH:-/app/data}
       - DUCKDB_MODE=${DUCKDB_MODE:-memory}
-      - SYNC_SCHEDULE_ENABLED=${SYNC_SCHEDULE_ENABLED:-false}
-      - REALTIME_ENABLED=${REALTIME_ENABLED:-true}
+      - ADSHARE_LOG_LEVEL=${ADSHARE_LOG_LEVEL:-INFO}
     volumes:
+      - ./data:/app/data
       - ./cache:/app/cache
       - ./logs:/app/logs
-      - ./data:/app/data
-    depends_on:
-      redis:
-        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
@@ -51,6 +44,3 @@ services:
       timeout: 10s
       retries: 3
       start_period: 10s
-
-volumes:
-  redis_data:

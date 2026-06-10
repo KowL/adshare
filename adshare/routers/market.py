@@ -84,7 +84,8 @@ async def get_kline(
 ):
     """Get K-line data.
 
-    Lookup order: L3 historical warehouse -> SDK.
+    Reads from L3 historical warehouse (Parquet/DuckDB).
+    SDK fallback is disabled in API-only mode.
     """
     try:
         service = get_market_data_service()
