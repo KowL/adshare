@@ -25,6 +25,8 @@ from adshare.models.schemas import (
     LimitUpLadderLevel,
     LimitUpLadderResponse,
     LimitUpResponse,
+    MarketActivityDistribution,
+    MarketActivityResponse,
 )
 
 logger = get_logger(__name__)
