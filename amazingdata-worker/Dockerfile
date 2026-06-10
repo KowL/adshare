@@ -30,13 +30,14 @@ RUN pip install --no-cache-dir -e "." tables
 COPY adshare/ ./adshare/
 COPY scripts/ ./scripts/
 COPY config/ ./config/
+COPY amazingdata-worker/main.py ./main.py
 
 # 创建缓存和日志目录
 RUN mkdir -p cache logs data
 
 # Worker 健康检查（简单检查进程存活）
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD pgrep -f "amazingdata_worker" || exit 1
+    CMD pgrep -f "python /app/main.py" || exit 1
 
 # 启动命令
-CMD ["python", "-m", "scripts.amazingdata_worker"]
+CMD ["python", "/app/main.py"]
