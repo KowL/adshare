@@ -11,9 +11,9 @@
 #   3. 首次运行建议设置 SYNC_ON_START=true 拉取基础数据
 #
 # 构建命令（在项目根目录执行）:
-#   docker-compose -f amazingdata-worker/docker-compose.yml build
+#   docker-compose -f amazingdata_worker/docker-compose.yml build
 # 启动命令（在项目根目录执行）:
-#   docker-compose -f amazingdata-worker/docker-compose.yml up -d
+#   docker-compose -f amazingdata_worker/docker-compose.yml up -d
 
 version: "3.8"
 
@@ -21,7 +21,7 @@ services:
   amazingdata-worker:
     build:
       context: ..
-      dockerfile: amazingdata-worker/Dockerfile
+      dockerfile: amazingdata_worker/Dockerfile
     platform: linux/amd64
     container_name: amazingdata-worker
     environment:

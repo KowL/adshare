@@ -39,7 +39,7 @@ def _signal_handler(signum, frame):  # noqa: ARG001
 
 def _init_sdk_login() -> bool:
     """Login to AmazingData SDK."""
-    from adshare.adapters.amazingdata import get_adapter
+    from amazingdata_worker.adapters.amazingdata import get_adapter
 
     adapter = get_adapter()
     try:
@@ -197,7 +197,7 @@ def main() -> int:
         pass
 
     try:
-        from adshare.adapters.amazingdata import get_adapter
+        from amazingdata_worker.adapters.amazingdata import get_adapter
         get_adapter().logout()
         logger.info("AmazingData logged out")
     except Exception as e:

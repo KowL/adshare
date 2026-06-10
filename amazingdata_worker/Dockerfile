@@ -30,7 +30,8 @@ RUN pip install --no-cache-dir -e "." tables
 COPY adshare/ ./adshare/
 COPY scripts/ ./scripts/
 COPY config/ ./config/
-COPY amazingdata-worker/main.py ./main.py
+COPY amazingdata_worker/adapters/ ./amazingdata_worker/adapters/
+COPY amazingdata_worker/main.py ./main.py
 
 # 创建缓存和日志目录
 RUN mkdir -p cache logs data
