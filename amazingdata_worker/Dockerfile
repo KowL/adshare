@@ -1,8 +1,9 @@
-FROM --platform=linux/amd64 python:3.11-slim
+FROM python:3.11-slim
 
 WORKDIR /app
 
-# 强制 amd64 平台（AmazingData SDK C 扩展仅支持 linux/amd64）
+# 注意: 构建此镜像时必须指定 --platform linux/amd64
+# docker build --platform linux/amd64 -f amazingdata_worker/Dockerfile .
 
 # 使用阿里云镜像源加速
 RUN pip config set global.index-url https://mirrors.aliyun.com/pypi/simple/

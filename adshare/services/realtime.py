@@ -16,7 +16,6 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import WebSocket, WebSocketDisconnect
 
-from amazingdata_worker.adapters.amazingdata import get_adapter
 from adshare.core.cache import get_cache_manager
 from adshare.core.config import get_settings
 from adshare.core.logging import get_logger
@@ -141,6 +140,8 @@ class RealtimeSubscriber:
     def initialize(self) -> bool:
         """Login, fetch code list, set up callbacks and start subscriber thread."""
         try:
+            from amazingdata_worker.adapters.amazingdata import get_adapter
+
             adapter = get_adapter()
             if not adapter.ensure_login():
                 logger.error("AmazingData not logged in, cannot start realtime subscriber")
