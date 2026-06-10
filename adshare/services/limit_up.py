@@ -9,7 +9,6 @@ from typing import Optional, Sequence
 
 import pandas as pd
 
-from adshare.adapters.amazingdata import get_adapter
 from adshare.core.config import get_settings
 from adshare.core.logging import get_logger
 from adshare.historical.models import (
@@ -138,26 +137,7 @@ class LimitUpService:
                     return local
             except Exception as e:  # noqa: BLE001
                 logger.warning("Local code metadata lookup failed: %s", e)
-
-        adapter = self._get_adapter()
-        raw = pd.DataFrame()
-        try:
-            raw = adapter.get_code_info(security_type="EXTRA_STOCK_A")
-        except Exception as e:  # noqa: BLE001
-            logger.warning("AmazingData get_code_info failed: %s", e)
-
-        if raw is None or raw.empty:
-            try:
-                codes = adapter.get_code_list(security_type="EXTRA_STOCK_A")
-                raw = pd.DataFrame({"code": codes, "name": codes})
-            except Exception as e:  # noqa: BLE001
-                logger.warning("AmazingData get_code_list failed: %s", e)
-                raw = pd.DataFrame(columns=list(CODES_COLUMNS))
-
-        std = standardize_codes_df(raw)
-        if warehouse is not None and not std.empty:
-            _persist_codes(std, warehouse)
-        return std
+        return pd.DataFrame(columns=list(CODES_COLUMNS))
 
     def _get_daily_kline(self, codes: Sequence[str], target_date: int) -> pd.DataFrame:
         begin_date = _lookback_begin_date(target_date)
@@ -169,36 +149,7 @@ class LimitUpService:
             except Exception as e:  # noqa: BLE001
                 logger.warning("Local daily K-line lookup failed: %s", e)
                 local = pd.DataFrame()
-
-        missing_codes = _codes_missing_target(local, codes, target_date)
-        if missing_codes:
-            remote = self._fetch_remote_kline(missing_codes, begin_date, target_date)
-            if not remote.empty:
-                if warehouse is not None:
-                    _persist_kline_to_warehouse(remote, warehouse)
-                    warehouse.refresh_views()
-                local = pd.concat([local, remote], ignore_index=True) if not local.empty else remote
-
         return local
-
-    def _fetch_remote_kline(self, codes: Sequence[str], begin_date: int, end_date: int) -> pd.DataFrame:
-        adapter = self._get_adapter()
-        frames: list[pd.DataFrame] = []
-        code_list = list(codes)
-        for i in range(0, len(code_list), self.batch_size):
-            batch = code_list[i : i + self.batch_size]
-            try:
-                df = adapter.get_kline(
-                    codes=",".join(batch),
-                    begin_date=begin_date,
-                    end_date=end_date,
-                    period="day",
-                )
-                if isinstance(df, pd.DataFrame) and not df.empty:
-                    frames.append(df)
-            except Exception as e:  # noqa: BLE001
-                logger.warning("K-line batch %s-%s failed: %s", i, i + len(batch), e)
-        return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
     def _calculate_limit_up_stocks(
         self,
@@ -216,11 +167,6 @@ class LimitUpService:
             if item is not None:
                 stocks.append(item)
         return stocks
-
-    def _get_adapter(self):
-        if self.adapter is None:
-            self.adapter = get_adapter()
-        return self.adapter
 
     def _get_warehouse(self):
         if self.warehouse is False:
@@ -794,16 +740,6 @@ class StrongStockPoolService:
             except Exception as e:  # noqa: BLE001
                 logger.warning("Local K-line lookup failed: %s", e)
                 local = pd.DataFrame()
-
-        missing_codes = _codes_missing_target(local, codes, end_date)
-        if missing_codes:
-            remote = self._base._fetch_remote_kline(missing_codes, begin_date, end_date)
-            if not remote.empty:
-                if warehouse is not None:
-                    _persist_kline_to_warehouse(remote, warehouse)
-                    warehouse.refresh_views()
-                local = pd.concat([local, remote], ignore_index=True) if not local.empty else remote
-
         return local
 
     def _calculate_strong_stocks(

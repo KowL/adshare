@@ -95,37 +95,43 @@ def warehouse(isolated_settings) -> HistoricalWarehouse:
 
 @pytest.fixture
 def client(isolated_settings):
-    """Return a TestClient with a stubbed adapter (so /market/kline still works)."""
+    """Return a TestClient with mocked market data service."""
     from unittest.mock import MagicMock
 
-    import adshare.adapters.amazingdata as _ad_mod
     import adshare.core.cache as _cache_mod
-    import adshare.routers.market as _market_mod
-    import adshare.routers.financial as _fin_mod
-    import adshare.routers.technical as _tech_mod
-    import adshare.routers.fundamental as _fund_mod
-    import adshare.routers.factor as _factor_mod
-    import adshare.routers.health as _health_mod
+    import adshare.historical.warehouse as _wh_mod
+    import adshare.services.market_data as _md_mod
+    import adshare.services.limit_up as _lu_mod
 
-    # Build a fake adapter similar to conftest.FakeAdapter but lighter
+    # Build a fake market data service
     fake = MagicMock()
-    fake.is_logged_in = True
-    fake.login.return_value = True
     fake.get_code_list.return_value = ["000001.SZ", "600000.SH"]
     fake.get_calendar.return_value = pd.DataFrame({"date": [20240101, 20240102]})
-    fake.get_kline.return_value = pd.DataFrame({
-        "code": ["000001.SZ", "600000.SH"],
-        "kline_time": [pd.Timestamp("2024-01-01"), pd.Timestamp("2024-01-01")],
-        "open": [10.0, 20.0],
-        "high": [10.5, 20.5],
-        "low": [9.8, 19.8],
-        "close": [10.2, 20.2],
-        "volume": [100000, 200000],
-        "amount": [1000000.0, 4000000.0],
-    })
-    fake.get_code_info.return_value = pd.DataFrame(
-        {"symbol": ["平安银行", "浦发银行"]}, index=["000001.SZ", "600000.SH"]
+    fake.get_kline.return_value = _md_mod.KlineQueryResult(
+        df=pd.DataFrame({
+            "code": ["000001.SZ", "600000.SH"],
+            "date": [20240101, 20240101],
+            "open": [10.0, 20.0],
+            "high": [10.5, 20.5],
+            "low": [9.8, 19.8],
+            "close": [10.2, 20.2],
+            "volume": [100000, 200000],
+            "amount": [1000000.0, 4000000.0],
+        }),
+        source="warehouse",
+        synced=True,
     )
+    fake.get_snapshot.return_value = pd.DataFrame({
+        "code": ["000001.SZ"],
+        "date": [20240607],
+        "open": [10.0],
+        "high": [11.0],
+        "low": [9.5],
+        "close": [10.8],
+        "pre_close": [9.8],
+        "volume": [500000],
+        "amount": [5400000.0],
+    })
     fake.get_stock_basic.return_value = pd.DataFrame({
         "code": ["000001.SZ", "600000.SH"],
         "name": ["平安银行", "浦发银行"],
@@ -136,47 +142,59 @@ def client(isolated_settings):
         "is_listed": [1, 1],
     })
 
-    originals = {
-        "_adapter": _ad_mod._adapter,
-        "market": getattr(_market_mod, "get_adapter", None),
-        "financial": getattr(_fin_mod, "get_adapter", None),
-        "technical": getattr(_tech_mod, "get_adapter", None),
-        "fundamental": getattr(_fund_mod, "get_adapter", None),
-        "factor": getattr(_factor_mod, "get_adapter", None),
-        "health": getattr(_health_mod, "get_adapter", None),
-    }
+    _orig_get_market_data_service = _md_mod.get_market_data_service
+    # Mock limit-up services to avoid warehouse dependency
+    _orig_get_limit_up_service = _lu_mod.get_limit_up_service
+    _lu_mod.get_limit_up_service = lambda: _lu_mod.LimitUpService(warehouse=False)
+    _lu_mod.get_limit_down_service = lambda: _lu_mod.LimitDownService(warehouse=False)
+    _lu_mod.get_market_activity_service = lambda: _lu_mod.MarketActivityService(warehouse=False)
+    _lu_mod.get_strong_stock_pool_service = lambda: _lu_mod.StrongStockPoolService(warehouse=False)
 
-    _ad_mod._adapter = fake
     _cache_mod._cache_manager = None
-    _market_mod.get_adapter = lambda: fake
-    _fin_mod.get_adapter = lambda: fake
-    _tech_mod.get_adapter = lambda: fake
-    _fund_mod.get_adapter = lambda: fake
-    _factor_mod.get_adapter = lambda: fake
-    _health_mod.get_adapter = lambda: fake
+
+    # Mock amazingdata_worker adapter for sync tests
+    import amazingdata_worker.adapters.amazingdata as _worker_ad_mod
+    _orig_worker_get_adapter = _worker_ad_mod.get_adapter
+    _worker_fake = MagicMock()
+    _worker_fake.is_logged_in = True
+    _worker_fake.login.return_value = True
+    _worker_fake.get_code_info.return_value = pd.DataFrame({
+        "code": ["000001.SZ", "600000.SH"],
+        "name": ["平安银行", "浦发银行"],
+        "list_plate": ["主板", "主板"],
+        "is_listed": [1, 1],
+    })
+    _worker_fake.get_stock_basic.return_value = pd.DataFrame({
+        "code": ["000001.SZ", "600000.SH"],
+        "name": ["平安银行", "浦发银行"],
+        "list_plate": ["主板", "主板"],
+        "is_listed": [1, 1],
+    })
+    _worker_fake.get_calendar.return_value = pd.DataFrame({
+        "date": [20240101, 20240102, 20240103],
+    })
+    _worker_fake.get_kline.return_value = pd.DataFrame({
+        "code": ["000001.SZ"],
+        "kline_time": [pd.Timestamp("2024-01-01")],
+        "open": [10.0],
+        "high": [10.5],
+        "low": [9.8],
+        "close": [10.2],
+        "volume": [100000],
+        "amount": [1000000.0],
+    })
+    _worker_ad_mod.get_adapter = lambda: _worker_fake
 
     try:
         app = create_app()
         with TestClient(app) as tc:
             yield tc
     finally:
-        _ad_mod._adapter = originals["_adapter"]
+        _md_mod.get_market_data_service = _orig_get_market_data_service
+        _lu_mod.get_limit_up_service = _orig_get_limit_up_service
+        _worker_ad_mod.get_adapter = _orig_worker_get_adapter
         _cache_mod._cache_manager = None
-        for mod_name, mod in [
-            ("market", _market_mod),
-            ("financial", _fin_mod),
-            ("technical", _tech_mod),
-            ("fundamental", _fund_mod),
-            ("factor", _factor_mod),
-            ("health", _health_mod),
-        ]:
-            orig = originals[mod_name]
-            if orig is not None:
-                mod.get_adapter = orig
-            else:
-                if hasattr(mod, "get_adapter"):
-                    delattr(mod, "get_adapter")
-        hist_warehouse.reset_warehouse()
+        _wh_mod.reset_warehouse()
 
 
 # ----------------------------------------------------------------------
@@ -749,16 +767,16 @@ class TestHistoricalRouter:
         response = client.post("/historical/admin/sync?job=foo")
         assert response.status_code == 400
 
-    def test_kline_falls_back_to_sdk_when_empty(self, client):
-        # Warehouse is empty: is_synced=False, so it falls back to SDK (mocked)
+    def test_kline_empty_warehouse(self, client):
+        # Warehouse is empty and SDK fallback is removed in API-only mode
         response = client.get(
             "/historical/kline?codes=000001.SZ&begin_date=20240101&end_date=20240131&period=day"
         )
         assert response.status_code == 200
         data = response.json()
-        assert data["source"] == "sdk"
-        assert data["count"] >= 1
-        assert data["data"][0]["code"] == "000001.SZ"
+        assert data["source"] == "warehouse"
+        assert data["count"] == 0
+        assert data["data"] == []
 
     def test_kline_warehouse_hit(self, client, warehouse):
         # Populate warehouse then re-query via the historical router
@@ -859,10 +877,13 @@ class TestHistoricalRouter:
         )
         assert response.status_code == 400
 
-    def test_market_kline_still_works_with_warehouse(self, client):
-        # Existing /market/kline endpoint must still work after L3 integration
+    def test_market_kline_still_works_with_warehouse(self, client, warehouse):
+        # Populate warehouse so /market/kline has data to return (SDK fallback removed)
+        _populate_kline(warehouse, "day", "000001.SZ")
+        warehouse.refresh_views()
+        # Only request the code that exists in the warehouse, with date range matching populated data
         response = client.get(
-            "/market/kline?codes=000001.SZ,600000.SH&begin_date=20240101&end_date=20240131"
+            "/market/kline?codes=000001.SZ&begin_date=20240101&end_date=20240103"
         )
         assert response.status_code == 200
         data = response.json()

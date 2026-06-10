@@ -2,30 +2,19 @@
 
 Provides MCP protocol interface for adshare data services.
 Compatible with Model Context Protocol (MCP) for AI agent integration.
+
+Note: SDK-dependent tools (get_kline, get_snapshot, get_code_list, etc.)
+are not available in API-only mode. Use the worker service for SDK access.
 """
 
-import json
-import os
 from typing import Any, Dict, List, Optional
 
 from fastmcp import FastMCP
 
-from adshare.adapters.amazingdata import get_adapter
 from adshare.core.config import get_settings
 
 # Create FastMCP instance
 mcp = FastMCP("adshare")
-
-# Global adapter instance
-_adapter = None
-
-
-def _get_adapter():
-    """Get or create adapter instance."""
-    global _adapter
-    if _adapter is None:
-        _adapter = get_adapter()
-    return _adapter
 
 
 # ==================== MCP Tools ====================
@@ -33,11 +22,9 @@ def _get_adapter():
 @mcp.tool()
 async def get_login_status() -> dict:
     """Get current login status."""
-    adapter = _get_adapter()
     return {
-        "is_logged_in": adapter.is_connected(),
-        "host": adapter.host,
-        "port": adapter.port,
+        "is_logged_in": False,
+        "note": "AmazingData SDK is not available in the API service. Use the worker service.",
     }
 
 
@@ -48,16 +35,10 @@ async def get_code_list(security_type: str = "EXTRA_STOCK_A_SH_SZ") -> dict:
     Args:
         security_type: Security type, e.g. EXTRA_STOCK_A_SH_SZ, EXTRA_ETF, EXTRA_KZZ
     """
-    try:
-        adapter = _get_adapter()
-        codes = adapter.get_code_list(security_type=security_type)
-        return {
-            "success": True,
-            "count": len(codes),
-            "codes": codes[:100] if len(codes) > 100 else codes,
-        }
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+    return {
+        "success": False,
+        "error": "AmazingData SDK is not available in the API service. Use the worker service.",
+    }
 
 
 @mcp.tool()
@@ -77,44 +58,10 @@ async def get_kline(
         period: K-line period: day, min1, min5, week, month
         fields: Fields to return, e.g. ["open", "high", "low", "close", "volume"]
     """
-    try:
-        adapter = _get_adapter()
-        if end_date is None:
-            from datetime import datetime
-            end_date = int(datetime.now().strftime("%Y%m%d"))
-
-        df = adapter.get_kline(
-            codes=code,
-            begin_date=begin_date,
-            end_date=end_date,
-            period=period,
-        )
-
-        if df.empty:
-            return {"success": False, "error": "No data found"}
-
-        # Select fields
-        if fields:
-            available = [f for f in fields if f in df.columns]
-            df = df[available]
-
-        # Convert to records
-        records = df.reset_index().to_dict("records")
-        # Convert timestamps to strings
-        for rec in records:
-            for key, val in rec.items():
-                if hasattr(val, "isoformat"):
-                    rec[key] = val.isoformat()
-
-        return {
-            "success": True,
-            "code": code,
-            "count": len(records),
-            "fields": list(df.columns),
-            "data": records[:50] if len(records) > 50 else records,
-        }
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+    return {
+        "success": False,
+        "error": "AmazingData SDK is not available in the API service. Use the worker service.",
+    }
 
 
 @mcp.tool()
@@ -130,35 +77,10 @@ async def get_snapshot(
         date: Date YYYYMMDD (default: latest)
         fields: Fields to return
     """
-    try:
-        adapter = _get_adapter()
-        if date is None:
-            from datetime import datetime
-            date = int(datetime.now().strftime("%Y%m%d"))
-
-        df = adapter.get_snapshot(codes=code, date=date)
-
-        if df.empty:
-            return {"success": False, "error": "No snapshot data found"}
-
-        if fields:
-            available = [f for f in fields if f in df.columns]
-            df = df[available]
-
-        records = df.reset_index().to_dict("records")
-        for rec in records:
-            for key, val in rec.items():
-                if hasattr(val, "isoformat"):
-                    rec[key] = val.isoformat()
-
-        return {
-            "success": True,
-            "code": code,
-            "count": len(records),
-            "data": records,
-        }
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+    return {
+        "success": False,
+        "error": "AmazingData SDK is not available in the API service. Use the worker service.",
+    }
 
 
 @mcp.tool()
@@ -168,21 +90,10 @@ async def get_stock_basic(code: str) -> dict:
     Args:
         code: Stock code, e.g. 000001.SZ
     """
-    try:
-        adapter = _get_adapter()
-        df = adapter.get_stock_basic(codes=code)
-
-        if df.empty:
-            return {"success": False, "error": "No basic info found"}
-
-        records = df.reset_index().to_dict("records")
-        return {
-            "success": True,
-            "code": code,
-            "data": records[0] if records else {},
-        }
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+    return {
+        "success": False,
+        "error": "AmazingData SDK is not available in the API service. Use the worker service.",
+    }
 
 
 @mcp.tool()

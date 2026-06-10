@@ -2,12 +2,11 @@
 
 from datetime import datetime
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
-from adshare.adapters.amazingdata import get_adapter
 from adshare.core.cache import get_cache_manager
 from adshare.core.config import get_settings
-from adshare.models.schemas import HealthResponse, LoginStatusResponse
+from adshare.models.schemas import HealthResponse
 
 router = APIRouter(tags=["health"])
 
@@ -16,7 +15,6 @@ router = APIRouter(tags=["health"])
 async def health_check():
     """Service health check."""
     settings = get_settings()
-    adapter = get_adapter()
     cache = get_cache_manager()
 
     cache_health = cache.health()
@@ -25,7 +23,7 @@ async def health_check():
         status="ok",
         version=settings.app_version,
         timestamp=datetime.now(),
-        amazingdata_connected=adapter.is_logged_in,
+        amazingdata_connected=False,
         redis_connected=cache_health["redis_connected"],
         auth_enabled=settings.auth_enabled,
         rate_limit_enabled=settings.rate_limit_enabled,
@@ -33,27 +31,28 @@ async def health_check():
     )
 
 
-@router.get("/login/status", response_model=LoginStatusResponse)
+@router.get("/login/status")
 async def login_status():
-    """AmazingData login status."""
-    adapter = get_adapter()
-    return LoginStatusResponse(
-        is_logged_in=adapter.is_logged_in,
-        login_info=adapter.login_info,
+    """AmazingData login status — not available in API-only mode."""
+    raise HTTPException(
+        status_code=503,
+        detail="AmazingData SDK is not available in the API service. Use the worker service.",
     )
 
 
 @router.post("/login")
 async def do_login():
-    """Login to AmazingData."""
-    adapter = get_adapter()
-    success = adapter.login()
-    return {"success": success, "logged_in": adapter.is_logged_in}
+    """Login to AmazingData — not available in API-only mode."""
+    raise HTTPException(
+        status_code=503,
+        detail="AmazingData SDK is not available in the API service. Use the worker service.",
+    )
 
 
 @router.post("/logout")
 async def do_logout():
-    """Logout from AmazingData."""
-    adapter = get_adapter()
-    adapter.logout()
-    return {"success": True, "logged_in": False}
+    """Logout from AmazingData — not available in API-only mode."""
+    raise HTTPException(
+        status_code=503,
+        detail="AmazingData SDK is not available in the API service. Use the worker service.",
+    )

@@ -1,7 +1,5 @@
 """Shared fixtures and mocks for adshare tests."""
 
-from unittest.mock import MagicMock, patch
-
 import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
@@ -39,9 +37,9 @@ class FakeAdapter:
     def get_code_info(self, security_type: str = "EXTRA_STOCK_A") -> pd.DataFrame:
         return pd.DataFrame(
             {
-                "symbol": ["平安银行", "浦发银行", "万科A"],
+                "code": self._codes,
+                "name": ["平安银行", "浦发银行", "万科A"],
             },
-            index=self._codes,
         )
 
     def get_calendar(self, market: str = "SH", date=None) -> pd.DataFrame:
@@ -175,25 +173,16 @@ def fake_adapter():
 
 @pytest.fixture
 def client(fake_adapter, monkeypatch):
-    """Create TestClient with mocked adapter.
+    """Create TestClient with mocked services.
 
-    Patches every module-level ``from adshare.adapters.amazingdata import get_adapter``
-    reference, because ``from ... import ...`` binds a local reference that
-    ``mock.patch("module.func")`` will not redirect after the module has loaded.
-
-    Also disables the L3 historical warehouse so the test relies purely on
-    the (mocked) adapter — this prevents the conftest from picking up files
-    written by other test files that share ``./data``.
+    Replaces the production MarketDataService and limit-up service factories
+    so tests run without the real SDK or a populated L3 warehouse.
     """
-    import adshare.adapters.amazingdata as _ad_mod
     import adshare.core.cache as _cache_mod
     import adshare.historical.warehouse as _wh_mod
-    import adshare.routers.market as _market_mod
-    import adshare.routers.financial as _fin_mod
-    import adshare.routers.technical as _tech_mod
-    import adshare.routers.fundamental as _fund_mod
-    import adshare.routers.factor as _factor_mod
-    import adshare.routers.health as _health_mod
+    import adshare.services.market_data as _md_mod
+    import adshare.services.technical_analysis as _ta_mod
+    import adshare.services.limit_up as _lu_mod
 
     # Disable the L3 warehouse and the scheduler for these tests
     monkeypatch.setenv("HISTORICAL_ENABLED", "false")
@@ -201,47 +190,149 @@ def client(fake_adapter, monkeypatch):
     from adshare.core.config import get_settings
     get_settings.cache_clear()
     _wh_mod.reset_warehouse()
-
-    # Store originals
-    originals = {
-        "_adapter": _ad_mod._adapter,
-        "market": getattr(_market_mod, "get_adapter", None),
-        "financial": getattr(_fin_mod, "get_adapter", None),
-        "technical": getattr(_tech_mod, "get_adapter", None),
-        "fundamental": getattr(_fund_mod, "get_adapter", None),
-        "factor": getattr(_factor_mod, "get_adapter", None),
-        "health": getattr(_health_mod, "get_adapter", None),
-    }
-
-    # Inject fake adapter
-    _ad_mod._adapter = fake_adapter
     _cache_mod._cache_manager = None
-    _market_mod.get_adapter = lambda: fake_adapter
-    _fin_mod.get_adapter = lambda: fake_adapter
-    _tech_mod.get_adapter = lambda: fake_adapter
-    _fund_mod.get_adapter = lambda: fake_adapter
-    _factor_mod.get_adapter = lambda: fake_adapter
-    _health_mod.get_adapter = lambda: fake_adapter
+
+    # Preserve originals
+    _orig_get_market_data_service = _md_mod.get_market_data_service
+    _orig_get_limit_up_service = _lu_mod.get_limit_up_service
+    _orig_get_limit_down_service = _lu_mod.get_limit_down_service
+    _orig_get_market_activity_service = _lu_mod.get_market_activity_service
+    _orig_get_strong_stock_pool_service = _lu_mod.get_strong_stock_pool_service
+    _orig_get_technical_analysis_service = getattr(_ta_mod, "get_technical_analysis_service", None)
+
+    # Fake MarketDataService backed by FakeAdapter
+    class FakeMarketDataService(_md_mod.MarketDataService):
+        def __init__(self):
+            self._adapter = fake_adapter
+
+        def get_code_list(self, security_type="EXTRA_STOCK_A"):
+            return self._adapter.get_code_list(security_type)
+
+        def get_calendar(self, market="SH", date=None):
+            return self._adapter.get_calendar(market, date)
+
+        def get_kline(self, codes, begin_date, end_date, period="day", limit=None, offset=0, source="auto"):
+            df = self._adapter.get_kline(codes, begin_date, end_date, period, limit, offset)
+            return _md_mod.KlineQueryResult(df=df, source="warehouse", synced=True)
+
+        def get_snapshot(self, codes, date=None, time=None):
+            return self._adapter.get_snapshot(codes, date, time)
+
+        def get_stock_basic(self, codes=None, summary_only=False):
+            return self._adapter.get_stock_basic(codes, summary_only)
+
+    fake_md = FakeMarketDataService()
+    _md_mod.get_market_data_service = lambda: fake_md
+
+    # Patch module-local references created by ``from ... import ...``
+    import adshare.routers.market as _market_router_mod
+    import adshare.routers.historical as _historical_router_mod
+    import adshare.routers.technical as _technical_router_mod
+
+    # Preserve router module originals BEFORE patching
+    _orig_market_router_md = _market_router_mod.get_market_data_service
+    _orig_market_router_lu = _market_router_mod.get_limit_up_service
+    _orig_market_router_ld = _market_router_mod.get_limit_down_service
+    _orig_market_router_ma = _market_router_mod.get_market_activity_service
+    _orig_market_router_sp = _market_router_mod.get_strong_stock_pool_service
+    _orig_historical_router_md = _historical_router_mod.get_market_data_service
+    _orig_technical_router_ta = _technical_router_mod.get_technical_analysis_service
+
+    _market_router_mod.get_market_data_service = lambda: fake_md
+    _historical_router_mod.get_market_data_service = lambda: fake_md
+    _technical_router_mod.get_technical_analysis_service = lambda: _ta_mod.TechnicalAnalysisService(
+        market_data_service=fake_md
+    )
+
+    # Fake limit-up services backed by FakeAdapter
+    class FakeLimitUpService(_lu_mod.LimitUpService):
+        def __init__(self):
+            self.adapter = fake_adapter
+            self.warehouse = None
+            self.batch_size = 200
+
+        def _get_code_info(self):
+            return fake_adapter.get_code_info()
+
+        def _get_daily_kline(self, codes, target_date):
+            begin_date = _lu_mod._lookback_begin_date(target_date)
+            df = fake_adapter.get_kline(",".join(codes), begin_date, target_date, "day")
+            if "kline_time" in df.columns:
+                df = df.copy()
+                df["date"] = df["kline_time"].dt.strftime("%Y%m%d").astype(int)
+            return df
+
+    class FakeLimitDownService(_lu_mod.LimitDownService):
+        def __init__(self):
+            self.adapter = fake_adapter
+            self.warehouse = None
+            self.batch_size = 200
+
+        def _get_code_info(self):
+            return fake_adapter.get_code_info()
+
+        def _get_daily_kline(self, codes, target_date):
+            begin_date = _lu_mod._lookback_begin_date(target_date)
+            df = fake_adapter.get_kline(",".join(codes), begin_date, target_date, "day")
+            if "kline_time" in df.columns:
+                df = df.copy()
+                df["date"] = df["kline_time"].dt.strftime("%Y%m%d").astype(int)
+            return df
+
+    class FakeMarketActivityService(_lu_mod.MarketActivityService):
+        def __init__(self):
+            self._base = FakeLimitUpService()
+
+    class FakeStrongStockPoolService(_lu_mod.StrongStockPoolService):
+        def __init__(self):
+            self.adapter = fake_adapter
+            self.warehouse = None
+            self.batch_size = 200
+            self._base = FakeLimitUpService()
+
+        def _get_kline_range(self, codes, begin_date, end_date):
+            df = fake_adapter.get_kline(",".join(codes), begin_date, end_date, "day")
+            if "kline_time" in df.columns:
+                df = df.copy()
+                df["date"] = df["kline_time"].dt.strftime("%Y%m%d").astype(int)
+            return df
+
+    _lu_mod.get_limit_up_service = lambda: FakeLimitUpService()
+    _lu_mod.get_limit_down_service = lambda: FakeLimitDownService()
+    _lu_mod.get_market_activity_service = lambda: FakeMarketActivityService()
+    _lu_mod.get_strong_stock_pool_service = lambda: FakeStrongStockPoolService()
+
+    # Patch limit-up service references in market router
+    _market_router_mod.get_limit_up_service = lambda: FakeLimitUpService()
+    _market_router_mod.get_limit_down_service = lambda: FakeLimitDownService()
+    _market_router_mod.get_market_activity_service = lambda: FakeMarketActivityService()
+    _market_router_mod.get_strong_stock_pool_service = lambda: FakeStrongStockPoolService()
+
+    # Technical analysis service
+    if _orig_get_technical_analysis_service is not None:
+        _ta_mod.get_technical_analysis_service = lambda: _ta_mod.TechnicalAnalysisService(
+            market_data_service=fake_md
+        )
 
     try:
         app = create_app()
         with TestClient(app) as tc:
             yield tc
     finally:
-        # Restore
-        _ad_mod._adapter = originals["_adapter"]
-        _cache_mod._cache_manager = None
         _wh_mod.reset_warehouse()
-        for mod_name, mod in [
-            ("market", _market_mod),
-            ("financial", _fin_mod),
-            ("technical", _tech_mod),
-            ("fundamental", _fund_mod),
-            ("factor", _factor_mod),
-            ("health", _health_mod),
-        ]:
-            orig = originals[mod_name]
-            if orig is not None:
-                mod.get_adapter = orig
-            else:
-                delattr(mod, "get_adapter")
+        _cache_mod._cache_manager = None
+        _md_mod.get_market_data_service = _orig_get_market_data_service
+        _lu_mod.get_limit_up_service = _orig_get_limit_up_service
+        _lu_mod.get_limit_down_service = _orig_get_limit_down_service
+        _lu_mod.get_market_activity_service = _orig_get_market_activity_service
+        _lu_mod.get_strong_stock_pool_service = _orig_get_strong_stock_pool_service
+        if _orig_get_technical_analysis_service is not None:
+            _ta_mod.get_technical_analysis_service = _orig_get_technical_analysis_service
+        # Restore router module references
+        _market_router_mod.get_market_data_service = _orig_market_router_md
+        _market_router_mod.get_limit_up_service = _orig_market_router_lu
+        _market_router_mod.get_limit_down_service = _orig_market_router_ld
+        _market_router_mod.get_market_activity_service = _orig_market_router_ma
+        _market_router_mod.get_strong_stock_pool_service = _orig_market_router_sp
+        _historical_router_mod.get_market_data_service = _orig_historical_router_md
+        _technical_router_mod.get_technical_analysis_service = _orig_technical_router_ta

@@ -1,4 +1,4 @@
-"""Tests for the market data application service."""
+"""Tests for the market data application service (API-only mode)."""
 
 from __future__ import annotations
 
@@ -40,12 +40,9 @@ def test_get_kline_uses_warehouse_when_synced(historical_settings):
     warehouse = MagicMock()
     warehouse.is_synced.return_value = True
     warehouse.query_kline.return_value = _kline_df()
-    adapter = MagicMock()
-    adapter.get_kline.side_effect = AssertionError("SDK should not be called on L3 hit")
 
     service = MarketDataService(
         settings=historical_settings,
-        adapter=adapter,
         warehouse=warehouse,
     )
     result = service.get_kline(
@@ -58,18 +55,14 @@ def test_get_kline_uses_warehouse_when_synced(historical_settings):
     assert result.source == "warehouse"
     assert result.synced is True
     assert len(result.df) == 1
-    adapter.get_kline.assert_not_called()
 
 
-def test_get_kline_falls_back_to_sdk_when_warehouse_not_synced(historical_settings):
+def test_get_kline_returns_empty_when_warehouse_not_synced(historical_settings):
     warehouse = MagicMock()
     warehouse.is_synced.return_value = False
-    adapter = MagicMock()
-    adapter.get_kline.return_value = _kline_df()
 
     service = MarketDataService(
         settings=historical_settings,
-        adapter=adapter,
         warehouse=warehouse,
     )
     result = service.get_kline(
@@ -80,20 +73,17 @@ def test_get_kline_falls_back_to_sdk_when_warehouse_not_synced(historical_settin
         source="auto",
     )
 
-    assert result.source == "sdk"
+    assert result.source == "warehouse"
     assert result.synced is False
-    assert len(result.df) == 1
-    adapter.get_kline.assert_called_once()
+    assert result.df.empty
 
 
 def test_get_kline_source_warehouse_does_not_fallback(historical_settings):
     warehouse = MagicMock()
     warehouse.is_synced.return_value = False
-    adapter = MagicMock()
 
     service = MarketDataService(
         settings=historical_settings,
-        adapter=adapter,
         warehouse=warehouse,
     )
     result = service.get_kline(
@@ -107,110 +97,47 @@ def test_get_kline_source_warehouse_does_not_fallback(historical_settings):
     assert result.source == "warehouse"
     assert result.synced is False
     assert result.df.empty
-    adapter.get_kline.assert_not_called()
 
 
-def test_get_kline_normalizes_period_alias_for_sdk_fallback(historical_settings):
-    warehouse = MagicMock()
-    warehouse.is_synced.return_value = False
-    adapter = MagicMock()
-    adapter.get_kline.return_value = _kline_df()
-
-    service = MarketDataService(
-        settings=historical_settings,
-        adapter=adapter,
-        warehouse=warehouse,
-    )
-    service.get_kline(
-        codes="000001.SZ",
-        begin_date=20240101,
-        end_date=20240131,
-        period="daily",
-        source="auto",
-    )
-
-    assert adapter.get_kline.call_args.kwargs["period"] == "day"
-
-
-def test_get_kline_rejects_unknown_source(historical_settings):
-    service = MarketDataService(settings=historical_settings, adapter=MagicMock(), warehouse=MagicMock())
-
-    with pytest.raises(ValueError, match="source must be one of"):
-        service.get_kline(
-            codes="000001.SZ",
-            begin_date=20240101,
-            end_date=20240131,
-            source="unknown",
-        )
-
-
-def test_get_code_list_uses_local_metadata_before_adapter(historical_settings):
+def test_get_code_list_uses_local_metadata(historical_settings):
     warehouse = MagicMock()
     warehouse.query_codes.return_value = pd.DataFrame({"code": ["000001.SZ"], "is_listed": [True]})
-    adapter = MagicMock()
-    service = MarketDataService(settings=historical_settings, adapter=adapter, warehouse=warehouse)
+    service = MarketDataService(settings=historical_settings, warehouse=warehouse)
 
     assert service.get_code_list("EXTRA_STOCK_A") == ["000001.SZ"]
-    adapter.get_code_info.assert_not_called()
-    adapter.get_code_list.assert_not_called()
 
 
-def test_get_code_list_falls_back_to_adapter_and_persists_metadata(historical_settings, tmp_path):
+def test_get_code_list_returns_empty_when_no_local_data(historical_settings):
     warehouse = MagicMock()
     warehouse.query_codes.return_value = pd.DataFrame()
-    warehouse.meta_dir.return_value = tmp_path / "meta"
-    adapter = MagicMock()
-    adapter.get_code_info.return_value = pd.DataFrame(
-        {"code": ["000001.SZ"], "name": ["平安银行"], "is_listed": [True]}
-    )
-    service = MarketDataService(settings=historical_settings, adapter=adapter, warehouse=warehouse)
+    service = MarketDataService(settings=historical_settings, warehouse=warehouse)
 
-    assert service.get_code_list("EXTRA_STOCK_A") == ["000001.SZ"]
-    assert (tmp_path / "meta" / "codes.parquet").exists()
-    adapter.get_code_info.assert_called_once_with(security_type="EXTRA_STOCK_A")
-    adapter.get_code_list.assert_not_called()
+    assert service.get_code_list("EXTRA_STOCK_A") == []
 
 
-def test_get_calendar_delegates_to_adapter(historical_settings):
-    adapter = MagicMock()
-    adapter.get_calendar.return_value = pd.DataFrame({"date": [20240102]})
-    service = MarketDataService(settings=historical_settings, adapter=adapter)
+def test_get_calendar_uses_local_data(historical_settings):
+    warehouse = MagicMock()
+    warehouse.query_calendar.return_value = pd.DataFrame({"date": [20240102]})
+    service = MarketDataService(settings=historical_settings, warehouse=warehouse)
 
     df = service.get_calendar(market="SH", date=20240102)
 
     assert list(df["date"]) == [20240102]
-    adapter.get_calendar.assert_called_once_with(market="SH", date=20240102)
 
 
-def test_get_snapshot_returns_empty_when_adapter_not_logged_in(historical_settings):
-    adapter = MagicMock()
-    adapter.is_logged_in = False
-    service = MarketDataService(settings=historical_settings, adapter=adapter)
+def test_get_snapshot_returns_empty_in_api_only_mode(historical_settings):
+    service = MarketDataService(settings=historical_settings)
 
     df = service.get_snapshot(codes="000001.SZ")
 
     assert df.empty
-    adapter.get_snapshot.assert_not_called()
 
 
-def test_get_snapshot_delegates_when_adapter_logged_in(historical_settings):
-    adapter = MagicMock()
-    adapter.is_logged_in = True
-    adapter.get_snapshot.return_value = pd.DataFrame({"code": ["000001.SZ"], "date": [20240607]})
-    service = MarketDataService(settings=historical_settings, adapter=adapter)
-
-    df = service.get_snapshot(codes="000001.SZ", date=20240607)
-
-    assert list(df["code"]) == ["000001.SZ"]
-    adapter.get_snapshot.assert_called_once_with(codes="000001.SZ", date=20240607, time=None)
-
-
-def test_get_stock_basic_delegates_to_adapter(historical_settings):
-    adapter = MagicMock()
-    adapter.get_stock_basic.return_value = pd.DataFrame({"code": ["000001.SZ"]})
-    service = MarketDataService(settings=historical_settings, adapter=adapter)
+def test_get_stock_basic_uses_local_data(historical_settings):
+    warehouse = MagicMock()
+    warehouse.query_codes.return_value = pd.DataFrame({"code": ["000001.SZ"], "name": ["平安银行"]})
+    service = MarketDataService(settings=historical_settings, warehouse=warehouse)
 
     df = service.get_stock_basic(codes="000001.SZ", summary_only=False)
 
     assert list(df["code"]) == ["000001.SZ"]
-    adapter.get_stock_basic.assert_called_once_with(codes="000001.SZ", summary_only=False)

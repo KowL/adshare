@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import WebSocket, WebSocketDisconnect
 
-from adshare.adapters.amazingdata import get_adapter
+from amazingdata_worker.adapters.amazingdata import get_adapter
 from adshare.core.cache import get_cache_manager
 from adshare.core.config import get_settings
 from adshare.core.logging import get_logger

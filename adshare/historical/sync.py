@@ -78,8 +78,8 @@ class SyncResult:
 # ----------------------------------------------------------------------
 
 def _get_adapter_safe():
-    """Lazily import the SDK adapter so tests that mock it still work."""
-    from adshare.adapters.amazingdata import get_adapter
+    """Lazily import the SDK adapter from the worker package."""
+    from amazingdata_worker.adapters.amazingdata import get_adapter
 
     return get_adapter()
 
