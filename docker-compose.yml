@@ -8,7 +8,10 @@
 #   - Worker 必须在 linux/amd64 平台构建 (AmazingData SDK C 扩展限制)
 #
 # 启动命令:
-#   docker-compose up -d
+#   docker compose up -d
+#
+# Worker 构建 (必须指定 linux/amd64 平台，AmazingData SDK C 扩展限制):
+#   docker buildx build --platform linux/amd64 -t amazingdata-worker -f amazingdata_worker/Dockerfile .
 
 version: "3.8"
 
@@ -46,10 +49,10 @@ services:
       start_period: 10s
 
   amazingdata-worker:
+    platform: linux/amd64
     build:
       context: .
       dockerfile: amazingdata_worker/Dockerfile
-      platform: linux/amd64
     container_name: amazingdata-worker
     environment:
       - REDIS_HOST=${REDIS_HOST:-redis}
@@ -63,6 +66,10 @@ services:
       - SYNC_SCHEDULE_ENABLED=${SYNC_SCHEDULE_ENABLED:-true}
       - REALTIME_ENABLED=${REALTIME_ENABLED:-true}
       - SYNC_ON_START=${SYNC_ON_START:-true}
+      - AD_USERNAME=${AD_USERNAME}
+      - AD_PASSWORD=${AD_PASSWORD}
+      - AD_HOST=${AD_HOST:-101.230.159.234}
+      - AD_PORT=${AD_PORT:-8600}
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
