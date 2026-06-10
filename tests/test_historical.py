@@ -209,14 +209,21 @@ class TestPeriodNormalization:
 
 class TestKlineFilePath:
     def test_file_path_components(self, tmp_warehouse_root):
-        path = kline_file_path(tmp_warehouse_root, "day", 2024, "000001.SZ")
+        path = kline_file_path(tmp_warehouse_root, "day", "000001.SZ")
         assert path == (
-            tmp_warehouse_root / "A_share" / "daily" / "2024" / "000001.SZ.parquet"
+            tmp_warehouse_root / "A_share" / "daily" / "000001.SZ.parquet"
+        )
+
+    def test_file_path_legacy_year_kwarg_ignored(self, tmp_warehouse_root):
+        # The ``year`` kwarg is accepted for backward compat but ignored.
+        path = kline_file_path(tmp_warehouse_root, "day", "000001.SZ", year=2024)
+        assert path == (
+            tmp_warehouse_root / "A_share" / "daily" / "000001.SZ.parquet"
         )
 
     def test_file_path_unsafe_chars(self, tmp_warehouse_root):
         # Code with dot is preserved verbatim
-        path = kline_file_path(tmp_warehouse_root, "week", 2025, "600000.SH")
+        path = kline_file_path(tmp_warehouse_root, "week", "600000.SH")
         assert path.name == "600000.SH.parquet"
 
 
@@ -292,7 +299,7 @@ class TestStandardizeKlineDf:
             "amount": [1000000.0, 1100000.0],
         })
         df = standardize_kline_df(raw)
-        path = kline_file_path(tmp_warehouse_root, "day", 2024, "000001.SZ")
+        path = kline_file_path(tmp_warehouse_root, "day", "000001.SZ")
         path.parent.mkdir(parents=True, exist_ok=True)
         df.to_parquet(path, compression="zstd")
         roundtrip = pd.read_parquet(path)
@@ -343,22 +350,26 @@ class TestStandardizeCodesDf:
 class TestWriteMetadata:
     def test_write_metadata_creates_file(self, tmp_warehouse_root):
         path = write_metadata(
-            tmp_warehouse_root, "day", 2024,
-            file_count=2, total_rows=10, last_sync_at=12345,
+            tmp_warehouse_root, "day",
+            file_count=2, total_rows=10,
+            first_date=20240101, last_date=20241231, last_sync_at=12345,
         )
         assert path.exists()
         payload = json.loads(path.read_text())
         assert payload["file_count"] == 2
         assert payload["total_rows"] == 10
-        assert payload["year"] == 2024
+        assert payload["first_date"] == 20240101
+        assert payload["last_date"] == 20241231
         assert payload["period"] == "daily"
+        assert "year" not in payload  # flat layout: no year field
+        assert path.parent == tmp_warehouse_root / "A_share" / "daily"
 
 
 # ----------------------------------------------------------------------
 # Warehouse tests
 # ----------------------------------------------------------------------
 
-def _populate_kline(warehouse, period, year, code, dates=(20240101, 20240102, 20240103)):
+def _populate_kline(warehouse, period, code, dates=(20240101, 20240102, 20240103)):
     """Helper: write a few K-line rows directly to the warehouse."""
     rows = []
     for d in dates:
@@ -375,7 +386,7 @@ def _populate_kline(warehouse, period, year, code, dates=(20240101, 20240102, 20
             "sync_at": int(time.time()),
         })
     df = pd.DataFrame(rows)
-    path = kline_file_path(warehouse.root, period, year, code)
+    path = kline_file_path(warehouse.root, period, code)
     path.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(path, compression="zstd", index=False)
     return path
@@ -389,32 +400,36 @@ class TestWarehouse:
         assert (warehouse.root / "meta").exists()
 
     def test_kline_dir(self, warehouse):
+        d = warehouse.kline_dir("day")
+        assert d == warehouse.root / "A_share" / "daily"
+
+    def test_kline_dir_legacy_year_kwarg_ignored(self, warehouse):
         d = warehouse.kline_dir("day", 2024)
-        assert d == warehouse.root / "A_share" / "daily" / "2024"
+        assert d == warehouse.root / "A_share" / "daily"
 
     def test_is_synced_false_when_no_files(self, warehouse):
         assert not warehouse.is_synced(20240101, 20240131, "day", ["000001.SZ"])
 
     def test_is_synced_true(self, warehouse):
-        _populate_kline(warehouse, "day", 2024, "000001.SZ")
+        _populate_kline(warehouse, "day", "000001.SZ")
         warehouse.refresh_views()
         assert warehouse.is_synced(20240101, 20240103, "day", ["000001.SZ"])
 
     def test_is_synced_false_when_file_does_not_cover_range(self, warehouse):
-        _populate_kline(warehouse, "day", 2024, "000001.SZ")
+        _populate_kline(warehouse, "day", "000001.SZ")
         warehouse.refresh_views()
         assert not warehouse.is_synced(20240101, 20240131, "day", ["000001.SZ"])
 
     def test_is_synced_missing_code(self, warehouse):
-        _populate_kline(warehouse, "day", 2024, "000001.SZ")
+        _populate_kline(warehouse, "day", "000001.SZ")
         warehouse.refresh_views()
         assert not warehouse.is_synced(
             20240101, 20240131, "day", ["000001.SZ", "600000.SH"]
         )
 
     def test_query_kline(self, warehouse):
-        _populate_kline(warehouse, "day", 2024, "000001.SZ")
-        _populate_kline(warehouse, "day", 2024, "600000.SH")
+        _populate_kline(warehouse, "day", "000001.SZ")
+        _populate_kline(warehouse, "day", "600000.SH")
         warehouse.refresh_views()
         df = warehouse.query_kline(
             ["000001.SZ", "600000.SH"], 20240101, 20240103, "day"
@@ -423,7 +438,7 @@ class TestWarehouse:
         assert set(df["code"].unique()) == {"000001.SZ", "600000.SH"}
 
     def test_query_kline_with_limit(self, warehouse):
-        _populate_kline(warehouse, "day", 2024, "000001.SZ")
+        _populate_kline(warehouse, "day", "000001.SZ")
         warehouse.refresh_views()
         df = warehouse.query_kline(
             ["000001.SZ"], 20240101, 20240103, "day", limit=2, offset=1
@@ -456,7 +471,7 @@ class TestWarehouse:
             warehouse.execute_sql("")
 
     def test_execute_sql_select(self, warehouse):
-        _populate_kline(warehouse, "day", 2024, "000001.SZ")
+        _populate_kline(warehouse, "day", "000001.SZ")
         warehouse.refresh_views()
         df = warehouse.execute_sql("SELECT date, close FROM v_kline_day ORDER BY date")
         assert len(df) == 3
@@ -467,12 +482,15 @@ class TestWarehouse:
             warehouse.execute_sql("PRAGMA version")
 
     def test_stats(self, warehouse):
-        _populate_kline(warehouse, "day", 2024, "000001.SZ")
-        _populate_kline(warehouse, "day", 2024, "600000.SH")
+        _populate_kline(warehouse, "day", "000001.SZ")
+        _populate_kline(warehouse, "day", "600000.SH")
         stats = warehouse.stats()
         assert "daily" in stats["periods"]
         assert stats["periods"]["daily"]["file_count"] == 2
         assert stats["periods"]["weekly"]["file_count"] == 0
+        # New fields
+        assert "first_date" in stats["periods"]["daily"]
+        assert "last_date" in stats["periods"]["daily"]
 
     def test_health(self, warehouse):
         health = warehouse.health()
@@ -480,15 +498,22 @@ class TestWarehouse:
         assert health["historical_enabled"] is True
 
     def test_list_files(self, warehouse):
-        _populate_kline(warehouse, "day", 2024, "000001.SZ")
-        _populate_kline(warehouse, "day", 2024, "600000.SH")
+        _populate_kline(warehouse, "day", "000001.SZ")
+        _populate_kline(warehouse, "day", "600000.SH")
+        files = warehouse.list_files(period="day")
+        assert len(files) == 2
+
+    def test_list_files_year_arg_ignored(self, warehouse):
+        # year= is accepted for backward compat but should be ignored.
+        _populate_kline(warehouse, "day", "000001.SZ")
+        _populate_kline(warehouse, "day", "600000.SH")
         files = warehouse.list_files(period="day", year=2024)
         assert len(files) == 2
 
     def test_list_files_all(self, warehouse):
-        _populate_kline(warehouse, "day", 2024, "000001.SZ")
-        _populate_kline(warehouse, "week", 2024, "000001.SZ")
-        _populate_kline(warehouse, "month", 2024, "000001.SZ")
+        _populate_kline(warehouse, "day", "000001.SZ")
+        _populate_kline(warehouse, "week", "000001.SZ")
+        _populate_kline(warehouse, "month", "000001.SZ")
         files = warehouse.list_files()
         assert len(files) == 3
 
@@ -540,8 +565,8 @@ class TestSync:
         assert result.success is True
         assert result.succeeded == 2
         assert result.failed == 0
-        assert (warehouse.root / "A_share" / "daily" / "2024" / "000001.SZ.parquet").exists()
-        assert (warehouse.root / "A_share" / "daily" / "2024" / "600000.SH.parquet").exists()
+        assert (warehouse.root / "A_share" / "daily" / "000001.SZ.parquet").exists()
+        assert (warehouse.root / "A_share" / "daily" / "600000.SH.parquet").exists()
 
     def test_sync_kline_daily_partial_failure(self, warehouse, isolated_settings):
         fake = MagicMock()
@@ -598,8 +623,8 @@ class TestSync:
         assert result.skipped == 0
         assert result.failed == 0
         assert fake.get_kline.call_count == 1
-        assert (warehouse.root / "A_share" / "daily" / "2024" / "000001.SZ.parquet").exists()
-        assert (warehouse.root / "A_share" / "daily" / "2024" / "600000.SH.parquet").exists()
+        assert (warehouse.root / "A_share" / "daily" / "000001.SZ.parquet").exists()
+        assert (warehouse.root / "A_share" / "daily" / "600000.SH.parquet").exists()
 
     def test_sync_meta_codes(self, warehouse, isolated_settings):
         fake = self._fake_adapter()
@@ -641,7 +666,7 @@ class TestSync:
         assert result.failed == 0
         assert result.success is True
         assert not (
-            warehouse.root / "A_share" / "daily" / "2024" / "000001.SZ.parquet"
+            warehouse.root / "A_share" / "daily" / "000001.SZ.parquet"
         ).exists()
 
     def test_sync_kline_writes_metadata(self, warehouse, isolated_settings):
@@ -653,13 +678,12 @@ class TestSync:
             warehouse=warehouse,
             adapter=fake,
         )
-        meta_path = (
-            warehouse.root / "A_share" / "daily" / "2024" / "_metadata.json"
-        )
+        meta_path = warehouse.root / "A_share" / "daily" / "_metadata.json"
         assert meta_path.exists()
         payload = json.loads(meta_path.read_text())
         assert payload["file_count"] >= 1
-        assert payload["year"] == 2024
+        assert "year" not in payload  # flat layout: no per-year metadata
+        assert payload["period"] == "daily"
 
     def test_sync_kline_weekly(self, warehouse, isolated_settings):
         fake = self._fake_adapter()
@@ -673,7 +697,7 @@ class TestSync:
             adapter=fake,
         )
         assert result.success
-        assert (warehouse.root / "A_share" / "weekly" / "2024" / "000001.SZ.parquet").exists()
+        assert (warehouse.root / "A_share" / "weekly" / "000001.SZ.parquet").exists()
 
     def test_sync_kline_monthly(self, warehouse, isolated_settings):
         fake = self._fake_adapter()
@@ -686,7 +710,7 @@ class TestSync:
             adapter=fake,
         )
         assert result.success
-        assert (warehouse.root / "A_share" / "monthly" / "2024" / "000001.SZ.parquet").exists()
+        assert (warehouse.root / "A_share" / "monthly" / "000001.SZ.parquet").exists()
 
 
 # ----------------------------------------------------------------------
@@ -738,7 +762,7 @@ class TestHistoricalRouter:
 
     def test_kline_warehouse_hit(self, client, warehouse):
         # Populate warehouse then re-query via the historical router
-        _populate_kline(warehouse, "day", 2024, "000001.SZ")
+        _populate_kline(warehouse, "day", "000001.SZ")
         warehouse.refresh_views()
         response = client.get(
             "/historical/kline?codes=000001.SZ&begin_date=20240101&end_date=20240103&period=day"
@@ -750,7 +774,7 @@ class TestHistoricalRouter:
         assert data["count"] == 3
 
     def test_kline_source_warehouse_explicit(self, client, warehouse):
-        _populate_kline(warehouse, "day", 2024, "000001.SZ")
+        _populate_kline(warehouse, "day", "000001.SZ")
         warehouse.refresh_views()
         response = client.get(
             "/historical/kline?codes=000001.SZ&begin_date=20240101&end_date=20240103&period=day&source=warehouse"
@@ -802,7 +826,7 @@ class TestHistoricalRouter:
         assert data["count"] == 2
 
     def test_sql_select(self, client, warehouse):
-        _populate_kline(warehouse, "day", 2024, "000001.SZ")
+        _populate_kline(warehouse, "day", "000001.SZ")
         warehouse.refresh_views()
         response = client.post(
             "/historical/sql",
@@ -814,7 +838,7 @@ class TestHistoricalRouter:
         assert data["columns"] == ["date", "close"]
 
     def test_sql_max_rows_truncates(self, client, warehouse):
-        _populate_kline(warehouse, "day", 2024, "000001.SZ")
+        _populate_kline(warehouse, "day", "000001.SZ")
         warehouse.refresh_views()
         response = client.post(
             "/historical/sql",
@@ -845,7 +869,7 @@ class TestHistoricalRouter:
         assert data["count"] >= 1
 
     def test_market_kline_uses_warehouse_when_synced(self, client, warehouse):
-        _populate_kline(warehouse, "day", 2024, "000001.SZ")
+        _populate_kline(warehouse, "day", "000001.SZ")
         warehouse.refresh_views()
         response = client.get(
             "/market/kline?codes=000001.SZ&begin_date=20240101&end_date=20240103"

@@ -1,17 +1,18 @@
-"""Backfill 5 years of K-line data into the L3 historical warehouse.
+"""Backfill K-line data into the L3 historical warehouse (flat layout).
 
 Usage::
 
-    python -m scripts.backfill_kline --begin-year 2021 --end-year 2025 --period daily
-    python -m scripts.backfill_kline --begin-year 2021 --end-year 2025 --period all
-    python -m scripts.backfill_kline --begin-year 2024 --end-year 2024 --period weekly
-    python -m scripts.backfill_kline --begin-year 2024 --end-year 2024 --period monthly
+    python -m scripts.backfill_kline --from-date 20200101 --to-date 20260610 --period daily
+    python -m scripts.backfill_kline --from-date 20200101 --to-date 20260610 --period all
+    python -m scripts.backfill_kline --period daily                       # default window
+    python -m scripts.backfill_kline --begin-year 2020 --period daily    # legacy CLI (auto-converted)
 
 By default the script uses the cached ``AmazingData`` adapter to pull data,
-then writes the standard Parquet files via
-:mod:`adshare.historical.sync`. The script is intentionally simple — it does
-not do incremental backfill or resume: each invocation rewrites the per-stock
-Parquet files for the requested years.
+then writes the standard per-code Parquet files via
+:mod:`adshare.historical.sync` (one file per code, all years merged).
+The script is intentionally simple — it does not do incremental backfill
+or resume: each invocation rewrites the per-stock Parquet files for the
+requested window.
 """
 
 from __future__ import annotations
@@ -43,16 +44,28 @@ logger = get_logger("backfill_kline")
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Backfill K-line data into the L3 warehouse.")
     parser.add_argument(
+        "--from-date",
+        type=int,
+        default=None,
+        help="Inclusive start date YYYYMMDD (default: 20200101).",
+    )
+    parser.add_argument(
+        "--to-date",
+        type=int,
+        default=None,
+        help="Inclusive end date YYYYMMDD (default: today).",
+    )
+    parser.add_argument(
         "--begin-year",
         type=int,
-        default=2021,
-        help="First calendar year to backfill (inclusive).",
+        default=None,
+        help="[legacy] Translate to --from-date=YYYY0101. Use --from-date instead.",
     )
     parser.add_argument(
         "--end-year",
         type=int,
-        default=2025,
-        help="Last calendar year to backfill (inclusive).",
+        default=None,
+        help="[legacy] Translate to --to-date=YYYY1231. Use --to-date instead.",
     )
     parser.add_argument(
         "--period",
@@ -92,6 +105,19 @@ def _codes_arg(codes: str | None) -> List[str] | None:
     return [c.strip() for c in codes.split(",") if c.strip()]
 
 
+def _resolve_dates(args: argparse.Namespace) -> tuple[int | None, int | None]:
+    """Translate legacy ``--begin-year`` / ``--end-year`` to date ints."""
+    from_date = args.from_date
+    to_date = args.to_date
+    if args.begin_year is not None and from_date is None:
+        from_date = int(f"{int(args.begin_year)}0101")
+        logger.warning("--begin-year is deprecated; prefer --from-date. Using %s", from_date)
+    if args.end_year is not None and to_date is None:
+        to_date = int(f"{int(args.end_year)}1231")
+        logger.warning("--end-year is deprecated; prefer --to-date. Using %s", to_date)
+    return from_date, to_date
+
+
 def main() -> int:
     args = parse_args()
     setup_logging()
@@ -116,9 +142,9 @@ def main() -> int:
     batch_size = max(1, int(batch_size or 1))
     print(f"📚 K-line batch size: {batch_size}")
 
-    begin_year = max(1990, int(args.begin_year))
-    end_year = max(begin_year, int(args.end_year))
-    years = list(range(begin_year, end_year + 1))
+    from_date, to_date = _resolve_dates(args)
+    if from_date is not None or to_date is not None:
+        print(f"📅 Pull window: [{from_date or 'default'}, {to_date or 'default'}]")
 
     periods = ["daily", "weekly", "monthly"] if args.period == "all" else [args.period]
     period_to_func = {
@@ -141,24 +167,28 @@ def main() -> int:
 
     for period in periods:
         func = period_to_func[period]
-        for year in years:
-            print(f"\n--- {period}/{year} ---")
-            t0 = time.time()
-            try:
-                result = func(year=year, codes=code_list, batch_size=batch_size)
-            except Exception as e:  # noqa: BLE001
-                print(f"   ❌ failed: {e}")
-                continue
-            print(
-                f"   succeeded={result.succeeded} skipped={result.skipped} failed={result.failed} "
-                f"rows={result.rows} duration={time.time() - t0:.2f}s"
+        print(f"\n--- {period} ---")
+        t0 = time.time()
+        try:
+            result = func(
+                from_date=from_date,
+                to_date=to_date,
+                codes=code_list,
+                batch_size=batch_size,
             )
-            if result.errors:
-                for err in result.errors[:3]:
-                    print(f"     • {err}")
-                if len(result.errors) > 3:
-                    print(f"     ... and {len(result.errors) - 3} more")
-            results.append(result)
+        except Exception as e:  # noqa: BLE001
+            print(f"   ❌ failed: {e}")
+            continue
+        print(
+            f"   succeeded={result.succeeded} skipped={result.skipped} failed={result.failed} "
+            f"rows={result.rows} duration={time.time() - t0:.2f}s"
+        )
+        if result.errors:
+            for err in result.errors[:3]:
+                print(f"     • {err}")
+            if len(result.errors) > 3:
+                print(f"     ... and {len(result.errors) - 3} more")
+        results.append(result)
 
     total_duration = time.time() - started
     kline_results = [r for r in results if r.job.startswith("sync_kline")]
@@ -167,7 +197,7 @@ def main() -> int:
     total_skipped = sum(r.skipped for r in kline_results)
     total_failed = sum(r.failed for r in results)
     print("\n=== Backfill complete ===")
-    print(f"   years={years} periods={periods} duration={total_duration:.2f}s")
+    print(f"   periods={periods} duration={total_duration:.2f}s")
     print(
         f"   kline_rows={total_rows} files_written={total_files} "
         f"skipped={total_skipped} failures={total_failed}"

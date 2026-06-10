@@ -3,7 +3,8 @@
 The module implements:
 
 * ``sync_kline_daily`` / ``sync_kline_weekly`` / ``sync_kline_monthly`` — pull
-  the year's K-line data from the SDK and write a per-stock Parquet file.
+  K-line data from the SDK and overwrite the per-stock Parquet file
+  (one file per code with all years merged).
 * ``sync_meta_codes`` / ``sync_meta_calendar`` — refresh the global meta
   Parquet files used by DuckDB views.
 * :class:`SyncResult` — small data class describing the outcome of a run.
@@ -39,6 +40,10 @@ from adshare.historical.models import (
 from adshare.historical.warehouse import HistoricalWarehouse, get_warehouse
 
 logger = get_logger(__name__)
+
+# Default earliest date the sync job will pull from. Mirrors the
+# ``default_begin_date`` constant in :mod:`adshare.core.config`.
+_DEFAULT_BEGIN_DATE = 20200101
 
 
 # ----------------------------------------------------------------------
@@ -79,29 +84,28 @@ def _get_adapter_safe():
     return get_adapter()
 
 
-def _existing_codes(period: str, year: int, root: Path) -> set[str]:
-    """Return the set of codes already present for a (period, year)."""
-    year_dir = root / "A_share" / normalize_period(period) / str(int(year))
-    if not year_dir.exists():
+def _existing_codes(period: str, root: Path) -> set[str]:
+    """Return the set of codes already present for a period (flat layout)."""
+    period_dir = root / "A_share" / normalize_period(period)
+    if not period_dir.exists():
         return set()
-    return {f.stem for f in year_dir.glob("*.parquet")}
+    return {f.stem for f in period_dir.glob("*.parquet")}
 
 
 def _persist_kline(
     df: pd.DataFrame,
     period: str,
-    year: int,
     code: str,
     root: Path,
 ) -> Optional[Path]:
-    """Standardize, validate and write one stock's Parquet file."""
+    """Standardize, validate and overwrite one stock's Parquet file."""
     if df is None or df.empty:
         return None
     std = standardize_kline_df(df, code=code)
     std = validate_kline_df(std)
     if std.empty:
         return None
-    file_path = kline_file_path(root, period, year, code)
+    file_path = kline_file_path(root, period, code)
     file_path.parent.mkdir(parents=True, exist_ok=True)
     std.to_parquet(file_path, engine="pyarrow", compression="zstd", index=False)
     return file_path
@@ -115,11 +119,22 @@ def _persist_meta(df: pd.DataFrame, path: Path) -> Optional[Path]:
     return path
 
 
-def _year_bounds(year: int, today: Optional[datetime] = None) -> tuple[int, int]:
+def _date_bounds(
+    from_date: Optional[int],
+    to_date: Optional[int],
+    today: Optional[datetime] = None,
+) -> tuple[int, int]:
+    """Resolve inclusive (begin, end) date integers for a sync run.
+
+    Defaults: ``from_date = 20200101``, ``to_date = today``.
+    """
     today = today or datetime.now()
-    end = int(today.strftime("%Y%m%d"))
-    begin = int(f"{int(year)}0101")
-    return begin, min(end, int(f"{int(year)}1231"))
+    end_default = int(today.strftime("%Y%m%d"))
+    begin = int(from_date) if from_date is not None else _DEFAULT_BEGIN_DATE
+    end = int(to_date) if to_date is not None else end_default
+    if begin > end:
+        begin, end = end, begin
+    return begin, end
 
 
 # ----------------------------------------------------------------------
@@ -129,7 +144,8 @@ def _year_bounds(year: int, today: Optional[datetime] = None) -> tuple[int, int]
 def sync_kline(
     period: str = "day",
     *,
-    year: Optional[int] = None,
+    from_date: Optional[int] = None,
+    to_date: Optional[int] = None,
     codes: Optional[Sequence[str]] = None,
     batch_size: Optional[int] = None,
     settings: Optional[Settings] = None,
@@ -138,14 +154,20 @@ def sync_kline(
 ) -> SyncResult:
     """Generic K-line sync that handles daily/weekly/monthly periods.
 
-    Pulls each stock's full-year data from the SDK and writes a per-stock
-    Parquet file. Failures are captured in the result's ``errors`` list.
+    Pulls each stock's full data range from the SDK and **overwrites** the
+    per-stock Parquet file (one file per code, all years merged). The
+    default pull range is ``[20200101, today]``. Pass ``from_date`` /
+    ``to_date`` to narrow or extend the window.
+
+    The ``year`` keyword is accepted for backward compatibility and is
+    translated to a ``from_date`` of ``{year}0101`` and a ``to_date`` of
+    min(today, ``{year}1231``).
     """
     settings = settings or get_settings()
     warehouse = warehouse or get_warehouse(settings)
     root = warehouse.root
     today = datetime.now()
-    target_year = int(year or today.year)
+    begin_date, end_date = _date_bounds(from_date, to_date, today)
 
     if codes is None:
         try:
@@ -171,7 +193,6 @@ def sync_kline(
 
     job_name = f"sync_kline_{normalize_period(period)}"
     result = SyncResult(job=job_name, started_at=time.time(), total=len(codes))
-    begin_date, end_date = _year_bounds(target_year, today)
 
     adapter_obj = adapter or _get_adapter_safe()
     batch_size = int(batch_size or 1)
@@ -215,7 +236,7 @@ def sync_kline(
                     code_df = batch_df[batch_df["code"].astype(str) == str(code)]
                 else:
                     code_df = batch_df if len(batch) == 1 else pd.DataFrame()
-                path = _persist_kline(code_df, period, target_year, code, root)
+                path = _persist_kline(code_df, period, code, root)
                 if path is None:
                     result.skipped += 1
                     continue
@@ -226,9 +247,10 @@ def sync_kline(
                     pass
 
             logger.info(
-                "sync_kline(%s) year=%s batch=%s/%s succeeded=%d skipped=%d failed=%d rows=%d",
+                "sync_kline(%s) range=[%s,%s] batch=%s/%s succeeded=%d skipped=%d failed=%d rows=%d",
                 period,
-                target_year,
+                begin_date,
+                end_date,
                 min(start + len(batch), len(codes)),
                 len(codes),
                 result.succeeded,
@@ -240,23 +262,12 @@ def sync_kline(
         result.rows = rows_written
         result.finished_at = time.time()
         result.success = result.failed == 0
-        try:
-            existing = _existing_codes(period, target_year, root)
-            write_metadata(
-                root,
-                period,
-                target_year,
-                file_count=len(existing),
-                total_rows=rows_written,
-                last_sync_at=int(time.time()),
-            )
-        except Exception as e:
-            logger.warning("sync_kline: failed to write metadata: %s", e)
-        warehouse.refresh_views()
+        _write_period_metadata(period, root, warehouse, rows_written)
         logger.info(
-            "sync_kline(%s) year=%s succeeded=%d skipped=%d failed=%d rows=%d duration=%.2fs",
+            "sync_kline(%s) range=[%s,%s] succeeded=%d skipped=%d failed=%d rows=%d duration=%.2fs",
             period,
-            target_year,
+            begin_date,
+            end_date,
             result.succeeded,
             result.skipped,
             result.failed,
@@ -275,7 +286,7 @@ def sync_kline(
                     end_date=end_date,
                     period=period,
                 )
-                path = _persist_kline(df, period, target_year, code, root)
+                path = _persist_kline(df, period, code, root)
                 if path is None:
                     return code, "skipped", None, None
                 return code, "written", path, None
@@ -299,7 +310,6 @@ def sync_kline(
                 result.succeeded += 1
                 file_count += 1
                 try:
-                    # Reload to count rows cheaply
                     rows_written += len(pd.read_parquet(path))
                 except Exception:
                     pass
@@ -313,40 +323,79 @@ def sync_kline(
     result.rows = rows_written
     result.finished_at = time.time()
     result.success = result.failed == 0
+    _write_period_metadata(period, root, warehouse, rows_written)
+    logger.info(
+        "sync_kline(%s) range=[%s,%s] succeeded=%d failed=%d rows=%d duration=%.2fs",
+        period,
+        begin_date,
+        end_date,
+        result.succeeded,
+        result.failed,
+        result.rows,
+        result.duration,
+    )
+    return result
 
+
+def _write_period_metadata(
+    period: str,
+    root: Path,
+    warehouse: HistoricalWarehouse,
+    rows_written: int,
+) -> None:
+    """Refresh the per-period ``_metadata.json`` and DuckDB views."""
     try:
-        existing = _existing_codes(period, target_year, root)
+        existing = _existing_codes(period, root)
+        # Refresh DuckDB views first so the date-range probe sees the new files.
+        warehouse.refresh_views()
+        # Pull min/max date via DuckDB (single scan over the view).
+        first_date: Optional[int] = None
+        last_date: Optional[int] = None
+        subdir = normalize_period(period)
+        view_map = {"daily": "v_kline_day", "weekly": "v_kline_week", "monthly": "v_kline_month"}
+        view = view_map.get(subdir)
+        if view and existing:
+            try:
+                row = warehouse.connection.execute(
+                    f"SELECT MIN(date), MAX(date) FROM {view}"
+                ).fetchone()
+                if row:
+                    first_date, last_date = row[0], row[1]
+            except Exception as e:  # noqa: BLE001
+                logger.debug("metadata date range probe failed: %s", e)
         write_metadata(
             root,
             period,
-            target_year,
             file_count=len(existing),
             total_rows=rows_written,
+            first_date=first_date,
+            last_date=last_date,
             last_sync_at=int(time.time()),
         )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.warning("sync_kline: failed to write metadata: %s", e)
-
-    warehouse.refresh_views()
-    logger.info(
-        "sync_kline(%s) year=%s succeeded=%d failed=%d rows=%d duration=%.2fs",
-        period, target_year, result.succeeded, result.failed, result.rows, result.duration,
-    )
-    return result
 
 
 def sync_kline_daily(
     *,
     year: Optional[int] = None,
+    from_date: Optional[int] = None,
+    to_date: Optional[int] = None,
     codes: Optional[Sequence[str]] = None,
     batch_size: Optional[int] = None,
     settings: Optional[Settings] = None,
     warehouse: Optional[HistoricalWarehouse] = None,
     adapter=None,
 ) -> SyncResult:
+    if year is not None and from_date is None and to_date is None:
+        today = datetime.now()
+        end_cap = int(today.strftime("%Y%m%d"))
+        from_date = int(f"{int(year)}0101")
+        to_date = min(end_cap, int(f"{int(year)}1231"))
     return sync_kline(
         "day",
-        year=year,
+        from_date=from_date,
+        to_date=to_date,
         codes=codes,
         batch_size=batch_size,
         settings=settings,
@@ -358,15 +407,23 @@ def sync_kline_daily(
 def sync_kline_weekly(
     *,
     year: Optional[int] = None,
+    from_date: Optional[int] = None,
+    to_date: Optional[int] = None,
     codes: Optional[Sequence[str]] = None,
     batch_size: Optional[int] = None,
     settings: Optional[Settings] = None,
     warehouse: Optional[HistoricalWarehouse] = None,
     adapter=None,
 ) -> SyncResult:
+    if year is not None and from_date is None and to_date is None:
+        today = datetime.now()
+        end_cap = int(today.strftime("%Y%m%d"))
+        from_date = int(f"{int(year)}0101")
+        to_date = min(end_cap, int(f"{int(year)}1231"))
     return sync_kline(
         "week",
-        year=year,
+        from_date=from_date,
+        to_date=to_date,
         codes=codes,
         batch_size=batch_size,
         settings=settings,
@@ -378,15 +435,23 @@ def sync_kline_weekly(
 def sync_kline_monthly(
     *,
     year: Optional[int] = None,
+    from_date: Optional[int] = None,
+    to_date: Optional[int] = None,
     codes: Optional[Sequence[str]] = None,
     batch_size: Optional[int] = None,
     settings: Optional[Settings] = None,
     warehouse: Optional[HistoricalWarehouse] = None,
     adapter=None,
 ) -> SyncResult:
+    if year is not None and from_date is None and to_date is None:
+        today = datetime.now()
+        end_cap = int(today.strftime("%Y%m%d"))
+        from_date = int(f"{int(year)}0101")
+        to_date = min(end_cap, int(f"{int(year)}1231"))
     return sync_kline(
         "month",
-        year=year,
+        from_date=from_date,
+        to_date=to_date,
         codes=codes,
         batch_size=batch_size,
         settings=settings,

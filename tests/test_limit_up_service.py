@@ -176,7 +176,7 @@ def test_limit_up_persists_remote_kline_to_historical_file(tmp_path):
 
     service.get_limit_up(date=20240607, exclude_st=False)
 
-    path = tmp_path / "A_share" / "daily" / "2024" / "000001.SZ.parquet"
+    path = tmp_path / "A_share" / "daily" / "000001.SZ.parquet"
     assert path.exists()
     saved = pd.read_parquet(path)
     assert set(saved["date"]) == {20240606, 20240607}

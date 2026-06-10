@@ -2,9 +2,9 @@
 
 Schemas are derived from `docs/historical-data-architecture.md` §3.2.
 
-The file layout is one Parquet file per (period, year, code). Validation
-removes logically invalid rows (high<low, etc.) so that downstream DuckDB
-queries operate on clean data.
+The file layout is one Parquet file per (period, code) — all years merged
+into a single file. Validation removes logically invalid rows (high<low,
+etc.) so that downstream DuckDB queries operate on clean data.
 """
 
 from __future__ import annotations
@@ -120,16 +120,19 @@ def period_to_subdir(period: str) -> str:
 def kline_file_path(
     root: Path | str,
     period: str,
-    year: int,
     code: str,
+    year: Optional[int] = None,
 ) -> Path:
-    """Return the Parquet file path for one (period, year, code) tuple.
+    """Return the Parquet file path for one (period, code) tuple.
 
+    The ``year`` argument is accepted for backward compatibility but is
+    ignored — the flat layout stores all years in a single file per code.
     The code is sanitized so the resulting filename is filesystem-safe.
     """
+    del year  # flat layout: ignore year
     subdir = normalize_period(period)
     safe_code = _safe_code(code)
-    return Path(root) / "A_share" / subdir / str(int(year)) / f"{safe_code}.parquet"
+    return Path(root) / "A_share" / subdir / f"{safe_code}.parquet"
 
 
 def _safe_code(code: str) -> str:
@@ -397,30 +400,32 @@ def _infer_board(code: str) -> str:
 def write_metadata(
     root: Path | str,
     period: str,
-    year: int,
     *,
     file_count: int,
     total_rows: int,
+    first_date: Optional[int] = None,
+    last_date: Optional[int] = None,
     last_sync_at: Optional[int] = None,
 ) -> Path:
-    """Write a ``_metadata.json`` file describing a year's sync status."""
+    """Write a per-period ``_metadata.json`` file summarizing the warehouse."""
     import json
 
     root = Path(root)
     subdir = normalize_period(period)
-    year_dir = root / "A_share" / subdir / str(int(year))
-    year_dir.mkdir(parents=True, exist_ok=True)
-    meta_path = year_dir / "_metadata.json"
+    period_dir = root / "A_share" / subdir
+    period_dir.mkdir(parents=True, exist_ok=True)
+    meta_path = period_dir / "_metadata.json"
     payload: Dict[str, Any] = {
-        "version": "1.0",
+        "version": "2.0",
         "schema": {
             "columns": list(KLINE_COLUMNS),
             "dtypes": KLINE_DTYPES,
         },
-        "year": int(year),
         "period": subdir,
         "file_count": int(file_count),
         "total_rows": int(total_rows),
+        "first_date": int(first_date) if first_date is not None else None,
+        "last_date": int(last_date) if last_date is not None else None,
         "last_sync_at": int(last_sync_at or time.time()),
     }
     meta_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2))

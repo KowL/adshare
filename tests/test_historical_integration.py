@@ -147,48 +147,51 @@ def test_5year_backfill_daily(five_year_settings):
     fake = FakeSDK(codes, year_start=2021, year_end=2025)
     wh = hist_warehouse.get_warehouse(five_year_settings)
 
-    total_rows = 0
-    for year in years:
-        result = hist_sync.sync_kline_daily(
-            year=year,
-            codes=codes,
-            settings=five_year_settings,
-            warehouse=wh,
-            adapter=fake,
-        )
-        assert result.success, f"sync failed for {year}: {result.errors}"
-        assert result.succeeded == 3
-        total_rows += result.rows
+    result = hist_sync.sync_kline_daily(
+        from_date=20210101,
+        to_date=20251231,
+        codes=codes,
+        settings=five_year_settings,
+        warehouse=wh,
+        adapter=fake,
+    )
+    assert result.success, f"sync failed: {result.errors}"
+    assert result.succeeded == 3
 
-    # Verify each year directory has 3 Parquet files
-    for year in years:
-        year_dir = wh.root / "A_share" / "daily" / str(year)
-        assert year_dir.exists()
-        files = list(year_dir.glob("*.parquet"))
-        assert len(files) == 3, f"expected 3 files for {year}, got {len(files)}"
-        for code in codes:
-            path = kline_file_path(wh.root, "day", year, code)
-            assert path.exists()
-            df = pd.read_parquet(path)
-            # All columns from the standard schema must be present
-            for col in KLINE_COLUMNS:
-                assert col in df.columns
-            # Dates should be within the year
-            assert df["date"].min() >= int(f"{year}0101")
-            assert df["date"].max() <= int(f"{year}1231")
+    # Verify each code has a flat Parquet file under daily/.
+    daily_dir = wh.root / "A_share" / "daily"
+    for code in codes:
+        path = kline_file_path(wh.root, "day", code)
+        assert path.exists(), f"missing flat file for {code}"
+        df = pd.read_parquet(path)
+        for col in KLINE_COLUMNS:
+            assert col in df.columns
+        # All 5 years present
+        assert df["date"].min() >= 20210101
+        assert df["date"].max() <= 20251231
+        df_year = df["date"].apply(lambda d: int(str(d)[:4]))
+        for year in years:
+            assert year in set(df_year), f"missing year {year} in {code}"
+
+    # Per-period metadata sidecar
+    meta_path = daily_dir / "_metadata.json"
+    assert meta_path.exists()
+    payload = json.loads(meta_path.read_text())
+    assert payload["file_count"] == 3
+    assert payload["first_date"] == 20210101
+    assert payload["last_date"] == 20251231
+    assert "year" not in payload  # flat layout: no per-year metadata
 
     # Query via DuckDB
     wh.refresh_views()
     df = wh.query_kline(codes, 20210101, 20251231, "day")
     assert len(df) > 0
     assert set(df["code"].unique()) == set(codes)
-    # Date range should cover 5 years
     assert df["date"].min() >= 20210101
     assert df["date"].max() <= 20251231
-    # Each year should have data
-    df["year"] = df["date"].apply(lambda d: int(str(d)[:4]))
+    df_year = df["date"].apply(lambda d: int(str(d)[:4]))
     for year in years:
-        assert year in set(df["year"]), f"missing year {year}"
+        assert year in set(df_year), f"missing year {year}"
 
 
 def test_5year_backfill_weekly(five_year_settings):
@@ -197,16 +200,18 @@ def test_5year_backfill_weekly(five_year_settings):
     fake = FakeSDK(codes, year_start=2021, year_end=2025)
     wh = hist_warehouse.get_warehouse(five_year_settings)
 
-    for year in [2021, 2022, 2023, 2024, 2025]:
-        result = hist_sync.sync_kline_weekly(
-            year=year,
-            codes=codes,
-            settings=five_year_settings,
-            warehouse=wh,
-            adapter=fake,
-        )
-        assert result.success
-        assert result.succeeded == 2
+    result = hist_sync.sync_kline_weekly(
+        from_date=20210101,
+        to_date=20251231,
+        codes=codes,
+        settings=five_year_settings,
+        warehouse=wh,
+        adapter=fake,
+    )
+    assert result.success
+    assert result.succeeded == 2
+    for code in codes:
+        assert (wh.root / "A_share" / "weekly" / f"{code}.parquet").exists()
 
     # Verify is_synced across multiple years
     wh.refresh_views()
@@ -219,15 +224,16 @@ def test_5year_backfill_monthly(five_year_settings):
     fake = FakeSDK(codes, year_start=2021, year_end=2025)
     wh = hist_warehouse.get_warehouse(five_year_settings)
 
-    for year in [2021, 2022, 2023, 2024, 2025]:
-        result = hist_sync.sync_kline_monthly(
-            year=year,
-            codes=codes,
-            settings=five_year_settings,
-            warehouse=wh,
-            adapter=fake,
-        )
-        assert result.success
+    result = hist_sync.sync_kline_monthly(
+        from_date=20210101,
+        to_date=20251231,
+        codes=codes,
+        settings=five_year_settings,
+        warehouse=wh,
+        adapter=fake,
+    )
+    assert result.success
+    assert (wh.root / "A_share" / "monthly" / f"{codes[0]}.parquet").exists()
 
     wh.refresh_views()
     assert wh.is_synced(20210101, 20251231, "month", codes)
@@ -279,7 +285,8 @@ def test_backfill_handles_partial_failures(five_year_settings):
     wh = hist_warehouse.get_warehouse(five_year_settings)
 
     result = hist_sync.sync_kline_daily(
-        year=2024,
+        from_date=20240101,
+        to_date=20241231,
         codes=codes,
         settings=five_year_settings,
         warehouse=wh,
@@ -288,30 +295,33 @@ def test_backfill_handles_partial_failures(five_year_settings):
     assert result.succeeded == 2
     assert result.failed == 1
     assert not result.success
-    # Two files should still be written
-    files = list((wh.root / "A_share" / "daily" / "2024").glob("*.parquet"))
+    # Two of the three flat files should be written
+    files = list((wh.root / "A_share" / "daily").glob("*.parquet"))
     assert len(files) == 2
 
 
-def test_backfill_writes_yearly_metadata(five_year_settings):
-    """Each yearly sync should emit a ``_metadata.json`` file."""
+def test_backfill_writes_period_metadata(five_year_settings):
+    """A single sync run should refresh the per-period ``_metadata.json`` file."""
     codes = ["000001.SZ"]
     fake = FakeSDK(codes, year_start=2021, year_end=2025)
     wh = hist_warehouse.get_warehouse(five_year_settings)
 
-    for year in [2021, 2022, 2023, 2024, 2025]:
-        hist_sync.sync_kline_daily(
-            year=year,
-            codes=codes,
-            settings=five_year_settings,
-            warehouse=wh,
-            adapter=fake,
-        )
-        meta_path = wh.root / "A_share" / "daily" / str(year) / "_metadata.json"
-        assert meta_path.exists()
-        payload = json.loads(meta_path.read_text())
-        assert payload["year"] == year
-        assert payload["file_count"] == 1
+    result = hist_sync.sync_kline_daily(
+        from_date=20210101,
+        to_date=20251231,
+        codes=codes,
+        settings=five_year_settings,
+        warehouse=wh,
+        adapter=fake,
+    )
+    assert result.success
+    meta_path = wh.root / "A_share" / "daily" / "_metadata.json"
+    assert meta_path.exists()
+    payload = json.loads(meta_path.read_text())
+    assert payload["file_count"] == 1
+    assert payload["first_date"] == 20210101
+    assert payload["last_date"] == 20251231
+    assert "year" not in payload  # flat layout: no per-year field
 
 
 def test_backfill_resumable_after_partial_run(five_year_settings):
@@ -321,14 +331,24 @@ def test_backfill_resumable_after_partial_run(five_year_settings):
     wh = hist_warehouse.get_warehouse(five_year_settings)
 
     result1 = hist_sync.sync_kline_daily(
-        year=2024, codes=codes, settings=five_year_settings, warehouse=wh, adapter=fake
+        from_date=20240101,
+        to_date=20241231,
+        codes=codes,
+        settings=five_year_settings,
+        warehouse=wh,
+        adapter=fake,
     )
     rows_first = result1.rows
     assert rows_first > 0
 
-    # Re-run the same year
+    # Re-run the same window
     result2 = hist_sync.sync_kline_daily(
-        year=2024, codes=codes, settings=five_year_settings, warehouse=wh, adapter=fake
+        from_date=20240101,
+        to_date=20241231,
+        codes=codes,
+        settings=five_year_settings,
+        warehouse=wh,
+        adapter=fake,
     )
     assert result2.success
     assert result2.rows == rows_first  # idempotent
@@ -344,22 +364,30 @@ def test_backfill_is_synced_checks(five_year_settings):
     # Empty warehouse
     assert not wh.is_synced(20210101, 20251231, "day", codes)
 
-    # Partial backfill
+    # Partial backfill (only 2024)
     hist_sync.sync_kline_daily(
-        year=2024, codes=codes, settings=five_year_settings, warehouse=wh, adapter=fake
+        from_date=20240101,
+        to_date=20241231,
+        codes=codes,
+        settings=five_year_settings,
+        warehouse=wh,
+        adapter=fake,
     )
     wh.refresh_views()
-    # Only 2024 is synced
+    # The flat file for 2024 doesn't cover 5 years
     assert wh.is_synced(20240101, 20241231, "day", codes)
     assert not wh.is_synced(20210101, 20251231, "day", codes)
 
-    # Backfill the rest
-    for year in [2021, 2022, 2023, 2025]:
-        hist_sync.sync_kline_daily(
-            year=year, codes=codes, settings=five_year_settings, warehouse=wh, adapter=fake
-        )
+    # Full backfill
+    hist_sync.sync_kline_daily(
+        from_date=20210101,
+        to_date=20251231,
+        codes=codes,
+        settings=five_year_settings,
+        warehouse=wh,
+        adapter=fake,
+    )
     wh.refresh_views()
-    # Now 5 years are synced
     assert wh.is_synced(20210101, 20251231, "day", codes)
 
 
@@ -369,12 +397,20 @@ def test_warehouse_stats_after_backfill(five_year_settings):
     fake = FakeSDK(codes, year_start=2021, year_end=2025)
     wh = hist_warehouse.get_warehouse(five_year_settings)
 
-    for year in [2021, 2022, 2023, 2024, 2025]:
-        hist_sync.sync_kline_daily(
-            year=year, codes=codes, settings=five_year_settings, warehouse=wh, adapter=fake
-        )
+    hist_sync.sync_kline_daily(
+        from_date=20210101,
+        to_date=20251231,
+        codes=codes,
+        settings=five_year_settings,
+        warehouse=wh,
+        adapter=fake,
+    )
 
     stats = wh.stats()
-    assert stats["periods"]["daily"]["file_count"] == 3 * 5  # 3 codes × 5 years
+    # Flat layout: 3 codes × 1 file per code = 3 files
+    assert stats["periods"]["daily"]["file_count"] == 3
     assert stats["periods"]["daily"]["total_bytes"] > 0
+    assert "year_count" not in stats["periods"]["daily"]
+    assert stats["periods"]["daily"]["first_date"] == 20210101
+    assert stats["periods"]["daily"]["last_date"] == 20251231
     assert stats["periods"]["weekly"]["file_count"] == 0

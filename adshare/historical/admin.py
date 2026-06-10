@@ -53,7 +53,9 @@ async def admin_stats() -> dict:
 @router.post("/sync")
 async def admin_sync(
     job: str = Query(..., description="sync job: daily, weekly, monthly, codes, calendar"),
-    year: Optional[int] = Query(default=None, description="Year for K-line jobs"),
+    year: Optional[int] = Query(default=None, description="[deprecated] Year anchor; use from_date/to_date instead"),
+    from_date: Optional[int] = Query(default=None, description="Inclusive start date YYYYMMDD"),
+    to_date: Optional[int] = Query(default=None, description="Inclusive end date YYYYMMDD"),
     market: str = Query(default="SH", description="Market for calendar job"),
 ) -> dict:
     """Trigger a sync job synchronously."""
@@ -64,11 +66,11 @@ async def admin_sync(
     job_lc = (job or "").lower()
     started = time.time()
     if job_lc in {"daily", "kline_daily"}:
-        result = sync_kline_daily(year=year)
+        result = sync_kline_daily(year=year, from_date=from_date, to_date=to_date)
     elif job_lc in {"weekly", "kline_weekly"}:
-        result = sync_kline_weekly(year=year)
+        result = sync_kline_weekly(year=year, from_date=from_date, to_date=to_date)
     elif job_lc in {"monthly", "kline_monthly"}:
-        result = sync_kline_monthly(year=year)
+        result = sync_kline_monthly(year=year, from_date=from_date, to_date=to_date)
     elif job_lc in {"codes", "meta_codes"}:
         result = sync_meta_codes()
     elif job_lc in {"calendar", "meta_calendar"}:

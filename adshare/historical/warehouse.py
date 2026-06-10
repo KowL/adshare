@@ -4,6 +4,9 @@ The warehouse creates an in-memory DuckDB connection and exposes
 :class:`HistoricalWarehouse` for SQL-style queries against the on-disk
 Parquet files. The connection is shared across threads with an internal
 ``threading.RLock`` to keep things safe in FastAPI's threadpool.
+
+The on-disk layout is flat: one Parquet file per (period, code) with all
+years merged (e.g. ``A_share/daily/000001.SZ.parquet``).
 """
 
 from __future__ import annotations
@@ -18,7 +21,7 @@ import pandas as pd
 
 from adshare.core.config import Settings, get_settings
 from adshare.core.logging import get_logger
-from adshare.historical.models import normalize_period, period_to_subdir
+from adshare.historical.models import _safe_code, normalize_period, period_to_subdir
 
 logger = get_logger(__name__)
 
@@ -72,7 +75,7 @@ class HistoricalWarehouse:
             ("weekly", "v_kline_week"),
             ("monthly", "v_kline_month"),
         ):
-            glob = f"{root}/A_share/{period}/*/*.parquet"
+            glob = f"{root}/A_share/{period}/*.parquet"
             sql = f"""
                 CREATE OR REPLACE VIEW {view} AS
                 SELECT
@@ -125,9 +128,16 @@ class HistoricalWarehouse:
     # Path helpers
     # ------------------------------------------------------------------
 
-    def kline_dir(self, period: str, year: int) -> Path:
+    def kline_dir(self, period: str, year: Optional[int] = None) -> Path:
+        """Return the K-line directory for a period.
+
+        ``year`` is accepted for backward compatibility but is ignored in
+        the flat layout — every code lives directly under
+        ``A_share/{subdir}/``.
+        """
+        del year
         subdir = normalize_period(period)
-        return self.root / "A_share" / subdir / str(int(year))
+        return self.root / "A_share" / subdir
 
     def meta_dir(self) -> Path:
         return self.root / "meta"
@@ -145,29 +155,30 @@ class HistoricalWarehouse:
     ) -> bool:
         """Return True if the requested range is fully covered locally.
 
-        A range is considered ``synced`` if, for every year it touches,
-        the file for every requested code exists on disk. A empty
-        ``codes`` list means we only check that at least one file exists
-        for the period/year combination.
+        A range is considered ``synced`` if:
+
+        1. The ``A_share/{subdir}/`` directory exists and contains at least
+           one Parquet file.
+        2. Every requested code has a file (only checked when ``codes`` is
+           non-empty).
+        3. The on-disk file for each requested code covers the
+           ``[begin_date, end_date]`` window (only when ``codes`` is given
+           and ``period == "day"``). The check verifies
+           ``min(date) <= begin_date`` and ``max(date) >= end_date``
+           against the actual file contents.
         """
         subdir = normalize_period(period)
-        try:
-            begin_year = int(str(int(begin_date))[:4])
-            end_year = int(str(int(end_date))[:4])
-        except Exception:
+        period_dir = self.root / "A_share" / subdir
+        if not period_dir.exists():
             return False
-        for year in range(begin_year, end_year + 1):
-            year_dir = self.root / "A_share" / subdir / str(year)
-            if not year_dir.exists():
+        parquet_files = list(period_dir.glob("*.parquet"))
+        if not parquet_files:
+            return False
+        if codes:
+            expected = {_safe_code(c) for c in codes}
+            found = {f.stem for f in parquet_files}
+            if not expected.issubset(found):
                 return False
-            parquet_files = list(year_dir.glob("*.parquet"))
-            if not parquet_files:
-                return False
-            if codes:
-                expected = {_safe_code(c) for c in codes}
-                found = {f.stem for f in parquet_files}
-                if not expected.issubset(found):
-                    return False
         if codes and subdir == "daily":
             try:
                 local = self.query_kline(codes, begin_date, end_date, period)
@@ -214,16 +225,8 @@ class HistoricalWarehouse:
 
         begin = int(begin_date)
         end = int(end_date)
-        begin_year = int(str(begin)[:4])
-        end_year = int(str(end)[:4])
 
-        # Build a single glob covering only the relevant years. DuckDB's
-        # read_parquet does not support bash brace expansion, so we use a
-        # wildcard and filter the code in the WHERE clause.
-        if begin_year == end_year:
-            glob = f"{self.root}/A_share/{subdir}/{int(begin_year)}/*.parquet"
-        else:
-            glob = f"{self.root}/A_share/{subdir}/*/*.parquet"
+        glob = f"{self.root}/A_share/{subdir}/*.parquet"
 
         placeholders = ",".join("?" for _ in safe_codes)
         params: List[Any] = list(safe_codes) + [begin, end]
@@ -343,11 +346,10 @@ class HistoricalWarehouse:
     ) -> List[Path]:
         root = self.root
         results: List[Path] = []
+        del year  # flat layout: every code lives directly under A_share/{subdir}/
         if period:
             subdir = normalize_period(period)
             base = root / "A_share" / subdir
-            if year is not None:
-                base = base / str(int(year))
             if base.exists():
                 results.extend(sorted(p for p in base.glob("*.parquet")))
             return results
@@ -355,12 +357,7 @@ class HistoricalWarehouse:
             base = root / "A_share" / sub
             if not base.exists():
                 continue
-            if year is not None:
-                base = base / str(int(year))
-                if base.exists():
-                    results.extend(sorted(p for p in base.glob("*.parquet")))
-            else:
-                results.extend(sorted(p for p in base.rglob("*.parquet")))
+            results.extend(sorted(p for p in base.glob("*.parquet")))
         return results
 
     def stats(self) -> Dict[str, Any]:
@@ -370,19 +367,27 @@ class HistoricalWarehouse:
             base = self.root / "A_share" / sub
             file_count = 0
             total_bytes = 0
-            year_dirs: List[str] = []
             if base.exists():
-                for year_dir in sorted(base.iterdir()):
-                    if not year_dir.is_dir():
-                        continue
-                    year_dirs.append(year_dir.name)
-                    for f in year_dir.glob("*.parquet"):
-                        file_count += 1
-                        total_bytes += f.stat().st_size
+                for f in base.glob("*.parquet"):
+                    file_count += 1
+                    total_bytes += f.stat().st_size
+            # Pull min/max date from a single DuckDB scan over the view.
+            first_date: Optional[int] = None
+            last_date: Optional[int] = None
+            if file_count > 0:
+                try:
+                    row = self.connection.execute(
+                        f"SELECT MIN(date) AS lo, MAX(date) AS hi FROM v_kline_{'day' if sub == 'daily' else ('week' if sub == 'weekly' else 'month')}"
+                    ).fetchone()
+                    if row:
+                        first_date, last_date = row[0], row[1]
+                except Exception as e:  # noqa: BLE001
+                    logger.debug("stats date range probe failed for %s: %s", sub, e)
             period_stats[sub] = {
-                "year_count": len(year_dirs),
                 "file_count": file_count,
                 "total_bytes": total_bytes,
+                "first_date": int(first_date) if first_date is not None else None,
+                "last_date": int(last_date) if last_date is not None else None,
             }
         return {
             "root": str(self.root),
@@ -429,11 +434,7 @@ class HistoricalWarehouse:
                 raise
 
 
-def _safe_code(code: str) -> str:
-    """Filesystem-safe version of a stock code (duplicated for warehouse use)."""
-    if not code:
-        raise ValueError("code cannot be empty")
-    return "".join(c if c.isalnum() or c in "-_." else "_" for c in code)
+# Note: ``_safe_code`` is imported from :mod:`adshare.historical.models`.
 
 
 # ----------------------------------------------------------------------

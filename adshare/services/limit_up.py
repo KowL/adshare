@@ -463,21 +463,18 @@ def _persist_kline_to_warehouse(df: pd.DataFrame, warehouse) -> None:
         std = standardize_kline_df(code_df, code=code)
         if std.empty:
             continue
-        std["year"] = std["date"].astype(str).str[:4].astype(int)
-        for year, year_df in std.groupby("year"):
-            year_df = year_df.drop(columns=["year"])
-            path = kline_file_path(root, "day", int(year), code)
-            if path.exists():
-                try:
-                    existing = pd.read_parquet(path)
-                    year_df = pd.concat([existing, year_df], ignore_index=True)
-                except Exception as e:  # noqa: BLE001
-                    logger.warning("Failed to read existing K-line file %s: %s", path, e)
-            year_df = validate_kline_df(year_df)
-            if year_df.empty:
-                continue
-            path.parent.mkdir(parents=True, exist_ok=True)
-            year_df.to_parquet(path, engine="pyarrow", compression="zstd", index=False)
+        path = kline_file_path(root, "day", code)
+        if path.exists():
+            try:
+                existing = pd.read_parquet(path)
+                std = pd.concat([existing, std], ignore_index=True)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Failed to read existing K-line file %s: %s", path, e)
+        std = validate_kline_df(std)
+        if std.empty:
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        std.to_parquet(path, engine="pyarrow", compression="zstd", index=False)
 
 
 def _lookback_begin_date(target_date: int, days: int = 14) -> int:

@@ -35,7 +35,8 @@ from adshare.historical import sync as hist_sync  # noqa: E402
 from adshare.historical.warehouse import get_warehouse  # noqa: E402
 
 CODES = ["000001.SZ", "600000.SH", "300750.SZ", "688981.SH", "830799.BJ"]
-YEARS = list(range(2021, 2026))  # 5 years inclusive
+FROM_DATE = 20210101
+TO_DATE = 20251231  # inclusive 5-year window
 
 
 def _synth_kline(code: str, begin: int, end: int, period: str) -> "pd.DataFrame":
@@ -100,22 +101,23 @@ def main() -> int:
         ("weekly", "week", hist_sync.sync_kline_weekly),
         ("monthly", "month", hist_sync.sync_kline_monthly),
     ]:
-        for year in YEARS:
-            t0 = time.time()
-            result = func(
-                year=year,
-                codes=CODES,
-                settings=settings,
-                warehouse=warehouse,
-                adapter=mock,
-            )
-            duration = time.time() - t0
-            print(
-                f"  • {period_label} {year}: succeeded={result.succeeded} "
-                f"failed={result.failed} rows={result.rows} duration={duration:.2f}s"
-            )
-            total_rows += result.rows
-            failures += result.failed
+        t0 = time.time()
+        result = func(
+            from_date=FROM_DATE,
+            to_date=TO_DATE,
+            codes=CODES,
+            settings=settings,
+            warehouse=warehouse,
+            adapter=mock,
+        )
+        duration = time.time() - t0
+        print(
+            f"  • {period_label} range=[{FROM_DATE},{TO_DATE}]: "
+            f"succeeded={result.succeeded} failed={result.failed} "
+            f"rows={result.rows} duration={duration:.2f}s"
+        )
+        total_rows += result.rows
+        failures += result.failed
 
     # Meta files
     print("\n📋 Meta sync")
