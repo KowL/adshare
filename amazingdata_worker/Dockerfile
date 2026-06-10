@@ -35,9 +35,9 @@ COPY amazingdata_worker/ ./amazingdata_worker/
 # 创建缓存和日志目录
 RUN mkdir -p cache logs data
 
-# Worker 健康检查（简单检查进程存活）
+# Worker 健康检查（python:3.11-slim 无 pgrep/ps，用 kill -0 检查 PID 1）
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD pgrep -f "python -m amazingdata_worker.main" || exit 1
+    CMD sh -c "kill -0 1"
 
 # 启动命令（作为模块运行，确保 import 路径正确）
 CMD ["python", "-m", "amazingdata_worker.main"]
