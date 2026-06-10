@@ -1,9 +1,8 @@
-FROM python:3.11-slim
+FROM --platform=linux/amd64 python:3.11-slim
 
 WORKDIR /app
 
 # 强制 amd64 平台（AmazingData SDK C 扩展仅支持 linux/amd64）
-# docker build 时需加 --platform linux/amd64
 
 # 使用阿里云镜像源加速
 RUN pip config set global.index-url https://mirrors.aliyun.com/pypi/simple/
@@ -30,15 +29,14 @@ RUN pip install --no-cache-dir -e "." tables
 COPY adshare/ ./adshare/
 COPY scripts/ ./scripts/
 COPY config/ ./config/
-COPY amazingdata_worker/adapters/ ./amazingdata_worker/adapters/
-COPY amazingdata_worker/main.py ./main.py
+COPY amazingdata_worker/ ./amazingdata_worker/
 
 # 创建缓存和日志目录
 RUN mkdir -p cache logs data
 
 # Worker 健康检查（简单检查进程存活）
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD pgrep -f "python /app/main.py" || exit 1
+    CMD pgrep -f "python -m amazingdata_worker.main" || exit 1
 
-# 启动命令
-CMD ["python", "/app/main.py"]
+# 启动命令（作为模块运行，确保 import 路径正确）
+CMD ["python", "-m", "amazingdata_worker.main"]
