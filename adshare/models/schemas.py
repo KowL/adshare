@@ -264,6 +264,99 @@ class LimitUpLadderResponse(BaseResponse):
 
 
 # ============================================================
+# Limit-Down Data
+# ============================================================
+
+
+class LimitDownItem(BaseModel):
+    """Single limit-down stock record."""
+
+    code: str
+    name: str
+    limitDownDate: str
+    changePct: float
+    board: str = "主板"
+    limitDownDays: int = 1
+    price: float = 0
+    preClose: float = 0
+    open: float = 0
+    high: float = 0
+    low: float = 0
+    amount: float = 0
+    volume: int = 0
+    amplitude: float = 0
+    turnover: float = 0
+    firstTime: str = ""
+    finalTime: str = ""
+    reason: str = ""
+    industry: str = ""
+    concept: str = ""
+
+
+class LimitDownResponse(DataResponse):
+    """Response for limit-down stocks."""
+
+    date: str
+    stocks: List[LimitDownItem] = []
+
+
+# ============================================================
+# Market Activity (赚钱效应)
+# ============================================================
+
+
+class MarketActivityDistribution(BaseModel):
+    """Market-wide rise/fall distribution."""
+
+    rising: int = 0
+    limit_up: int = 0
+    real_limit_up: int = 0
+    falling: int = 0
+    limit_down: int = 0
+    real_limit_down: int = 0
+    flat: int = 0
+    suspended: int = 0
+    total: int = 0
+
+
+class MarketActivityResponse(DataResponse):
+    """Response for market activity / 赚钱效应."""
+
+    date: str
+    distribution: MarketActivityDistribution
+    activity_rate: float = 0
+
+
+# ============================================================
+# Strong Stock Pool (强势股池)
+# ============================================================
+
+
+class StrongStockItem(BaseModel):
+    """Single strong stock record."""
+
+    code: str
+    name: str
+    changePct: float
+    price: float
+    amount: float
+    volume: int
+    turnover: float = 0
+    is_new_high: bool = False
+    limit_up_count: int = 0
+    volume_ratio: float = 0
+    industry: str = ""
+    reason: str = ""
+
+
+class StrongStockPoolResponse(DataResponse):
+    """Response for strong stock pool."""
+
+    date: str
+    stocks: List[StrongStockItem] = []
+
+
+# ============================================================
 # Financial Data
 # ============================================================
 

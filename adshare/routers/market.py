@@ -10,13 +10,21 @@ from adshare.models.schemas import (
     CalendarResponse,
     CodeListResponse,
     KlineResponse,
+    LimitDownResponse,
     LimitUpLadderResponse,
     LimitUpResponse,
+    MarketActivityResponse,
     SnapshotResponse,
     StockBasicResponse,
     StockBasicSummary,
+    StrongStockPoolResponse,
 )
-from adshare.services.limit_up import get_limit_up_service
+from adshare.services.limit_up import (
+    get_limit_down_service,
+    get_limit_up_service,
+    get_market_activity_service,
+    get_strong_stock_pool_service,
+)
 from adshare.services.mappers import dataframe_to_kline_items, dataframe_to_snapshot_items
 from adshare.services.market_data import get_market_data_service
 
@@ -273,4 +281,85 @@ async def get_limit_up_ladder(
         )
     except Exception as e:
         logger.error(f"get_limit_up_ladder failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+# ============================================================
+# Limit-Down Data
+# ============================================================
+
+
+@router.get("/limit-down", response_model=LimitDownResponse)
+async def get_limit_down(
+    days: int = Query(default=1, description="Number of trading days to look back"),
+    date: Optional[int] = Query(default=None, description="Trade date YYYYMMDD"),
+    board_filter: Optional[str] = Query(
+        default=None,
+        description="Filter by board: 主板, 创业板, 科创板, 北交所",
+    ),
+    exclude_st: bool = Query(default=True, description="Exclude ST/*ST stocks"),
+):
+    """Get limit-down stocks for recent trading days.
+    
+    Calculated from daily K-line data: close reaches the theoretical limit-down price.
+    """
+    try:
+        return get_limit_down_service().get_limit_down(
+            days=days,
+            date=date,
+            board_filter=board_filter,
+            exclude_st=exclude_st,
+        )
+    except Exception as e:
+        logger.error(f"get_limit_down failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================
+# Market Activity (赚钱效应)
+# ============================================================
+
+
+@router.get("/market-activity", response_model=MarketActivityResponse)
+async def get_market_activity(
+    date: Optional[int] = Query(default=None, description="Trade date YYYYMMDD"),
+):
+    """Get market activity / 赚钱效应 for a trading day.
+    
+    Returns distribution of rising, falling, limit-up, limit-down, flat and suspended stocks.
+    """
+    try:
+        return get_market_activity_service().get_market_activity(date=date)
+    except Exception as e:
+        logger.error(f"get_market_activity failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================
+# Strong Stock Pool (强势股池)
+# ============================================================
+
+
+@router.get("/strong-pool", response_model=StrongStockPoolResponse)
+async def get_strong_pool(
+    date: Optional[int] = Query(default=None, description="Trade date YYYYMMDD"),
+    lookback_days: int = Query(default=20, description="Lookback window for new-high and limit-up count"),
+    min_change_pct: float = Query(default=0.03, description="Minimum change pct to be considered strong"),
+):
+    """Get strong stock pool for a trading day.
+    
+    Screens stocks that meet at least one of:
+    - Change pct >= min_change_pct (default 3%)
+    - New high within lookback_days
+    - Has limit-up genes in lookback period
+    - Volume ratio >= 1.5
+    
+    Sorted by changePct descending.
+    """
+    try:
+        return get_strong_stock_pool_service().get_strong_pool(
+            date=date,
+            lookback_days=lookback_days,
+            min_change_pct=min_change_pct,
+        )
+    except Exception as e:
+        logger.error(f"get_strong_pool failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))

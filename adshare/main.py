@@ -72,19 +72,25 @@ async def lifespan(app: FastAPI):
         print(f"⚠️  Historical warehouse init failed: {e}")
 
     # Initialise realtime subscriber
-    broadcast_task = None
-    try:
-        from adshare.services.realtime import get_realtime_subscriber
+    import os
 
-        subscriber = get_realtime_subscriber()
-        if subscriber.initialize():
-            subscriber._loop = asyncio.get_running_loop()
-            broadcast_task = asyncio.create_task(subscriber.broadcast_loop())
-            print("📡 Realtime subscriber started")
-        else:
-            print("⚠️  Realtime subscriber init failed")
-    except Exception as e:
-        print(f"⚠️  Realtime subscriber init error: {e}")
+    broadcast_task = None
+    realtime_enabled = os.environ.get("REALTIME_ENABLED", "true").lower() in ("true", "1", "yes")
+    if realtime_enabled:
+        try:
+            from adshare.services.realtime import get_realtime_subscriber
+
+            subscriber = get_realtime_subscriber()
+            if subscriber.initialize():
+                subscriber._loop = asyncio.get_running_loop()
+                broadcast_task = asyncio.create_task(subscriber.broadcast_loop())
+                print("📡 Realtime subscriber started")
+            else:
+                print("⚠️  Realtime subscriber init failed")
+        except Exception as e:
+            print(f"⚠️  Realtime subscriber init error: {e}")
+    else:
+        print("ℹ️  Realtime subscriber disabled (REALTIME_ENABLED=false)")
 
     yield
 

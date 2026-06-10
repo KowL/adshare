@@ -36,6 +36,7 @@ services:
       - HISTORICAL_PATH=${HISTORICAL_PATH:-/app/data}
       - DUCKDB_MODE=${DUCKDB_MODE:-memory}
       - SYNC_SCHEDULE_ENABLED=${SYNC_SCHEDULE_ENABLED:-false}
+      - REALTIME_ENABLED=${REALTIME_ENABLED:-true}
     volumes:
       - ./cache:/app/cache
       - ./logs:/app/logs
