@@ -618,21 +618,57 @@ def get_scheduler() -> Optional["BackgroundScheduler"]:  # type: ignore[name-def
 
 def _run_sync_kline_daily() -> None:
     try:
-        sync_kline_daily()
+        settings = get_settings()
+        warehouse = get_warehouse(settings)
+        end_date = int(datetime.now().strftime("%Y%m%d"))
+        begin_date = 20200101
+        try:
+            warehouse.refresh_views()
+            row = warehouse.connection.execute("SELECT MAX(date) FROM v_kline_day").fetchone()
+            last_date = row[0] if row and row[0] else None
+            if last_date:
+                begin_date = int(last_date)
+        except Exception:
+            logger.warning("scheduled sync_kline_daily: failed to probe last date, using 20200101")
+        sync_kline_daily(from_date=begin_date, to_date=end_date)
     except Exception as e:  # noqa: BLE001
         logger.exception("scheduled sync_kline_daily failed: %s", e)
 
 
 def _run_sync_kline_weekly() -> None:
     try:
-        sync_kline_weekly()
+        settings = get_settings()
+        warehouse = get_warehouse(settings)
+        end_date = int(datetime.now().strftime("%Y%m%d"))
+        begin_date = 20200101
+        try:
+            warehouse.refresh_views()
+            row = warehouse.connection.execute("SELECT MAX(date) FROM v_kline_week").fetchone()
+            last_date = row[0] if row and row[0] else None
+            if last_date:
+                begin_date = int(last_date)
+        except Exception:
+            logger.warning("scheduled sync_kline_weekly: failed to probe last date, using 20200101")
+        sync_kline_weekly(from_date=begin_date, to_date=end_date)
     except Exception as e:  # noqa: BLE001
         logger.exception("scheduled sync_kline_weekly failed: %s", e)
 
 
 def _run_sync_kline_monthly() -> None:
     try:
-        sync_kline_monthly()
+        settings = get_settings()
+        warehouse = get_warehouse(settings)
+        end_date = int(datetime.now().strftime("%Y%m%d"))
+        begin_date = 20200101
+        try:
+            warehouse.refresh_views()
+            row = warehouse.connection.execute("SELECT MAX(date) FROM v_kline_month").fetchone()
+            last_date = row[0] if row and row[0] else None
+            if last_date:
+                begin_date = int(last_date)
+        except Exception:
+            logger.warning("scheduled sync_kline_monthly: failed to probe last date, using 20200101")
+        sync_kline_monthly(from_date=begin_date, to_date=end_date)
     except Exception as e:  # noqa: BLE001
         logger.exception("scheduled sync_kline_monthly failed: %s", e)
 

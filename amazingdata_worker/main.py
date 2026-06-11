@@ -112,10 +112,22 @@ def _run_once_sync() -> None:
         result = sync_meta_calendar()
         logger.info("sync_meta_calendar: success=%s rows=%s", result.success, result.rows)
 
-        # Sync daily kline (last 30 days by default)
+        # Incremental daily kline: pull from the last date already in the warehouse
+        # up to today. If the warehouse is empty, fall back to the default 2020 start.
         from datetime import datetime, timedelta
         end_date = int(datetime.now().strftime("%Y%m%d"))
-        begin_date = int((datetime.now() - timedelta(days=30)).strftime("%Y%m%d"))
+        begin_date = 20200101
+        try:
+            warehouse.refresh_views()
+            row = warehouse.connection.execute("SELECT MAX(date) FROM v_kline_day").fetchone()
+            last_date = row[0] if row and row[0] else None
+            if last_date:
+                # Pull the last date again in case the previous run was partial,
+                # then continue to today.
+                begin_date = int(last_date)
+                logger.info("Incremental daily sync from last warehouse date: %s", begin_date)
+        except Exception as e:
+            logger.warning("Failed to probe last warehouse date, using default begin_date=20200101: %s", e)
 
         result = sync_kline_daily(from_date=begin_date, to_date=end_date)
         logger.info("sync_kline_daily: succeeded=%s failed=%s rows=%s duration=%.2fs",
