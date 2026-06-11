@@ -264,7 +264,7 @@ async def get_limit_up(
 async def get_limit_up_ladder(
     days: int = Query(default=15, description="Number of trading days to look back"),
     date: Optional[int] = Query(default=None, description="Trade date YYYYMMDD"),
-    board_filter: Optional[str] = Query(default=None, description="Filter by board"),
+    board_filter: Optional[str] = Query(default=None, description="Filter by board: 主板, 创业板, 科创板, 北交所"),
     exclude_st: bool = Query(default=True, description="Exclude ST/*ST stocks"),
 ):
     """Get limit-up ladder (consecutive limit-up levels).

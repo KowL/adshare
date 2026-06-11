@@ -90,6 +90,36 @@ r = requests.get(f"{base}/market/kline", params={
     "period": "day"
 }, headers=headers)
 data = r.json()
+print(f"Total bars: {data['count']}")
+for bar in data["data"][:3]:
+    print(f"  {bar['date']}: open={bar['open']}, close={bar['close']}")
+
+# Get stock basic info
+r = requests.get(f"{base}/market/stock/basic", params={"codes": "000001.SZ"})
+basic = r.json()
+print(f"Name: {basic['data'][0]['name']}, List date: {basic['data'][0]['list_date']}")
+```
+
+## TypeScript Example
+
+```typescript
+const base = "http://localhost:8000";
+const headers = { "X-API-Key": "your-api-key" }; // if auth enabled
+
+// Get K-line
+const params = new URLSearchParams({
+  codes: "000001.SZ",
+  begin_date: "20240101",
+  end_date: "20241231",
+  period: "day",
+});
+const res = await fetch(`${base}/market/kline?${params}`, { headers });
+const data = await res.json();
+console.log(`Total bars: ${data.count}`);
+
+// Get trading calendar
+const cal = await fetch(`${base}/market/calendar?market=SH`).then(r => r.json());
+console.log(`Trading days: ${cal.calendar.slice(0, 5).join(", ")}...`);
 ```
 
 ## Error Handling

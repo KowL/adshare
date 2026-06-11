@@ -7,6 +7,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import Optional, Sequence
 
+import numpy as np
 import pandas as pd
 
 from adshare.core.config import get_settings
@@ -20,6 +21,8 @@ from adshare.historical.models import (
 )
 from adshare.historical.warehouse import get_warehouse
 from adshare.models.schemas import (
+    LimitDownItem,
+    LimitDownResponse,
     LimitUpItem,
     LimitUpLadderItem,
     LimitUpLadderLevel,
@@ -27,6 +30,8 @@ from adshare.models.schemas import (
     LimitUpResponse,
     MarketActivityDistribution,
     MarketActivityResponse,
+    StrongStockItem,
+    StrongStockPoolResponse,
 )
 
 logger = get_logger(__name__)
@@ -340,6 +345,12 @@ def calculate_limit_up_price(pre_close: float, board: str) -> float:
     rate = LIMIT_UP_RATES.get(board, LIMIT_UP_RATES["主板"])
     price = Decimal(str(pre_close)) * (Decimal("1") + rate)
     return float(price.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+
+def _calculate_limit_up_price_vec(pre_close: pd.Series, board: str) -> pd.Series:
+    """Vectorized limit-up price calculation for a Series of pre_close values."""
+    rate = float(LIMIT_UP_RATES.get(board, LIMIT_UP_RATES["主板"]))
+    return np.round(pre_close.astype(float) * (1 + rate), 2)
 
 
 def is_limit_up_price(close: float, limit_up_price: float) -> bool:
@@ -898,19 +909,16 @@ class StrongStockPoolService:
                     if avg_vol > 0:
                         volume_ratio = round(volume / avg_vol, 2)
 
-            # Limit-up count in lookback period
+            # Limit-up count in lookback period (vectorized)
+            lookback_valid = lookback[pd.to_numeric(lookback["date"], errors="coerce").fillna(0).astype(int) < int(target_date)]
             limit_up_count = 0
-            for _, prev_row in lookback.iterrows():
-                prev_date = int(prev_row.get("date", 0))
-                if prev_date >= int(target_date):
-                    continue
-                prev_close = float(prev_row.get("close", 0) or 0)
-                if prev_close <= 0:
-                    continue
-                prev_high = float(prev_row.get("high", 0) or 0)
-                lup_price = calculate_limit_up_price(prev_close, board)
-                if is_limit_up_price(prev_high, lup_price):
-                    limit_up_count += 1
+            if not lookback_valid.empty:
+                prev_closes = pd.to_numeric(lookback_valid["close"], errors="coerce").fillna(0)
+                prev_highs = pd.to_numeric(lookback_valid["high"], errors="coerce").fillna(0)
+                valid = prev_closes > 0
+                if valid.any():
+                    limit_prices = _calculate_limit_up_price_vec(prev_closes[valid], board)
+                    limit_up_count = int((prev_highs[valid] >= limit_prices).sum())
 
             # Filter: strong if change_pct >= min_change_pct OR new high OR has limit-up genes
             is_strong = (

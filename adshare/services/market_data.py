@@ -61,16 +61,16 @@ class MarketDataService:
             warehouse = self._get_warehouse()
             if warehouse is not None:
                 try:
+                    # Partial-hit: query whatever files exist, skip missing ones.
+                    df = warehouse.query_kline(
+                        code_list,
+                        begin_date,
+                        end_date,
+                        period,
+                        limit=limit,
+                        offset=offset,
+                    )
                     synced = warehouse.is_synced(begin_date, end_date, period, code_list)
-                    if synced:
-                        df = warehouse.query_kline(
-                            code_list,
-                            begin_date,
-                            end_date,
-                            period,
-                            limit=limit,
-                            offset=offset,
-                        )
                 except Exception as e:  # noqa: BLE001
                     logger.debug("L3 warehouse lookup failed: %s", e)
                     df = pd.DataFrame()

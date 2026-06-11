@@ -78,6 +78,36 @@ r = requests.get(f"{base}/technical/analyze", params={
 })
 macd = r.json()
 print(f"DIF: {macd['DIF'][-1]}, DEA: {macd['DEA'][-1]}, MACD: {macd['MACD'][-1]}")
+
+# Analyze all categories
+r = requests.get(f"{base}/technical/analyze", params={
+    "code": "000001.SZ",
+    "category": "trend",
+})
+trend = r.json()
+print(f"Trend indicators: {len(trend['categories']['trend']['indicators'])}")
+```
+
+### TypeScript Example
+
+```typescript
+const base = "http://localhost:8000";
+
+// Get MACD for 平安银行
+const params = new URLSearchParams({
+  code: "000001.SZ",
+  indicator: "MACD",
+  period: "day",
+  begin_date: "20240101",
+  end_date: "20241231",
+});
+const res = await fetch(`${base}/technical/analyze?${params}`);
+const macd = await res.json();
+console.log(`DIF: ${macd.categories.indicator.indicators[0].values.DIF}`);
+
+// Analyze all categories
+const all = await fetch(`${base}/technical/analyze?code=000001.SZ`).then(r => r.json());
+console.log(`Categories: ${Object.keys(all.categories).join(", ")}`);
 ```
 
 ## Signal Interpretation

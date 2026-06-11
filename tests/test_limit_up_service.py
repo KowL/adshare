@@ -150,48 +150,59 @@ def test_limit_up_uses_local_codes_and_local_daily_kline(tmp_path):
     assert adapter.kline_calls == []
 
 
-def test_limit_up_does_not_check_login_status_when_falling_back_to_amazingdata(tmp_path):
+def test_limit_up_empty_warehouse_returns_empty(tmp_path):
+    """When warehouse has no data, service returns empty result (no adapter fallback)."""
     adapter = FakeLimitUpAdapter(logged_in=False)
     warehouse = FakeWarehouse(tmp_path, pd.DataFrame(), pd.DataFrame())
     service = LimitUpService(adapter=adapter, warehouse=warehouse, batch_size=10)
 
     result = service.get_limit_up(date=20240607, exclude_st=False)
 
-    assert {stock.code for stock in result.stocks} == {"000001", "300001", "688001", "000002"}
-    assert adapter.code_info_calls == 1
-    assert len(adapter.kline_calls) == 1
-    assert set(adapter.kline_calls[0].split(",")) == {
-        "000001.SZ",
-        "600000.SH",
-        "300001.SZ",
-        "688001.SH",
-        "000002.SZ",
-    }
+    assert result.stocks == []
+    assert result.count == 0
+    # Adapter should NOT be consulted after service化
+    assert adapter.code_info_calls == 0
+    assert adapter.kline_calls == []
 
 
-def test_limit_up_persists_remote_kline_to_historical_file(tmp_path):
-    adapter = FakeLimitUpAdapter(logged_in=False)
-    warehouse = FakeWarehouse(tmp_path, code_info_df(), pd.DataFrame())
-    service = LimitUpService(adapter=adapter, warehouse=warehouse, batch_size=10)
-
-    service.get_limit_up(date=20240607, exclude_st=False)
-
-    path = tmp_path / "A_share" / "daily" / "000001.SZ.parquet"
-    assert path.exists()
-    saved = pd.read_parquet(path)
-    assert set(saved["date"]) == {20240606, 20240607}
-    assert warehouse.refresh_count >= 1
-
-
-def test_limit_up_continues_when_one_kline_batch_fails(tmp_path):
-    adapter = FakeLimitUpAdapter(logged_in=False, fail_second_batch=True)
-    warehouse = FakeWarehouse(tmp_path, code_info_df(), pd.DataFrame())
-    service = LimitUpService(adapter=adapter, warehouse=warehouse, batch_size=2)
+def test_limit_up_reads_from_warehouse_and_calculates_correctly(tmp_path):
+    """Service reads K-line from warehouse and calculates limit-up correctly."""
+    warehouse = FakeWarehouse(
+        tmp_path,
+        code_info_df(),
+        kline_df(["000001.SZ", "600000.SH", "300001.SZ", "000002.SZ"]),
+    )
+    service = LimitUpService(warehouse=warehouse)
 
     result = service.get_limit_up(date=20240607, exclude_st=False)
 
-    assert [stock.code for stock in result.stocks] == ["000001", "000002"]
-    assert len(adapter.kline_calls) == 3
+    # 000001.SZ (主板 10.0→11.0 = 10%涨停), 300001.SZ (创业板 20.0→24.0 = 20%涨停),
+    # 000002.SZ (主板 10.0→11.0 = 10%涨停)
+    # 600000.SH (主板 10.0→10.10 = 1% 不涨停)
+    codes = {stock.code for stock in result.stocks}
+    assert codes == {"000001", "300001", "000002"}
+    assert result.count == 3
+
+
+def test_limit_up_warehouse_error_returns_empty(tmp_path):
+    """When warehouse query raises, service returns empty (no adapter fallback)."""
+    class BrokenWarehouse:
+        root = tmp_path
+        def query_codes(self, **kwargs):
+            raise RuntimeError("warehouse down")
+        def query_kline(self, **kwargs):
+            raise RuntimeError("warehouse down")
+        def meta_dir(self):
+            return tmp_path / "meta"
+        def refresh_views(self):
+            pass
+
+    service = LimitUpService(warehouse=BrokenWarehouse())
+
+    result = service.get_limit_up(date=20240607, exclude_st=False)
+
+    assert result.stocks == []
+    assert result.count == 0
 
 
 def test_limit_up_ladder_groups_current_hits_as_first_board(tmp_path):
@@ -204,4 +215,5 @@ def test_limit_up_ladder_groups_current_hits_as_first_board(tmp_path):
 
     assert result.maxLevel == 1
     assert result.levels[0].name == "首板"
-    assert result.levels[0].count == 4
+    # 3 stocks in kline data: 000001 (主板 10%), 300001 (创业板 20%), 000002 (主板 10%)
+    assert result.levels[0].count == 3

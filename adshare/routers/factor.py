@@ -6,7 +6,10 @@ from fastapi import APIRouter, HTTPException, Query
 
 from adshare.core.logging import get_logger
 from adshare.models.schemas import FactorAnalysisResponse
-from adshare.services.market_data import get_market_data_service
+from adshare.services.factor_analysis import (
+    FactorAnalysisError,
+    get_factor_analysis_service,
+)
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/factor", tags=["factor"])
@@ -15,12 +18,8 @@ router = APIRouter(prefix="/factor", tags=["factor"])
 @router.get("/capabilities")
 async def factor_capabilities():
     """Return factor analysis capabilities."""
-    return {
-        "preprocessing": ["MAD去极值", "Z-Score标准化", "中位数补空"],
-        "analysis": ["IC分析(Spearman)", "截面回归", "分层回测"],
-        "composite": ["共线性检测", "正交化", "加权合成"],
-        "sample_factors": ["ma5", "ma10", "momentum"],
-    }
+    service = get_factor_analysis_service()
+    return service.capabilities()
 
 
 @router.get("/analyze", response_model=FactorAnalysisResponse)
@@ -28,19 +27,28 @@ async def analyze_factor(
     factor_name: str = Query(..., description="Factor name, e.g. ma5, momentum"),
     stock_list: str = Query(..., description="Comma-separated stock codes"),
     begin_date: int = Query(default=20240101, description="Start date YYYYMMDD"),
-    end_date: int = Query(default=None, description="End date YYYYMMDD"),
+    end_date: Optional[int] = Query(default=None, description="End date YYYYMMDD"),
     benchmark: str = Query(default="000300.SH", description="Benchmark index code"),
     group_num: int = Query(default=5, description="Number of stratification groups"),
     ic_decay: int = Query(default=20, description="IC decay period"),
 ):
-    """Run factor analysis for given stocks.
-
-    Not available in API-only mode — requires AmazingData SDK (worker service).
-    """
-    raise HTTPException(
-        status_code=503,
-        detail="Factor analysis requires AmazingData SDK. Use the worker service.",
-    )
+    """Run factor analysis for given stocks."""
+    try:
+        service = get_factor_analysis_service()
+        return service.analyze(
+            factor_name=factor_name,
+            stock_list=[s.strip() for s in stock_list.split(",") if s.strip()],
+            begin_date=begin_date,
+            end_date=end_date,
+            benchmark=benchmark,
+            group_num=group_num,
+            ic_decay=ic_decay,
+        )
+    except FactorAnalysisError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.message) from e
+    except Exception as e:
+        logger.error(f"Factor analysis failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/composite")
@@ -52,11 +60,19 @@ async def composite_factor(
     weight_method: str = "equal",
     use_orthogonal: bool = True,
 ):
-    """Composite multiple factors into a single factor.
-
-    Not available in API-only mode — requires AmazingData SDK (worker service).
-    """
-    raise HTTPException(
-        status_code=503,
-        detail="Factor composite requires AmazingData SDK. Use the worker service.",
-    )
+    """Composite multiple factors into a single factor."""
+    try:
+        service = get_factor_analysis_service()
+        return service.composite(
+            factor_names=factor_names,
+            stock_list=stock_list,
+            begin_date=begin_date,
+            end_date=end_date,
+            weight_method=weight_method,
+            use_orthogonal=use_orthogonal,
+        )
+    except FactorAnalysisError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.message) from e
+    except Exception as e:
+        logger.error(f"Factor composite failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

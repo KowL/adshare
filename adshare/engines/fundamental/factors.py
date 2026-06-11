@@ -138,23 +138,18 @@ def _avg_bs(series):
 
 
 def _safe_diff(series, rp_index):
-    """Safe difference with quarterly interval check."""
+    """Safe difference with quarterly interval check.
+
+    Uses vectorized pandas operations instead of Python loops.
+    """
     result = series.copy()
     rp_dt = pd.to_datetime(rp_index)
-    for i in range(len(result)):
-        if i == 0:
-            result.iloc[i] = np.nan
-            continue
-        delta = (rp_dt[i] - rp_dt[i - 1]).days
-        if 75 <= delta <= 110:
-            prev_val = series.iloc[i - 1]
-            cur_val = series.iloc[i]
-            if pd.notna(cur_val) and pd.notna(prev_val):
-                result.iloc[i] = cur_val - prev_val
-            else:
-                result.iloc[i] = np.nan
-        else:
-            result.iloc[i] = np.nan
+    deltas = rp_dt.to_series().diff().dt.days
+    valid = (75 <= deltas) & (deltas <= 110)
+    diffs = series.diff()
+    result = diffs.where(valid & series.notna() & series.shift(1).notna(), np.nan)
+    if len(result) > 0:
+        result.iloc[0] = np.nan
     return result
 
 

@@ -72,13 +72,35 @@ import requests
 
 base = "http://localhost:8000"
 
-# Get ROE_TTM for 平安银行
+# Get profitability category for 平安银行
 r = requests.get(f"{base}/fundamental/analyze", params={
     "code": "000001.SZ",
-    "factor": "ROE_TTM"
+    "category": "profitability"
 })
-roe = r.json()
-print(f"ROE_TTM: {roe['value']}")
+result = r.json()
+for factor_name, value in result["categories"]["profitability"]["latest_values"].items():
+    print(f"  {factor_name}: {value:.2f}")
+
+# List all available factors
+r = requests.get(f"{base}/fundamental/factors")
+factors = r.json()
+print(f"Categories: {list(factors.keys())}")
+```
+
+### TypeScript Example
+
+```typescript
+const base = "http://localhost:8000";
+
+// Get profitability category
+const params = new URLSearchParams({ code: "000001.SZ", category: "profitability" });
+const res = await fetch(`${base}/fundamental/analyze?${params}`);
+const result = await res.json();
+console.log("Profitability factors:", result.categories.profitability.latest_values);
+
+// List all factors
+const factors = await fetch(`${base}/fundamental/factors`).then(r => r.json());
+console.log("Available categories:", Object.keys(factors));
 ```
 
 ## Factor Interpretation

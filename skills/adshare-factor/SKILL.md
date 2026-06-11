@@ -92,6 +92,33 @@ print(f"IC Mean: {result['ic_mean']:.4f}")
 print(f"Annual Return: {result['annual_return']:.2%}")
 print(f"Sharpe: {result['sharpe_ratio']:.2f}")
 print(f"Max Drawdown: {result['max_drawdown']:.2%}")
+
+# List capabilities
+r = requests.get(f"{base}/factor/capabilities")
+caps = r.json()
+print(f"Analysis methods: {caps['analysis']}")
+```
+
+### TypeScript Example
+
+```typescript
+const base = "http://localhost:8000";
+
+// Analyze momentum factor
+const params = new URLSearchParams({
+  factor_name: "momentum",
+  stock_list: "000001.SZ,000002.SZ,600519.SH",
+  begin_date: "20240101",
+  end_date: "20241231",
+  group_num: "5",
+});
+const res = await fetch(`${base}/factor/analyze?${params}`);
+const result = await res.json();
+console.log(`IC Mean: ${result.ic_mean?.toFixed(4) ?? "N/A"}`);
+
+// List capabilities
+const caps = await fetch(`${base}/factor/capabilities`).then(r => r.json());
+console.log("Preprocessing:", caps.preprocessing);
 ```
 
 ## Factor Quality Criteria

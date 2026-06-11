@@ -61,6 +61,27 @@ class TestTechnicalAnalyze:
         response = client.get("/technical/analyze?code=000001.SZ&indicator=INVALID")
         assert response.status_code == 404
 
+    @pytest.mark.parametrize("category", [
+        "overbought_oversold",
+        "energy",
+        "volume",
+        "ma",
+        "path",
+        "other",
+    ])
+    def test_analyze_each_category(self, client, category):
+        response = client.get(f"/technical/analyze?code=000001.SZ&category={category}")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["code"] == "000001.SZ"
+        cat = data["categories"][category]
+        assert cat["name"] == category
+        assert isinstance(cat["indicators"], list)
+        assert len(cat["indicators"]) > 0
+        for ind in cat["indicators"]:
+            assert "name" in ind
+            assert "values" in ind
+
     def test_analyze_invalid_category(self, client):
         response = client.get("/technical/analyze?code=000001.SZ&category=INVALID")
         assert response.status_code == 400
@@ -69,3 +90,23 @@ class TestTechnicalAnalyze:
         # Unknown code should result in empty kline => 404
         response = client.get("/technical/analyze?code=UNKNOWN.CODE")
         assert response.status_code == 404
+
+
+class TestTechnicalIndicatorsList:
+    def test_list_indicators(self, client):
+        response = client.get("/technical/indicators")
+        assert response.status_code == 200
+        data = response.json()
+        expected_categories = {
+            "overbought_oversold",
+            "trend",
+            "energy",
+            "volume",
+            "ma",
+            "path",
+            "other",
+        }
+        assert set(data.keys()) == expected_categories
+        for cat_list in data.values():
+            assert isinstance(cat_list, list)
+            assert len(cat_list) > 0

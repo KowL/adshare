@@ -5,8 +5,11 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Query
 
 from adshare.core.logging import get_logger
-from adshare.engines.fundamental.factors import CATEGORY_MAP
 from adshare.models.schemas import FundamentalResponse
+from adshare.services.fundamental_analysis import (
+    FundamentalAnalysisError,
+    get_fundamental_analysis_service,
+)
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/fundamental", tags=["fundamental"])
@@ -23,25 +26,23 @@ async def analyze_fundamental(
     begin_date: Optional[int] = Query(default=None, description="K-line start date YYYYMMDD"),
     end_date: Optional[int] = Query(default=None, description="K-line end date YYYYMMDD"),
 ):
-    """Run fundamental analysis for a stock.
-
-    Not available in API-only mode — requires AmazingData SDK (worker service).
-    """
-    raise HTTPException(
-        status_code=503,
-        detail="Fundamental analysis requires AmazingData SDK. Use the worker service.",
-    )
+    """Run fundamental analysis for a stock."""
+    try:
+        service = get_fundamental_analysis_service()
+        return service.analyze(
+            code=code,
+            category=category,
+            factor=factor,
+        )
+    except FundamentalAnalysisError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.message) from e
+    except Exception as e:
+        logger.error(f"Fundamental analysis failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/factors")
 async def list_factors():
     """List all available fundamental factors."""
-    result = {}
-    for cat_key, cat_info in CATEGORY_MAP.items():
-        result[cat_key] = {
-            "name": cat_info["name"],
-            "freq": cat_info["freq"],
-            "count": cat_info["count"],
-            "factors": cat_info["factors"],
-        }
-    return result
+    service = get_fundamental_analysis_service()
+    return service.list_categories()
