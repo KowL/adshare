@@ -84,6 +84,21 @@ def _get_adapter_safe():
     return get_adapter()
 
 
+def _ensure_code_suffix(code: str) -> str:
+    """Append .SH/.SZ/.BJ suffix if missing (matches TGW SDK convention)."""
+    c = code.strip()
+    if "." in c:
+        return c
+    if len(c) == 6 and c.isdigit():
+        if c.startswith(("60", "68", "69")):
+            return f"{c}.SH"
+        elif c.startswith(("00", "30", "39")):
+            return f"{c}.SZ"
+        elif c.startswith(("8", "4", "9")):
+            return f"{c}.BJ"
+    return c
+
+
 def _existing_codes(period: str, root: Path) -> set[str]:
     """Return the set of codes already present for a period (flat layout)."""
     period_dir = root / "A_share" / normalize_period(period)
@@ -232,8 +247,9 @@ def sync_kline(
                 continue
 
             for code in batch:
+                code_key = _ensure_code_suffix(code)
                 if "code" in batch_df.columns:
-                    code_df = batch_df[batch_df["code"].astype(str) == str(code)]
+                    code_df = batch_df[batch_df["code"].astype(str) == code_key]
                 else:
                     code_df = batch_df if len(batch) == 1 else pd.DataFrame()
                 path = _persist_kline(code_df, period, code, root)

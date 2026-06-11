@@ -220,10 +220,25 @@ class AmazingDataAdapter:
         }
         period_code = period_map.get(period, 10000)
 
+        def _ensure_suffix(code: str) -> str:
+            """Append .SH/.SZ/.BJ suffix if missing so TGW SDK can route the code."""
+            c = code.strip()
+            if "." in c:
+                return c
+            # Heuristic: 6-digit codes
+            if len(c) == 6 and c.isdigit():
+                if c.startswith(("60", "68", "69")):
+                    return f"{c}.SH"
+                elif c.startswith(("00", "30", "39")):
+                    return f"{c}.SZ"
+                elif c.startswith(("8", "4", "9")):
+                    return f"{c}.BJ"
+            return c
+
         def _fetch():
             self._get_client()
             self._ensure_base_data()
-            code_list = [c.strip() for c in codes.split(",")] if "," in codes else [codes]
+            code_list = [_ensure_suffix(c) for c in codes.split(",")] if "," in codes else [_ensure_suffix(codes)]
             result_dict = self._market_data.query_kline(
                 code_list=code_list,
                 begin_date=int(begin_date),
