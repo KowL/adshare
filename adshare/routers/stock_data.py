@@ -935,3 +935,397 @@ async def get_daily_basic(
     except Exception as e:
         logger.error("daily_basic failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ------------------------------------------------------------------
+# Index Data
+# ------------------------------------------------------------------
+
+INDEX_BASIC_FIELDS = [
+    "ts_code", "name", "fullname", "market", "publisher", "index_type",
+    "category", "base_date", "base_point", "list_date", "weight_rule",
+    "desc", "exp_date",
+]
+
+
+@router.get("/index_basic")
+async def get_index_basic(
+    ts_code: Optional[str] = Query(default=None, description="TS code"),
+    name: Optional[str] = Query(default=None, description="Index name fuzzy match"),
+    market: Optional[str] = Query(default=None, description="Market: SZ/SH/CSI"),
+    publisher: Optional[str] = Query(default=None, description="Publisher"),
+    category: Optional[str] = Query(default=None, description="Category"),
+    fields: Optional[str] = Query(default=None, description="Comma-separated fields"),
+):
+    """Get index basic information (Pro platform format).
+
+    Data is populated by the worker service; returns empty until synchronized.
+    """
+    try:
+        warehouse = _get_warehouse_or_none()
+        if warehouse is None:
+            return build_error_response("Historical warehouse is disabled")
+
+        df = pd.DataFrame(columns=INDEX_BASIC_FIELDS)
+        logger.info("index_basic data not yet populated in warehouse")
+        df = filter_fields(df, fields)
+        return build_response(data=to_fields_items(df))
+    except Exception as e:
+        logger.error("index_basic failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+INDEX_DAILY_FIELDS = [
+    "ts_code", "trade_date", "close", "open", "high", "low", "pre_close",
+    "change", "pct_chg", "vol", "amount",
+]
+
+
+@router.get("/index_daily")
+async def get_index_daily(
+    ts_code: Optional[str] = Query(default=None, description="TS code"),
+    trade_date: Optional[str] = Query(default=None, description="Trade date YYYYMMDD"),
+    start_date: Optional[str] = Query(default=None, description="Start date YYYYMMDD"),
+    end_date: Optional[str] = Query(default=None, description="End date YYYYMMDD"),
+    fields: Optional[str] = Query(default=None, description="Comma-separated fields"),
+):
+    """Get index daily K-line (Pro platform format).
+
+    Data is populated by the worker service; returns empty until synchronized.
+    """
+    try:
+        warehouse = _get_warehouse_or_none()
+        if warehouse is None:
+            return build_error_response("Historical warehouse is disabled")
+
+        df = pd.DataFrame(columns=INDEX_DAILY_FIELDS)
+        logger.info("index_daily data not yet populated in warehouse")
+        df = filter_fields(df, fields)
+        return build_response(data=to_fields_items(df))
+    except Exception as e:
+        logger.error("index_daily failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+INDEX_MEMBER_FIELDS = [
+    "index_code", "index_name", "con_code", "con_name", "in_date", "out_date",
+    "is_new",
+]
+
+
+@router.get("/index_member")
+async def get_index_member(
+    index_code: Optional[str] = Query(default=None, description="Index TS code"),
+    ts_code: Optional[str] = Query(default=None, description="Constituent TS code"),
+    fields: Optional[str] = Query(default=None, description="Comma-separated fields"),
+):
+    """Get index constituent stocks (Pro platform format).
+
+    Data is populated by the worker service; returns empty until synchronized.
+    """
+    try:
+        warehouse = _get_warehouse_or_none()
+        if warehouse is None:
+            return build_error_response("Historical warehouse is disabled")
+
+        df = pd.DataFrame(columns=INDEX_MEMBER_FIELDS)
+        logger.info("index_member data not yet populated in warehouse")
+        df = filter_fields(df, fields)
+        return build_response(data=to_fields_items(df))
+    except Exception as e:
+        logger.error("index_member failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+INDEX_WEIGHT_FIELDS = [
+    "index_code", "con_code", "trade_date", "weight",
+]
+
+
+@router.get("/index_weight")
+async def get_index_weight(
+    index_code: Optional[str] = Query(default=None, description="Index TS code"),
+    trade_date: Optional[str] = Query(default=None, description="Trade date YYYYMMDD"),
+    fields: Optional[str] = Query(default=None, description="Comma-separated fields"),
+):
+    """Get index constituent weights (Pro platform format).
+
+    Data is populated by the worker service; returns empty until synchronized.
+    """
+    try:
+        warehouse = _get_warehouse_or_none()
+        if warehouse is None:
+            return build_error_response("Historical warehouse is disabled")
+
+        df = pd.DataFrame(columns=INDEX_WEIGHT_FIELDS)
+        logger.info("index_weight data not yet populated in warehouse")
+        df = filter_fields(df, fields)
+        return build_response(data=to_fields_items(df))
+    except Exception as e:
+        logger.error("index_weight failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ------------------------------------------------------------------
+# Market Reference
+# ------------------------------------------------------------------
+
+MONEYFLOW_FIELDS = [
+    "ts_code", "trade_date", "buy_sm_vol", "buy_sm_amount", "sell_sm_vol",
+    "sell_sm_amount", "buy_md_vol", "buy_md_amount", "sell_md_vol",
+    "sell_md_amount", "buy_lg_vol", "buy_lg_amount", "sell_lg_vol",
+    "sell_lg_amount", "buy_elg_vol", "buy_elg_amount", "sell_elg_vol",
+    "sell_elg_amount", "net_mf_vol", "net_mf_amount",
+]
+
+
+@router.get("/moneyflow")
+async def get_moneyflow(
+    ts_code: Optional[str] = Query(default=None, description="TS code"),
+    trade_date: Optional[str] = Query(default=None, description="Trade date YYYYMMDD"),
+    start_date: Optional[str] = Query(default=None, description="Start date YYYYMMDD"),
+    end_date: Optional[str] = Query(default=None, description="End date YYYYMMDD"),
+    fields: Optional[str] = Query(default=None, description="Comma-separated fields"),
+):
+    """Get stock money flow data (Pro platform format).
+
+    Data is populated by the worker service; returns empty until synchronized.
+    """
+    try:
+        warehouse = _get_warehouse_or_none()
+        if warehouse is None:
+            return build_error_response("Historical warehouse is disabled")
+
+        df = pd.DataFrame(columns=MONEYFLOW_FIELDS)
+        logger.info("moneyflow data not yet populated in warehouse")
+        df = filter_fields(df, fields)
+        return build_response(data=to_fields_items(df))
+    except Exception as e:
+        logger.error("moneyflow failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+MARGIN_FIELDS = [
+    "trade_date", "exchange_id", "rzye", "rzmre", "rzche", "rqye", "rqmcl",
+    "rqchl", "rzrqye", "rqyl",
+]
+
+
+@router.get("/margin")
+async def get_margin(
+    trade_date: Optional[str] = Query(default=None, description="Trade date YYYYMMDD"),
+    exchange_id: Optional[str] = Query(default=None, description="Exchange ID"),
+    start_date: Optional[str] = Query(default=None, description="Start date YYYYMMDD"),
+    end_date: Optional[str] = Query(default=None, description="End date YYYYMMDD"),
+    fields: Optional[str] = Query(default=None, description="Comma-separated fields"),
+):
+    """Get margin trading summary (Pro platform format).
+
+    Data is populated by the worker service; returns empty until synchronized.
+    """
+    try:
+        warehouse = _get_warehouse_or_none()
+        if warehouse is None:
+            return build_error_response("Historical warehouse is disabled")
+
+        df = pd.DataFrame(columns=MARGIN_FIELDS)
+        logger.info("margin data not yet populated in warehouse")
+        df = filter_fields(df, fields)
+        return build_response(data=to_fields_items(df))
+    except Exception as e:
+        logger.error("margin failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+MARGIN_DETAIL_FIELDS = [
+    "ts_code", "trade_date", "rzye", "rqyl", "rqylts", "rzmre", "rzche",
+    "rqmcl", "rqchl", "rzrqye",
+]
+
+
+@router.get("/margin_detail")
+async def get_margin_detail(
+    ts_code: Optional[str] = Query(default=None, description="TS code"),
+    trade_date: Optional[str] = Query(default=None, description="Trade date YYYYMMDD"),
+    start_date: Optional[str] = Query(default=None, description="Start date YYYYMMDD"),
+    end_date: Optional[str] = Query(default=None, description="End date YYYYMMDD"),
+    fields: Optional[str] = Query(default=None, description="Comma-separated fields"),
+):
+    """Get margin trading detail per stock (Pro platform format).
+
+    Data is populated by the worker service; returns empty until synchronized.
+    """
+    try:
+        warehouse = _get_warehouse_or_none()
+        if warehouse is None:
+            return build_error_response("Historical warehouse is disabled")
+
+        df = pd.DataFrame(columns=MARGIN_DETAIL_FIELDS)
+        logger.info("margin_detail data not yet populated in warehouse")
+        df = filter_fields(df, fields)
+        return build_response(data=to_fields_items(df))
+    except Exception as e:
+        logger.error("margin_detail failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+TOP_LIST_FIELDS = [
+    "ts_code", "trade_date", "name", "close", "pct_change", "turnover_rate",
+    "amount", "l_buy", "l_sell", "net_amount", "amount_prop", "l_buy_prop",
+    "l_sell_prop", "reason",
+]
+
+
+@router.get("/top_list")
+async def get_top_list(
+    ts_code: Optional[str] = Query(default=None, description="TS code"),
+    trade_date: Optional[str] = Query(default=None, description="Trade date YYYYMMDD"),
+    start_date: Optional[str] = Query(default=None, description="Start date YYYYMMDD"),
+    end_date: Optional[str] = Query(default=None, description="End date YYYYMMDD"),
+    fields: Optional[str] = Query(default=None, description="Comma-separated fields"),
+):
+    """Get top list (dragon tiger list) data (Pro platform format).
+
+    Data is populated by the worker service; returns empty until synchronized.
+    """
+    try:
+        warehouse = _get_warehouse_or_none()
+        if warehouse is None:
+            return build_error_response("Historical warehouse is disabled")
+
+        df = pd.DataFrame(columns=TOP_LIST_FIELDS)
+        logger.info("top_list data not yet populated in warehouse")
+        df = filter_fields(df, fields)
+        return build_response(data=to_fields_items(df))
+    except Exception as e:
+        logger.error("top_list failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+TOP_INST_FIELDS = [
+    "ts_code", "trade_date", "name", "exalter", "buy", "buy_rate", "sell",
+    "sell_rate", "net_buy", "side",
+]
+
+
+@router.get("/top_inst")
+async def get_top_inst(
+    ts_code: Optional[str] = Query(default=None, description="TS code"),
+    trade_date: Optional[str] = Query(default=None, description="Trade date YYYYMMDD"),
+    start_date: Optional[str] = Query(default=None, description="Start date YYYYMMDD"),
+    end_date: Optional[str] = Query(default=None, description="End date YYYYMMDD"),
+    fields: Optional[str] = Query(default=None, description="Comma-separated fields"),
+):
+    """Get top institution trading detail (Pro platform format).
+
+    Data is populated by the worker service; returns empty until synchronized.
+    """
+    try:
+        warehouse = _get_warehouse_or_none()
+        if warehouse is None:
+            return build_error_response("Historical warehouse is disabled")
+
+        df = pd.DataFrame(columns=TOP_INST_FIELDS)
+        logger.info("top_inst data not yet populated in warehouse")
+        df = filter_fields(df, fields)
+        return build_response(data=to_fields_items(df))
+    except Exception as e:
+        logger.error("top_inst failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+BLOCK_TRADE_FIELDS = [
+    "ts_code", "trade_date", "price", "vol", "amount", "buyer", "seller",
+]
+
+
+@router.get("/block_trade")
+async def get_block_trade(
+    ts_code: Optional[str] = Query(default=None, description="TS code"),
+    trade_date: Optional[str] = Query(default=None, description="Trade date YYYYMMDD"),
+    start_date: Optional[str] = Query(default=None, description="Start date YYYYMMDD"),
+    end_date: Optional[str] = Query(default=None, description="End date YYYYMMDD"),
+    fields: Optional[str] = Query(default=None, description="Comma-separated fields"),
+):
+    """Get block trade data (Pro platform format).
+
+    Data is populated by the worker service; returns empty until synchronized.
+    """
+    try:
+        warehouse = _get_warehouse_or_none()
+        if warehouse is None:
+            return build_error_response("Historical warehouse is disabled")
+
+        df = pd.DataFrame(columns=BLOCK_TRADE_FIELDS)
+        logger.info("block_trade data not yet populated in warehouse")
+        df = filter_fields(df, fields)
+        return build_response(data=to_fields_items(df))
+    except Exception as e:
+        logger.error("block_trade failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ------------------------------------------------------------------
+# Shareholder / Name Change
+# ------------------------------------------------------------------
+
+STK_HOLDERNUMBER_FIELDS = [
+    "ts_code", "ann_date", "end_date", "holder_num", "holder_num_change",
+    "holder_num_change_rate", "avg_hold_num", "avg_hold_ratio", "hold_num_sum",
+]
+
+
+@router.get("/stk_holdernumber")
+async def get_stk_holdernumber(
+    ts_code: Optional[str] = Query(default=None, description="TS code"),
+    enddate: Optional[str] = Query(default=None, description="End date YYYYMMDD"),
+    start_date: Optional[str] = Query(default=None, description="Start date YYYYMMDD"),
+    end_date: Optional[str] = Query(default=None, description="End date YYYYMMDD"),
+    fields: Optional[str] = Query(default=None, description="Comma-separated fields"),
+):
+    """Get shareholder number data (Pro platform format).
+
+    Data is populated by the worker service; returns empty until synchronized.
+    """
+    try:
+        warehouse = _get_warehouse_or_none()
+        if warehouse is None:
+            return build_error_response("Historical warehouse is disabled")
+
+        df = pd.DataFrame(columns=STK_HOLDERNUMBER_FIELDS)
+        logger.info("stk_holdernumber data not yet populated in warehouse")
+        df = filter_fields(df, fields)
+        return build_response(data=to_fields_items(df))
+    except Exception as e:
+        logger.error("stk_holdernumber failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+NAMECHANGE_FIELDS = [
+    "ts_code", "name", "start_date", "end_date", "ann_date", "change_reason",
+]
+
+
+@router.get("/namechange")
+async def get_namechange(
+    ts_code: Optional[str] = Query(default=None, description="TS code"),
+    start_date: Optional[str] = Query(default=None, description="Start date YYYYMMDD"),
+    end_date: Optional[str] = Query(default=None, description="End date YYYYMMDD"),
+    fields: Optional[str] = Query(default=None, description="Comma-separated fields"),
+):
+    """Get stock name change history (Pro platform format).
+
+    Data is populated by the worker service; returns empty until synchronized.
+    """
+    try:
+        warehouse = _get_warehouse_or_none()
+        if warehouse is None:
+            return build_error_response("Historical warehouse is disabled")
+
+        df = pd.DataFrame(columns=NAMECHANGE_FIELDS)
+        logger.info("namechange data not yet populated in warehouse")
+        df = filter_fields(df, fields)
+        return build_response(data=to_fields_items(df))
+    except Exception as e:
+        logger.error("namechange failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))

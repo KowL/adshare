@@ -254,3 +254,135 @@ class FinaIndicatorParams(BaseModel):
     end_date: Optional[str] = Field(default=None, description="End date YYYYMMDD")
     period: Optional[str] = Field(default=None, description="Report period YYYYMMDD")
     fields: Optional[str] = Field(default=None, description="Comma-separated fields")
+
+
+
+# ============================================================
+# Index Data
+# ============================================================
+
+
+class IndexBasicParams(BaseModel):
+    """Query parameters for /index_basic."""
+
+    ts_code: Optional[str] = Field(default=None, description="TS code")
+    name: Optional[str] = Field(default=None, description="Index name fuzzy match")
+    market: Optional[str] = Field(default=None, description="Market: SZ/SH/CSI")
+    publisher: Optional[str] = Field(default=None, description="Publisher")
+    category: Optional[str] = Field(default=None, description="Category")
+    fields: Optional[str] = Field(default=None, description="Comma-separated fields")
+
+
+class IndexDailyParams(BaseModel):
+    """Query parameters for /index_daily."""
+
+    ts_code: Optional[str] = Field(default=None, description="TS code")
+    trade_date: Optional[str] = Field(default=None, description="Trade date YYYYMMDD")
+    start_date: Optional[str] = Field(default=None, description="Start date YYYYMMDD")
+    end_date: Optional[str] = Field(default=None, description="End date YYYYMMDD")
+    fields: Optional[str] = Field(default=None, description="Comma-separated fields")
+
+
+class IndexMemberParams(BaseModel):
+    """Query parameters for /index_member."""
+
+    index_code: Optional[str] = Field(default=None, description="Index TS code")
+    ts_code: Optional[str] = Field(default=None, description="Constituent TS code")
+    fields: Optional[str] = Field(default=None, description="Comma-separated fields")
+
+
+class IndexWeightParams(BaseModel):
+    """Query parameters for /index_weight."""
+
+    index_code: Optional[str] = Field(default=None, description="Index TS code")
+    trade_date: Optional[str] = Field(default=None, description="Trade date YYYYMMDD")
+    fields: Optional[str] = Field(default=None, description="Comma-separated fields")
+
+
+# ============================================================
+# Market Reference
+# ============================================================
+
+
+class MoneyFlowParams(BaseModel):
+    """Query parameters for /moneyflow."""
+
+    ts_code: Optional[str] = Field(default=None, description="TS code")
+    trade_date: Optional[str] = Field(default=None, description="Trade date YYYYMMDD")
+    start_date: Optional[str] = Field(default=None, description="Start date YYYYMMDD")
+    end_date: Optional[str] = Field(default=None, description="End date YYYYMMDD")
+    fields: Optional[str] = Field(default=None, description="Comma-separated fields")
+
+
+class MarginParams(BaseModel):
+    """Query parameters for /margin."""
+
+    trade_date: Optional[str] = Field(default=None, description="Trade date YYYYMMDD")
+    exchange_id: Optional[str] = Field(default=None, description="Exchange ID")
+    start_date: Optional[str] = Field(default=None, description="Start date YYYYMMDD")
+    end_date: Optional[str] = Field(default=None, description="End date YYYYMMDD")
+    fields: Optional[str] = Field(default=None, description="Comma-separated fields")
+
+
+class MarginDetailParams(BaseModel):
+    """Query parameters for /margin_detail."""
+
+    ts_code: Optional[str] = Field(default=None, description="TS code")
+    trade_date: Optional[str] = Field(default=None, description="Trade date YYYYMMDD")
+    start_date: Optional[str] = Field(default=None, description="Start date YYYYMMDD")
+    end_date: Optional[str] = Field(default=None, description="End date YYYYMMDD")
+    fields: Optional[str] = Field(default=None, description="Comma-separated fields")
+
+
+class TopListParams(BaseModel):
+    """Query parameters for /top_list."""
+
+    ts_code: Optional[str] = Field(default=None, description="TS code")
+    trade_date: Optional[str] = Field(default=None, description="Trade date YYYYMMDD")
+    start_date: Optional[str] = Field(default=None, description="Start date YYYYMMDD")
+    end_date: Optional[str] = Field(default=None, description="End date YYYYMMDD")
+    fields: Optional[str] = Field(default=None, description="Comma-separated fields")
+
+
+class TopInstParams(BaseModel):
+    """Query parameters for /top_inst."""
+
+    ts_code: Optional[str] = Field(default=None, description="TS code")
+    trade_date: Optional[str] = Field(default=None, description="Trade date YYYYMMDD")
+    start_date: Optional[str] = Field(default=None, description="Start date YYYYMMDD")
+    end_date: Optional[str] = Field(default=None, description="End date YYYYMMDD")
+    fields: Optional[str] = Field(default=None, description="Comma-separated fields")
+
+
+class BlockTradeParams(BaseModel):
+    """Query parameters for /block_trade."""
+
+    ts_code: Optional[str] = Field(default=None, description="TS code")
+    trade_date: Optional[str] = Field(default=None, description="Trade date YYYYMMDD")
+    start_date: Optional[str] = Field(default=None, description="Start date YYYYMMDD")
+    end_date: Optional[str] = Field(default=None, description="End date YYYYMMDD")
+    fields: Optional[str] = Field(default=None, description="Comma-separated fields")
+
+
+# ============================================================
+# Shareholder / Name Change
+# ============================================================
+
+
+class StkHoldernumberParams(BaseModel):
+    """Query parameters for /stk_holdernumber."""
+
+    ts_code: Optional[str] = Field(default=None, description="TS code")
+    enddate: Optional[str] = Field(default=None, description="End date YYYYMMDD")
+    start_date: Optional[str] = Field(default=None, description="Start date YYYYMMDD")
+    end_date: Optional[str] = Field(default=None, description="End date YYYYMMDD")
+    fields: Optional[str] = Field(default=None, description="Comma-separated fields")
+
+
+class NamechangeParams(BaseModel):
+    """Query parameters for /namechange."""
+
+    ts_code: Optional[str] = Field(default=None, description="TS code")
+    start_date: Optional[str] = Field(default=None, description="Start date YYYYMMDD")
+    end_date: Optional[str] = Field(default=None, description="End date YYYYMMDD")
+    fields: Optional[str] = Field(default=None, description="Comma-separated fields")
