@@ -29,6 +29,7 @@ from adshare.routers import (
     historical,
     market,
     realtime,
+    stock_data,
     technical,
 )
 
@@ -132,6 +133,7 @@ def create_app() -> FastAPI:
     app.include_router(fundamental.router)
     app.include_router(factor.router)
     app.include_router(realtime.router)
+    app.include_router(stock_data.router)
     if settings.historical_enabled:
         app.include_router(historical.router)
         app.include_router(historical_admin_router)
