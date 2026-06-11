@@ -114,21 +114,31 @@ class RealtimePublisher:
             self._subscribe_data = ad.SubscribeData()
             self._setup_callbacks()
 
-            self._subscribe_thread = threading.Thread(
-                target=self._run_subscribe, daemon=True
-            )
-            self._subscribe_thread.start()
-
             self.stats["start_time"] = datetime.now().isoformat()
-            logger.info("Realtime publisher started")
+            logger.info("Realtime publisher initialized (run in caller thread)")
             return True
 
         except Exception as e:
             logger.error("Realtime publisher initialization failed: %s", e)
             return False
 
+    def run_blocking(self) -> None:
+        """Blocking loop that runs SubscribeData in the caller thread.
+
+        Moved from background thread to main thread to avoid GIL issues
+        with the AmazingData SDK C extension.
+        """
+        self._running = True
+        while self._running:
+            try:
+                self._subscribe_data.run()
+            except Exception as e:
+                logger.error("SubscribeData run error: %s", e)
+                if self._running:
+                    time.sleep(5)
+
     def shutdown(self) -> None:
-        """Stop the subscriber thread."""
+        """Stop the subscriber loop."""
         self._running = False
         if self._subscribe_data is not None:
             try:
@@ -141,17 +151,6 @@ class RealtimePublisher:
     # ============================================================
     # Internal
     # ============================================================
-
-    def _run_subscribe(self) -> None:
-        """Blocking loop that runs SubscribeData (background thread)."""
-        self._running = True
-        while self._running:
-            try:
-                self._subscribe_data.run()
-            except Exception as e:
-                logger.error("SubscribeData run error: %s", e)
-                if self._running:
-                    time.sleep(5)
 
     def _setup_callbacks(self) -> None:
         """Register SDK callbacks for snapshot, index snapshot and kline data."""

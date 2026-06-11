@@ -149,10 +149,6 @@ def main() -> int:
     logger.info("Warehouse: %s", settings.historical_path)
     logger.info("=" * 50)
 
-    # Signal handlers
-    signal.signal(signal.SIGTERM, _signal_handler)
-    signal.signal(signal.SIGINT, _signal_handler)
-
     # 1. SDK login
     if not _init_sdk_login():
         logger.error("Failed to login to AmazingData, exiting")
@@ -170,8 +166,33 @@ def main() -> int:
     except Exception as e:
         logger.warning("Historical warehouse init failed: %s", e)
 
-    # 3. Realtime publisher
-    _init_realtime_publisher()
+    # 3. Realtime publisher (run in main thread to avoid GIL issues)
+    publisher = None
+    try:
+        from adshare.services.realtime_publisher import get_realtime_publisher
+
+        publisher = get_realtime_publisher()
+        if publisher.initialize():
+            logger.info("Realtime publisher initialized, will run in main thread")
+        else:
+            publisher = None
+    except Exception as e:
+        logger.warning("Realtime publisher init failed: %s", e)
+        publisher = None
+
+    # Register signal handlers after publisher is available so shutdown
+    # can call publisher.shutdown() to interrupt subscribe_data.run().
+    def _signal_handler(signum, frame):  # noqa: ARG001
+        logger.info("Received signal %s, shutting down...", signum)
+        _shutdown_event.set()
+        if publisher is not None:
+            try:
+                publisher.shutdown()
+            except Exception:
+                pass
+
+    signal.signal(signal.SIGTERM, _signal_handler)
+    signal.signal(signal.SIGINT, _signal_handler)
 
     # 4. Sync scheduler
     _init_sync_scheduler()
@@ -179,21 +200,29 @@ def main() -> int:
     # 5. Optional immediate sync
     _run_once_sync()
 
-    # 6. Main loop — keep process alive
-    logger.info("Worker running. Press Ctrl+C or send SIGTERM to stop.")
-    try:
-        while not _shutdown_event.is_set():
-            time.sleep(1)
-    except KeyboardInterrupt:
-        logger.info("Keyboard interrupt received")
+    # 6. Main loop — run realtime publisher in main thread
+    if publisher is not None:
+        logger.info("Worker running (realtime publisher in main thread). "
+                    "Press Ctrl+C or send SIGTERM to stop.")
+        try:
+            publisher.run_blocking()
+        except KeyboardInterrupt:
+            logger.info("Keyboard interrupt received")
+    else:
+        logger.info("Worker running. Press Ctrl+C or send SIGTERM to stop.")
+        try:
+            while not _shutdown_event.is_set():
+                time.sleep(1)
+        except KeyboardInterrupt:
+            logger.info("Keyboard interrupt received")
 
     # Shutdown
     logger.info("Shutting down worker...")
     shutdown_scheduler()
 
     try:
-        from adshare.services.realtime_publisher import get_realtime_publisher
-        get_realtime_publisher().shutdown()
+        if publisher is not None:
+            publisher.shutdown()
     except Exception:
         pass
 
