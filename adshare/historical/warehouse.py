@@ -49,6 +49,7 @@ class HistoricalWarehouse:
             (self.root / "A_share" / sub).mkdir(parents=True, exist_ok=True)
         (self.root / "meta").mkdir(parents=True, exist_ok=True)
         (self.root / "snapshot").mkdir(parents=True, exist_ok=True)
+        (self.root / "reference").mkdir(parents=True, exist_ok=True)
 
     def _init_connection(self) -> None:
         mode = (self.settings.duckdb_mode or "memory").lower()
@@ -105,6 +106,27 @@ class HistoricalWarehouse:
             )
         except Exception as e:
             logger.debug("v_codes not registered: %s", e)
+
+        # Reference data views (financial, shareholder, index component, etc.)
+        ref_root = f"{root}/reference"
+        for view_name, file_name in (
+            ("v_income", "income.parquet"),
+            ("v_balance_sheet", "balance_sheet.parquet"),
+            ("v_cashflow", "cashflow.parquet"),
+            ("v_fina_indicator", "fina_indicator.parquet"),
+            ("v_stk_holdernumber", "stk_holdernumber.parquet"),
+            ("v_index_member", "index_member.parquet"),
+            ("v_index_weight", "index_weight.parquet"),
+            ("v_namechange", "namechange.parquet"),
+        ):
+            path = f"{ref_root}/{file_name}"
+            try:
+                self._con.execute(
+                    f"CREATE OR REPLACE VIEW {view_name} AS "
+                    f"SELECT * FROM read_parquet('{path}')"
+                )
+            except Exception as e:
+                logger.debug("%s not registered: %s", view_name, e)
 
     def close(self) -> None:
         with self._lock:
@@ -314,6 +336,109 @@ class HistoricalWarehouse:
             sql += " AND is_listed = ?"
             params.append(bool(is_listed))
         sql += " ORDER BY code"
+        return self._execute_df(sql, params)
+
+    def _view_exists(self, view_name: str) -> bool:
+        """Check if a DuckDB view exists."""
+        try:
+            rows = self.connection.execute(
+                "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = ?",
+                [view_name],
+            ).fetchall()
+            return bool(rows and rows[0][0] > 0)
+        except Exception:
+            return False
+
+    def _query_reference(
+        self,
+        view_name: str,
+        file_name: str,
+        ts_code_col: str = "ts_code",
+        ts_code: Optional[str] = None,
+        begin_date: Optional[int] = None,
+        end_date: Optional[int] = None,
+        date_col: Optional[str] = None,
+    ) -> pd.DataFrame:
+        """Generic query helper for reference Parquet files."""
+        path = self.root / "reference" / file_name
+        if not path.exists():
+            return pd.DataFrame()
+
+        source = view_name if self._view_exists(view_name) else f"read_parquet('{path}')"
+        sql = f"SELECT * FROM {source} WHERE 1=1"
+        params: List[Any] = []
+
+        if ts_code:
+            sql += f" AND {ts_code_col} = ?"
+            params.append(ts_code)
+        if date_col and begin_date is not None:
+            sql += f" AND {date_col} >= ?"
+            params.append(int(begin_date))
+        if date_col and end_date is not None:
+            sql += f" AND {date_col} <= ?"
+            params.append(int(end_date))
+        return self._execute_df(sql, params)
+
+    def query_financial(
+        self,
+        statement_type: str,
+        ts_code: Optional[str] = None,
+        begin_date: Optional[int] = None,
+        end_date: Optional[int] = None,
+    ) -> pd.DataFrame:
+        """Query financial statement data from reference table."""
+        view_map = {
+            "income": ("v_income", "income.parquet"),
+            "balance": ("v_balance_sheet", "balance_sheet.parquet"),
+            "balance_sheet": ("v_balance_sheet", "balance_sheet.parquet"),
+            "cashflow": ("v_cashflow", "cashflow.parquet"),
+        }
+        view_name, file_name = view_map.get(statement_type, (None, None))
+        if view_name is None:
+            return pd.DataFrame()
+        return self._query_reference(
+            view_name,
+            file_name,
+            ts_code=ts_code,
+            begin_date=begin_date,
+            end_date=end_date,
+            date_col="end_date",
+        )
+
+    def query_shareholder(
+        self,
+        ts_code: Optional[str] = None,
+        begin_date: Optional[int] = None,
+        end_date: Optional[int] = None,
+    ) -> pd.DataFrame:
+        """Query shareholder number data from reference table."""
+        return self._query_reference(
+            "v_stk_holdernumber",
+            "stk_holdernumber.parquet",
+            ts_code=ts_code,
+            begin_date=begin_date,
+            end_date=end_date,
+            date_col="end_date",
+        )
+
+    def query_index_member(
+        self,
+        index_code: Optional[str] = None,
+        ts_code: Optional[str] = None,
+    ) -> pd.DataFrame:
+        """Query index constituent data from reference table."""
+        path = self.root / "reference" / "index_member.parquet"
+        if not path.exists():
+            return pd.DataFrame()
+        source = "v_index_member" if self._view_exists("v_index_member") else f"read_parquet('{path}')"
+        sql = f"SELECT * FROM {source} WHERE 1=1"
+        params: List[Any] = []
+        if index_code:
+            sql += " AND index_code = ?"
+            params.append(index_code)
+        if ts_code:
+            sql += " AND con_code = ?"
+            params.append(ts_code)
         return self._execute_df(sql, params)
 
     # ------------------------------------------------------------------

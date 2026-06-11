@@ -120,7 +120,9 @@ def _persist_kline(
     std = validate_kline_df(std)
     if std.empty:
         return None
-    file_path = kline_file_path(root, period, code)
+    # Ensure code has .SH/.SZ/.BJ suffix for consistent file naming
+    code_key = _ensure_code_suffix(code)
+    file_path = kline_file_path(root, period, code_key)
     file_path.parent.mkdir(parents=True, exist_ok=True)
     std.to_parquet(file_path, engine="pyarrow", compression="zstd", index=False)
     return file_path
@@ -587,6 +589,34 @@ def init_scheduler(settings: Optional[Settings] = None) -> "BackgroundScheduler"
                 id="sync_meta_codes",
                 replace_existing=True,
             )
+            # Reference data sync (weekly)
+            scheduler.add_job(
+                _run_sync_financial,
+                "cron",
+                day_of_week="sat",
+                hour=2,
+                minute=0,
+                id="sync_financial",
+                replace_existing=True,
+            )
+            scheduler.add_job(
+                _run_sync_shareholder,
+                "cron",
+                day_of_week="sat",
+                hour=3,
+                minute=0,
+                id="sync_shareholder",
+                replace_existing=True,
+            )
+            scheduler.add_job(
+                _run_sync_index_component,
+                "cron",
+                day_of_week="sat",
+                hour=4,
+                minute=0,
+                id="sync_index_component",
+                replace_existing=True,
+            )
         _scheduler = scheduler
         return scheduler
 
@@ -678,3 +708,277 @@ def _run_sync_meta_codes() -> None:
         sync_meta_codes()
     except Exception as e:  # noqa: BLE001
         logger.exception("scheduled sync_meta_codes failed: %s", e)
+
+
+
+# ----------------------------------------------------------------------
+# Reference data sync (financial, shareholder, index component)
+# ----------------------------------------------------------------------
+
+def _persist_reference(df: pd.DataFrame, path: Path) -> Optional[Path]:
+    """Persist a reference DataFrame to a Parquet file."""
+    if df is None or df.empty:
+        return None
+    path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_parquet(path, engine="pyarrow", compression="zstd", index=False)
+    return path
+
+
+def sync_financial(
+    statement_type: str = "balance",
+    *,
+    codes: Optional[Sequence[str]] = None,
+    batch_size: int = 50,
+    settings: Optional[Settings] = None,
+    warehouse: Optional[HistoricalWarehouse] = None,
+    adapter=None,
+) -> SyncResult:
+    """Sync financial statement data to the warehouse reference table.
+
+    Args:
+        statement_type: "balance", "income", or "cashflow".
+        codes: Optional list of codes. Defaults to all A-share stocks.
+        batch_size: Number of codes per SDK call.
+    """
+    settings = settings or get_settings()
+    warehouse = warehouse or get_warehouse(settings)
+    result = SyncResult(
+        job=f"sync_financial_{statement_type}",
+        started_at=time.time(),
+    )
+
+    file_map = {
+        "balance": "balance_sheet.parquet",
+        "income": "income.parquet",
+        "cashflow": "cashflow.parquet",
+    }
+    file_name = file_map.get(statement_type)
+    if file_name is None:
+        result.errors.append(f"invalid statement_type: {statement_type}")
+        result.finished_at = time.time()
+        return result
+
+    adapter_obj = adapter or _get_adapter_safe()
+    if codes is None:
+        try:
+            codes = list(adapter_obj.get_code_list("EXTRA_STOCK_A_SH_SZ"))
+        except Exception as e:
+            result.errors.append(f"code list fetch failed: {e}")
+            result.finished_at = time.time()
+            return result
+
+    codes = list(codes)
+    result.total = len(codes)
+    all_dfs: List[pd.DataFrame] = []
+
+    for start in range(0, len(codes), batch_size):
+        batch = codes[start : start + batch_size]
+        batch_label = f"{start + 1}-{start + len(batch)}"
+        try:
+            df = adapter_obj.get_financial(
+                codes=",".join(batch),
+                statement_type=statement_type,
+            )
+            if df is not None and not df.empty:
+                all_dfs.append(df)
+                result.succeeded += len(batch)
+                result.rows += len(df)
+            else:
+                result.skipped += len(batch)
+        except Exception as e:
+            result.failed += len(batch)
+            result.errors.append(f"batch {batch_label}: {e}")
+
+    if all_dfs:
+        combined = pd.concat(all_dfs, ignore_index=True)
+        # Normalize column names to lowercase snake_case for consistency
+        combined.columns = [str(c).lower().strip() for c in combined.columns]
+        # Ensure ts_code exists
+        if "ts_code" not in combined.columns and "code" in combined.columns:
+            combined = combined.rename(columns={"code": "ts_code"})
+        path = _persist_reference(combined, warehouse.root / "reference" / file_name)
+        result.success = path is not None
+        warehouse.refresh_views()
+    else:
+        result.success = result.failed == 0
+
+    result.finished_at = time.time()
+    logger.info(
+        "sync_financial(%s) total=%d succeeded=%d skipped=%d failed=%d rows=%d duration=%.2fs",
+        statement_type,
+        result.total,
+        result.succeeded,
+        result.skipped,
+        result.failed,
+        result.rows,
+        result.duration,
+    )
+    return result
+
+
+def sync_shareholder(
+    *,
+    codes: Optional[Sequence[str]] = None,
+    batch_size: int = 50,
+    settings: Optional[Settings] = None,
+    warehouse: Optional[HistoricalWarehouse] = None,
+    adapter=None,
+) -> SyncResult:
+    """Sync shareholder number data to the warehouse reference table."""
+    settings = settings or get_settings()
+    warehouse = warehouse or get_warehouse(settings)
+    result = SyncResult(job="sync_shareholder", started_at=time.time())
+
+    adapter_obj = adapter or _get_adapter_safe()
+    if codes is None:
+        try:
+            codes = list(adapter_obj.get_code_list("EXTRA_STOCK_A_SH_SZ"))
+        except Exception as e:
+            result.errors.append(f"code list fetch failed: {e}")
+            result.finished_at = time.time()
+            return result
+
+    codes = list(codes)
+    result.total = len(codes)
+    all_dfs: List[pd.DataFrame] = []
+
+    for start in range(0, len(codes), batch_size):
+        batch = codes[start : start + batch_size]
+        batch_label = f"{start + 1}-{start + len(batch)}"
+        try:
+            df = adapter_obj.get_shareholder(codes=",".join(batch))
+            if df is not None and not df.empty:
+                all_dfs.append(df)
+                result.succeeded += len(batch)
+                result.rows += len(df)
+            else:
+                result.skipped += len(batch)
+        except Exception as e:
+            result.failed += len(batch)
+            result.errors.append(f"batch {batch_label}: {e}")
+
+    if all_dfs:
+        combined = pd.concat(all_dfs, ignore_index=True)
+        combined.columns = [str(c).lower().strip() for c in combined.columns]
+        if "ts_code" not in combined.columns and "code" in combined.columns:
+            combined = combined.rename(columns={"code": "ts_code"})
+        path = _persist_reference(combined, warehouse.root / "reference" / "stk_holdernumber.parquet")
+        result.success = path is not None
+        warehouse.refresh_views()
+    else:
+        result.success = result.failed == 0
+
+    result.finished_at = time.time()
+    logger.info(
+        "sync_shareholder total=%d succeeded=%d skipped=%d failed=%d rows=%d duration=%.2fs",
+        result.total,
+        result.succeeded,
+        result.skipped,
+        result.failed,
+        result.rows,
+        result.duration,
+    )
+    return result
+
+
+# Common index codes to sync. Can be overridden via INDEX_CODES env var.
+_DEFAULT_INDEX_CODES = [
+    "000001.SH",  # 上证指数
+    "000016.SH",  # 上证50
+    "000300.SH",  # 沪深300
+    "000905.SH",  # 中证500
+    "399001.SZ",  # 深证成指
+    "399006.SZ",  # 创业板指
+    "399005.SZ",  # 中小板指
+    "000688.SH",  # 科创50
+    "899050.BJ",  # 北证50
+]
+
+
+def sync_index_component(
+    *,
+    index_codes: Optional[Sequence[str]] = None,
+    settings: Optional[Settings] = None,
+    warehouse: Optional[HistoricalWarehouse] = None,
+    adapter=None,
+) -> SyncResult:
+    """Sync index constituent data to the warehouse reference table."""
+    settings = settings or get_settings()
+    warehouse = warehouse or get_warehouse(settings)
+    result = SyncResult(job="sync_index_component", started_at=time.time())
+
+    if index_codes is None:
+        env_codes = os.environ.get("INDEX_CODES", "")
+        index_codes = [c.strip() for c in env_codes.split(",") if c.strip()] or _DEFAULT_INDEX_CODES
+
+    adapter_obj = adapter or _get_adapter_safe()
+    result.total = len(index_codes)
+    all_dfs: List[pd.DataFrame] = []
+
+    for idx_code in index_codes:
+        try:
+            df = adapter_obj.get_index_component(index_code=idx_code)
+            if df is not None and not df.empty:
+                if "index_code" not in df.columns:
+                    df["index_code"] = idx_code
+                all_dfs.append(df)
+                result.succeeded += 1
+                result.rows += len(df)
+            else:
+                result.skipped += 1
+        except Exception as e:
+            result.failed += 1
+            result.errors.append(f"{idx_code}: {e}")
+
+    if all_dfs:
+        combined = pd.concat(all_dfs, ignore_index=True)
+        combined.columns = [str(c).lower().strip() for c in combined.columns]
+        # Normalize con_code / code to con_code
+        if "con_code" not in combined.columns and "code" in combined.columns:
+            combined = combined.rename(columns={"code": "con_code"})
+        path = _persist_reference(combined, warehouse.root / "reference" / "index_member.parquet")
+        result.success = path is not None
+        warehouse.refresh_views()
+    else:
+        result.success = result.failed == 0
+
+    result.finished_at = time.time()
+    logger.info(
+        "sync_index_component total=%d succeeded=%d skipped=%d failed=%d rows=%d duration=%.2fs",
+        result.total,
+        result.succeeded,
+        result.skipped,
+        result.failed,
+        result.rows,
+        result.duration,
+    )
+    return result
+
+
+
+def _run_sync_financial() -> None:
+    try:
+        for statement_type in ("balance", "income", "cashflow"):
+            result = sync_financial(statement_type=statement_type)
+            logger.info("scheduled sync_financial(%s): success=%s rows=%s",
+                        statement_type, result.success, result.rows)
+    except Exception as e:
+        logger.exception("scheduled sync_financial failed: %s", e)
+
+
+def _run_sync_shareholder() -> None:
+    try:
+        result = sync_shareholder()
+        logger.info("scheduled sync_shareholder: success=%s rows=%s",
+                    result.success, result.rows)
+    except Exception as e:
+        logger.exception("scheduled sync_shareholder failed: %s", e)
+
+
+def _run_sync_index_component() -> None:
+    try:
+        result = sync_index_component()
+        logger.info("scheduled sync_index_component: success=%s rows=%s",
+                    result.success, result.rows)
+    except Exception as e:
+        logger.exception("scheduled sync_index_component failed: %s", e)

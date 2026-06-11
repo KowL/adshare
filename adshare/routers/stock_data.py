@@ -653,16 +653,18 @@ async def get_income(
 ):
     """Get income statement data (Pro platform format).
 
-    Data is populated by the worker service; returns empty until synchronized.
+    Data is populated by the worker service to warehouse.reference.income.
     """
     try:
         warehouse = _get_warehouse_or_none()
         if warehouse is None:
             return build_error_response("Historical warehouse is disabled")
 
-        # TODO: read from warehouse financial table once worker syncs it
-        df = _get_financial_empty("income")
-        logger.info("income data not yet populated in warehouse")
+        sd = _parse_date_str(start_date) or _parse_date_str(ann_date) or _parse_date_str(period)
+        ed = _parse_date_str(end_date) or sd
+        df = warehouse.query_financial("income", ts_code=ts_code, begin_date=sd, end_date=ed)
+        if df.empty:
+            df = _get_financial_empty("income")
         df = filter_fields(df, fields)
         return build_response(data=to_fields_items(df))
     except Exception as e:
@@ -683,15 +685,18 @@ async def get_balance_sheet(
 ):
     """Get balance sheet data (Pro platform format).
 
-    Data is populated by the worker service; returns empty until synchronized.
+    Data is populated by the worker service to warehouse.reference.balance_sheet.
     """
     try:
         warehouse = _get_warehouse_or_none()
         if warehouse is None:
             return build_error_response("Historical warehouse is disabled")
 
-        df = _get_financial_empty("balance")
-        logger.info("balance_sheet data not yet populated in warehouse")
+        sd = _parse_date_str(start_date) or _parse_date_str(ann_date) or _parse_date_str(period)
+        ed = _parse_date_str(end_date) or sd
+        df = warehouse.query_financial("balance_sheet", ts_code=ts_code, begin_date=sd, end_date=ed)
+        if df.empty:
+            df = _get_financial_empty("balance")
         df = filter_fields(df, fields)
         return build_response(data=to_fields_items(df))
     except Exception as e:
@@ -712,15 +717,18 @@ async def get_cashflow(
 ):
     """Get cash flow statement data (Pro platform format).
 
-    Data is populated by the worker service; returns empty until synchronized.
+    Data is populated by the worker service to warehouse.reference.cashflow.
     """
     try:
         warehouse = _get_warehouse_or_none()
         if warehouse is None:
             return build_error_response("Historical warehouse is disabled")
 
-        df = _get_financial_empty("cashflow")
-        logger.info("cashflow data not yet populated in warehouse")
+        sd = _parse_date_str(start_date) or _parse_date_str(ann_date) or _parse_date_str(period)
+        ed = _parse_date_str(end_date) or sd
+        df = warehouse.query_financial("cashflow", ts_code=ts_code, begin_date=sd, end_date=ed)
+        if df.empty:
+            df = _get_financial_empty("cashflow")
         df = filter_fields(df, fields)
         return build_response(data=to_fields_items(df))
     except Exception as e:
@@ -1021,15 +1029,16 @@ async def get_index_member(
 ):
     """Get index constituent stocks (Pro platform format).
 
-    Data is populated by the worker service; returns empty until synchronized.
+    Data is populated by the worker service to warehouse.reference.index_member.
     """
     try:
         warehouse = _get_warehouse_or_none()
         if warehouse is None:
             return build_error_response("Historical warehouse is disabled")
 
-        df = pd.DataFrame(columns=INDEX_MEMBER_FIELDS)
-        logger.info("index_member data not yet populated in warehouse")
+        df = warehouse.query_index_member(index_code=index_code, ts_code=ts_code)
+        if df.empty:
+            df = pd.DataFrame(columns=INDEX_MEMBER_FIELDS)
         df = filter_fields(df, fields)
         return build_response(data=to_fields_items(df))
     except Exception as e:
@@ -1285,15 +1294,18 @@ async def get_stk_holdernumber(
 ):
     """Get shareholder number data (Pro platform format).
 
-    Data is populated by the worker service; returns empty until synchronized.
+    Data is populated by the worker service to warehouse.reference.stk_holdernumber.
     """
     try:
         warehouse = _get_warehouse_or_none()
         if warehouse is None:
             return build_error_response("Historical warehouse is disabled")
 
-        df = pd.DataFrame(columns=STK_HOLDERNUMBER_FIELDS)
-        logger.info("stk_holdernumber data not yet populated in warehouse")
+        sd = _parse_date_str(start_date) or _parse_date_str(enddate)
+        ed = _parse_date_str(end_date) or _parse_date_str(enddate) or sd
+        df = warehouse.query_shareholder(ts_code=ts_code, begin_date=sd, end_date=ed)
+        if df.empty:
+            df = pd.DataFrame(columns=STK_HOLDERNUMBER_FIELDS)
         df = filter_fields(df, fields)
         return build_response(data=to_fields_items(df))
     except Exception as e:
