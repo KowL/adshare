@@ -1,30 +1,30 @@
-FROM python:3.11-slim
+# amazingdata_worker/Dockerfile
+# Worker image — depends on adshare-base for the slow setup
+# (apt + AmazingData/tgw whl + their forced deps: pydantic/numba/scipy/statsmodels)
+#
+# Build flow:
+#   1. bin/build-base.sh                  # 一次性 3-5 分钟（升级 whl 时才重 build）
+#   2. docker compose build amazingdata-worker   # 5-10 秒（改 adshare 代码不触发 base 重 build）
+#   3. docker compose up -d --force-recreate amazingdata-worker
+#
+# 注意: 构建此镜像时必须指定 --platform linux/amd64
+# (AmazingData SDK C 扩展限制 — base image 也只支持 linux/amd64)
 
+FROM adshare-base:latest
+
+# 工作目录
 WORKDIR /app
 
-# 注意: 构建此镜像时必须指定 --platform linux/amd64
-# docker build --platform linux/amd64 -f amazingdata_worker/Dockerfile .
-
-# 使用阿里云镜像源加速
-RUN pip config set global.index-url https://mirrors.aliyun.com/pypi/simple/
-
-# 安装系统依赖
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
-    curl \
-    libhdf5-dev \
-    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
-
-# 复制依赖文件
+# 复制项目级文件
 COPY pyproject.toml README.md ./
+COPY amazingdata_worker/requirements.txt ./requirements-worker.txt
 
-# 复制并安装 AmazingData SDK（本地 whl 文件）
-COPY AmazingData-1.1.8-cp311-none-any.whl tgw-1.0.8.7-py3-none-any.whl ./
-RUN pip install --no-cache-dir tgw-1.0.8.7-py3-none-any.whl \
-    AmazingData-1.1.8-cp311-none-any.whl
+# 安装 worker 专用 Python 依赖（adshare 仓库自身的依赖，不含 SDK 强制要求的部分）
+# 注：numba/scipy/statsmodels/pydantic 由 base image 提供，这里不重复装
+RUN pip install --no-cache-dir -r requirements-worker.txt
 
-# 安装 Python 依赖
-RUN pip install --no-cache-dir -e "." tables
+# 安装 adshare 包本身（无依赖模式 - 上面 requirements.txt 已覆盖）
+RUN pip install --no-cache-dir --no-deps .
 
 # 复制项目代码
 COPY adshare/ ./adshare/
@@ -32,7 +32,7 @@ COPY scripts/ ./scripts/
 COPY config/ ./config/
 COPY amazingdata_worker/ ./amazingdata_worker/
 
-# 创建缓存和日志目录
+# 创建运行时目录
 RUN mkdir -p cache logs data
 
 # Worker 健康检查（python:3.11-slim 无 pgrep/ps，用 kill -0 检查 PID 1）

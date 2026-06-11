@@ -1,0 +1,40 @@
+# amazingdata_worker/requirements.txt
+# 只装 worker 实际 import 链需要的包（不走 -e . 的传递依赖）
+# 维护规则：worker 启动时如果引入新依赖，先加这里再 build
+
+# ❗ 注意: AmazingData-1.1.8.whl 强制要求以下包（whl METADATA 里 Requires-Dist）
+# 不能省（否则 pip install 失败或运行时 import 失败）：
+#   - pydantic >= 2.6.4
+#   - numba >= 0.65.0
+#   - scipy >= 1.15.1
+#   - statsmodels >= 0.11.0
+# 这些会由 tgw/AmazingData whl 安装时自动拉取，不需要在 requirements.txt 重复列
+
+# Warehouse + sync
+# sync.py 用 pyarrow.to_parquet() / DuckDB Python API
+duckdb>=1.0.0,<2.0
+pandas==2.0.3
+numpy==1.26.4
+pyarrow==15.0.0
+
+# Cache + config + scheduler
+# adshare.core.cache → redis; adshare.core.config → pydantic-settings
+redis>=5.0
+pydantic>=2.9
+pydantic-settings>=2.6
+python-dotenv>=1.0
+apscheduler>=3.10
+
+# Logging
+structlog>=24.4
+
+# WebSocket (adshare.services.realtime imports fastapi.WebSocket, 哪怕 worker 不跑 HTTP)
+fastapi>=0.115.0
+
+# ❌ 显式不装的（pyproject 列了但 worker 真的不 import）：
+# - uvicorn — worker 不跑 HTTP server
+# - httpx — worker 不发 HTTP 请求
+# - prometheus-client / slowapi / python-multipart — HTTP 框架中间件
+# - orjson — web JSON 序列化，adshare/ 入口不用
+# - tables (hdf5) / blosc2 — 仓库 0 处 import
+# 省 ~50-100MB / 5-10 秒编译时间
