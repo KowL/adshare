@@ -25,7 +25,17 @@ class CacheManager:
 
     @property
     def redis(self) -> redis.Redis:
-        """Get or create Redis connection."""
+        """Get or create Redis connection.
+
+        Force RESP2 protocol because the live Redis 5.0.3 server at
+        8.148.216.30:26739 does not implement the ``HELLO`` command that
+        redis-py >= 4.2 sends to negotiate RESP3 + AUTH in a single
+        round-trip. Without this, every connect retries with
+        ``HELLO 3 AUTH default <password>`` and the server replies
+        ``unknown command 'HELLO'``, surfacing as ``ConnectionError:
+        Connection closed by server.`` in /health and silently disabling
+        the realtime cache.
+        """
         if self._redis is None:
             self._redis_pool = ConnectionPool(
                 host=self.settings.redis_host,
@@ -35,6 +45,7 @@ class CacheManager:
                 max_connections=self.settings.redis_max_connections,
                 socket_timeout=5,
                 socket_connect_timeout=5,
+                protocol=2,
             )
             self._redis = redis.Redis(connection_pool=self._redis_pool)
         return self._redis
