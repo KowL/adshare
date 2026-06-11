@@ -98,7 +98,16 @@ class LimitUpService:
         if not stocks:
             return LimitUpLadderResponse(date=_date_str(int(date or _today_int())), total=0, maxLevel=0, levels=[])
 
-        stocks_by_level = {1: sorted(stocks, key=lambda item: item.changePct, reverse=True)}
+        # Group stocks by limitUpDays. Sort by:
+        #   1. limitUpDays DESC (highest first — that's the "top of the ladder")
+        #   2. Within the same level, by code ASC (deterministic, stable order)
+        # Skip the previous changePct sort — that put 北交所 30%-limit stocks
+        # ahead of 4-board 主板 stocks, which doesn't match 同花顺 convention.
+        levels_map: dict[int, list] = {}
+        for stock in stocks:
+            levels_map.setdefault(stock.limitUpDays, []).append(stock)
+        for level_stocks in levels_map.values():
+            level_stocks.sort(key=lambda s: s.code)
         levels = [
             LimitUpLadderLevel(
                 level=level,
@@ -120,13 +129,14 @@ class LimitUpService:
                     for stock in level_stocks
                 ],
             )
-            for level, level_stocks in sorted(stocks_by_level.items(), reverse=True)
+            for level, level_stocks in sorted(levels_map.items(), key=lambda kv: kv[0], reverse=True)
         ]
+        max_level = max(levels_map.keys()) if levels_map else 0
 
         return LimitUpLadderResponse(
             date=_date_str(int(date or _today_int())),
             total=len(stocks),
-            maxLevel=1,
+            maxLevel=max_level,
             levels=levels,
         )
 
@@ -164,8 +174,8 @@ class LimitUpService:
         exclude_st: bool,
     ) -> list[LimitUpItem]:
         stocks: list[LimitUpItem] = []
-        for row, pre_close in _iter_target_rows_with_pre_close(kline, target_date):
-            item = build_limit_up_item(row, pre_close, name_map, board_map, date_str, board_filter, exclude_st)
+        for row, pre_close, history in _iter_target_rows_with_pre_close(kline, target_date):
+            item = build_limit_up_item(row, pre_close, history, name_map, board_map, date_str, board_filter, exclude_st)
             if item is not None:
                 stocks.append(item)
         return stocks
@@ -194,13 +204,20 @@ def get_limit_up_service() -> LimitUpService:
 def build_limit_up_item(
     row: dict,
     pre_close: float,
+    history: list[tuple[int, float]],
     name_map: dict[str, str],
     board_map: dict[str, str],
     date_str: str,
     board_filter: Optional[str],
     exclude_st: bool,
 ) -> Optional[LimitUpItem]:
-    """Build a limit-up response item from one daily K-line row."""
+    """Build a limit-up response item from one daily K-line row.
+
+    ``history`` is a list of (date, pre_close) tuples for trading days strictly
+    before ``target_date``, sorted ascending. It is used to compute
+    ``limitUpDays`` — the number of consecutive trading days up to and
+    including today where the close hit the limit-up price.
+    """
     code = str(row.get("code", ""))
     if not code:
         return None
@@ -228,13 +245,18 @@ def build_limit_up_item(
     if exclude_st and ("ST" in name or "*ST" in name or name.startswith("ST") or name.startswith("*ST")):
         return None
 
+    # Count consecutive limit-up days. The first row of ``history`` is the
+    # most recent prior trading day; we walk backward from there and stop at
+    # the first day that did not hit limit up.
+    limit_up_days = _count_consecutive_limit_up_days(history, board, pre_close)
+
     return LimitUpItem(
         code=code.split(".")[0] if "." in code else code,
         name=name,
         limitUpDate=date_str,
         changePct=round(change_pct, 4),
         board=board,
-        limitUpDays=1,
+        limitUpDays=limit_up_days,
         price=round(close, 2),
         preClose=round(pre_close, 2),
         open=round(open_price, 2),
@@ -250,6 +272,53 @@ def build_limit_up_item(
         industry="",
         concept="",
     )
+
+
+def _count_consecutive_limit_up_days(
+    history: list[tuple[int, float]],
+    board: str,
+    today_pre_close: float,
+) -> int:
+    """Count consecutive trading days, up to and including today, that hit the
+    limit-up price.
+
+    Inputs:
+        history: list of (date, pre_close) for days strictly before today,
+            ordered ascending. pre_close[i] is the close of the day before
+            history[i][0].
+        today_pre_close: today's pre_close (= close of the most recent day in
+            history, i.e. yesterday).
+
+    Algorithm: today hit limit up (verified by caller, count starts at 1).
+    Walk backward through history. For each (date_d, pre_close_d) we need
+    (close_d, pre_close_d). close_d == pre_close of the next entry, which for
+    the last history entry is today_pre_close. So for d = history[-1][0]:
+    close_d = today_pre_close, pre_close_d = history[-1][1]. Compare.
+    For earlier entries d = history[i][0]: close_d = history[i+1][1],
+    pre_close_d = history[i][1]. Compare. Stop at the first non-limit-up day.
+    """
+    count = 1
+    if not history:
+        return count
+    # Build a (date, pre_close, close) tuple for each history day.
+    enriched: list[tuple[int, float, float]] = []
+    for i, (d, pc) in enumerate(history):
+        if i + 1 < len(history):
+            close = history[i + 1][1]
+        else:
+            # Most recent history day closed at today's pre_close
+            close = today_pre_close
+        enriched.append((int(d), float(pc or 0), float(close or 0)))
+    # Walk backward from yesterday
+    for d, pre_close_d, close_d in reversed(enriched):
+        if pre_close_d <= 0 or close_d <= 0:
+            break
+        limit_price = calculate_limit_up_price(pre_close_d, board)
+        if is_limit_up_price(close_d, limit_price):
+            count += 1
+        else:
+            break
+    return count
 
 
 def detect_board(code: str) -> str:
@@ -376,22 +445,41 @@ def _codes_missing_target(local: pd.DataFrame, codes: Sequence[str], target_date
 
 
 def _iter_target_rows_with_pre_close(kline: pd.DataFrame, target_date: int):
+    """Yield (row, pre_close, history) for each code that has a row on target_date.
+
+    ``history`` is a list of (date, pre_close) pairs sorted ascending by date,
+    where ``pre_close`` is the previous trading day's close. The history covers
+    up to the lookback window fetched by the caller (default 14 days) so the
+    caller can compute consecutive limit-up days without re-querying.
+    """
     if kline is None or kline.empty or "code" not in kline.columns or "date" not in kline.columns:
         return
     df = kline.copy()
     df["date"] = pd.to_numeric(df["date"], errors="coerce").fillna(0).astype(int)
     df = df.sort_values(["code", "date"])
     for code, group in df.groupby("code"):
-        group = group[group["date"] <= int(target_date)]
-        current = group[group["date"] == int(target_date)]
+        up_to_today = group[group["date"] <= int(target_date)]
+        current = up_to_today[up_to_today["date"] == int(target_date)]
         if current.empty:
             continue
-        previous = group[group["date"] < int(target_date)]
+        previous = up_to_today[up_to_today["date"] < int(target_date)]
         if previous.empty:
             continue
         row = current.iloc[-1].to_dict()
         row["code"] = str(code)
-        yield row, float(previous.iloc[-1].get("close", 0) or 0)
+        # History: (date, pre_close_for_that_date) for every day before today
+        # in the lookback window. pre_close_for_a_given_date is the close of
+        # the trading day immediately before that date.
+        history: list[tuple[int, float]] = []
+        sorted_prev = previous.sort_values("date")
+        prev_closes = sorted_prev["close"].tolist()
+        prev_dates = sorted_prev["date"].tolist()
+        for i, d in enumerate(prev_dates):
+            if i == 0:
+                history.append((int(d), 0.0))
+            else:
+                history.append((int(d), float(prev_closes[i - 1] or 0)))
+        yield row, float(prev_closes[-1] or 0), history
 
 
 def _persist_codes(df: pd.DataFrame, warehouse) -> None:
@@ -564,7 +652,7 @@ class LimitDownService(LimitUpService):
         exclude_st: bool,
     ) -> list[LimitDownItem]:
         stocks: list[LimitDownItem] = []
-        for row, pre_close in _iter_target_rows_with_pre_close(kline, target_date):
+        for row, pre_close, _history in _iter_target_rows_with_pre_close(kline, target_date):
             item = build_limit_down_item(row, pre_close, name_map, board_map, date_str, board_filter, exclude_st)
             if item is not None:
                 stocks.append(item)

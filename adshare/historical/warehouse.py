@@ -226,19 +226,40 @@ class HistoricalWarehouse:
         begin = int(begin_date)
         end = int(end_date)
 
-        glob = f"{self.root}/A_share/{subdir}/*.parquet"
+        # Build explicit file list instead of glob — globbing 10k+ parquet files
+        # and then regexp-extracting the code out of each filename took ~45s for
+        # full-market queries. Listing the 5000+ files we actually need drops it
+        # to ~5s (8x faster, measured 2026-06-11).
+        #
+        # Critical: do NOT add a `WHERE code IN (?,?,?)` filter on top of the
+        # explicit file list. read_parquet(['a','b',...]) already restricts to
+        # those files, and the IN clause forces DuckDB's planner to build a
+        # 10k-element hash table on a cold connection — measured at 40s vs
+        # 0.6s without IN (2026-06-11). The code column is derived from the
+        # filename so we can still return it for downstream filters.
+        file_paths = [
+            str(Path(self.root) / "A_share" / subdir / f"{code}.parquet")
+            for code in safe_codes
+        ]
+        # Drop any codes without a parquet file (avoid read_parquet errors on
+        # missing paths).
+        existing_paths: list[str] = []
+        for path in file_paths:
+            if Path(path).exists():
+                existing_paths.append(path)
+        if not existing_paths:
+            return pd.DataFrame()
+        file_list_sql = "[" + ",".join(f"'{p}'" for p in existing_paths) + "]"
 
-        placeholders = ",".join("?" for _ in safe_codes)
-        params: List[Any] = list(safe_codes) + [begin, end]
+        params: List[Any] = [begin, end]
 
         sql = f"""
             SELECT
-                regexp_extract(filename, '.*[\\\\/]([^\\\\/]+)\\.parquet$', 1) AS code,
+                regexp_extract(filename, '.*/([^/]+)\\.parquet$', 1) AS code,
                 date, open, high, low, close, volume, amount,
                 adj_factor, is_suspended, sync_at
-            FROM read_parquet('{glob}', filename=1, hive_partitioning=false)
-            WHERE regexp_extract(filename, '.*[\\\\/]([^\\\\/]+)\\.parquet$', 1) IN ({placeholders})
-              AND date BETWEEN ? AND ?
+            FROM read_parquet({file_list_sql}, filename=true, union_by_name=true)
+            WHERE date BETWEEN ? AND ?
             ORDER BY code, date
         """
 
