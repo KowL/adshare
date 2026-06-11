@@ -1,16 +1,18 @@
-"""Real-time market data routers (WebSocket + REST).
+"""Real-time market data routers (WebSocket + SSE + REST).
 
-Provides tick-level snapshot quotes pushed via WebSocket and cached in Redis.
+Provides tick-level snapshot quotes pushed via WebSocket/SSE and cached in Redis.
 """
 
+import asyncio
+import json
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 
 from adshare.core.cache import get_cache_manager
 from adshare.core.logging import get_logger
 from adshare.models.schemas import RealtimeQuotesResponse, RealtimeStatsResponse
-from adshare.services.realtime import get_realtime_subscriber
+from adshare.services.realtime_broadcast import get_broadcast_service
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/realtime", tags=["realtime"])
@@ -70,7 +72,7 @@ async def get_realtime_quotes(
 
 
 # ============================================================
-# REST API — Index Snapshot (§3.5.3.1)
+# REST API — Index Snapshot
 # ============================================================
 
 
@@ -78,10 +80,7 @@ async def get_realtime_quotes(
 async def get_realtime_index(
     code: str,
 ):
-    """Get the latest real-time index snapshot from Redis cache.
-
-    Data is pushed by AmazingData SubscribeData for EXTRA_INDEX_A (§3.5.3.1).
-    """
+    """Get the latest real-time index snapshot from Redis cache."""
     try:
         cache = get_cache_manager()
         data = cache.get_realtime_market(REALTIME_INDEX_KEY, code)
@@ -132,10 +131,7 @@ async def get_realtime_kline(
     code: str,
     period: str = Query(default="min1", description="K-line period: min1, min5, min15, min30, min60, day, week, month"),
 ):
-    """Get the latest real-time K-line tick for a single stock from Redis cache.
-
-    Data is pushed by AmazingData SubscribeData OnKLine callback (§3.5.3.9).
-    """
+    """Get the latest real-time K-line tick for a single stock from Redis cache."""
     try:
         cache = get_cache_manager()
         data = cache.get_realtime_market(REALTIME_KLINE_KEY, period, code)
@@ -184,19 +180,19 @@ async def get_realtime_kline_batch(
 
 @router.get("/stats", response_model=RealtimeStatsResponse)
 async def get_realtime_stats():
-    """Get realtime subscriber statistics and WebSocket connection info."""
+    """Get realtime broadcast statistics and WebSocket connection info."""
     try:
-        subscriber = get_realtime_subscriber()
-        ws_stats = subscriber.ws_manager.get_stats()
+        broadcast = get_broadcast_service()
+        stats = broadcast.get_stats()
         return RealtimeStatsResponse(
-            ws_connections=ws_stats["active_connections"],
-            ws_subscribed_codes=ws_stats["subscribed_codes"],
-            ws_total_subscriptions=ws_stats["total_subscriptions"],
-            total_received=subscriber.stats["total_received"],
-            saved_to_redis=subscriber.stats["saved_to_redis"],
-            ws_broadcasts=subscriber.stats["ws_broadcasts"],
-            failed=subscriber.stats["failed"],
-            start_time=subscriber.stats["start_time"],
+            ws_connections=stats["ws_active_connections"],
+            ws_subscribed_codes=stats["ws_subscribed_codes"],
+            ws_total_subscriptions=stats["ws_total_subscriptions"],
+            total_received=0,  # Worker-side stat, not available in API process
+            saved_to_redis=0,  # Worker-side stat, not available in API process
+            ws_broadcasts=stats["ws_broadcasts"],
+            failed=0,
+            start_time=stats["start_time"],
         )
     except Exception as e:
         logger.error("get_realtime_stats failed: %s", e)
@@ -219,9 +215,9 @@ async def realtime_websocket(websocket: WebSocket):
       - Ping → send {"action": "ping"} → server replies {"type": "pong"}
       - Quote data → server pushes {"type": "quote", "code": "...", "data": {...}}
     """
-    subscriber = get_realtime_subscriber()
+    broadcast = get_broadcast_service()
     await websocket.accept()
-    client_id = subscriber.ws_manager.connect(websocket)
+    client_id = broadcast.ws_manager.connect(websocket)
 
     try:
         await websocket.send_json({"type": "connected", "client_id": client_id})
@@ -245,13 +241,13 @@ async def realtime_websocket(websocket: WebSocket):
                         {"type": "error", "message": "codes must be a non-empty list"}
                     )
                     continue
-                subscriber.ws_manager.subscribe(client_id, codes)
+                broadcast.ws_manager.subscribe(client_id, codes)
                 await websocket.send_json(
                     {"type": "subscribed", "codes": codes, "count": len(codes)}
                 )
 
             elif action == "unsubscribe":
-                subscriber.ws_manager.subscribe(client_id, [])
+                broadcast.ws_manager.subscribe(client_id, [])
                 await websocket.send_json({"type": "unsubscribed"})
 
             elif action == "ping":
@@ -267,4 +263,45 @@ async def realtime_websocket(websocket: WebSocket):
     except Exception as e:
         logger.error("WebSocket error (%s): %s", client_id, e)
     finally:
-        subscriber.ws_manager.disconnect(client_id)
+        broadcast.ws_manager.disconnect(client_id)
+
+
+# ============================================================
+# SSE (Server-Sent Events)
+# ============================================================
+
+
+@router.get("/sse")
+async def realtime_sse(
+    request: Request,
+    codes: str = Query(..., description="Comma-separated stock codes"),
+    types: str = Query(default="quote", description="Data types: quote,index,kline"),
+):
+    """Server-Sent Events for real-time quotes.
+
+    Example:
+      curl -N "http://localhost:8000/realtime/sse?codes=000001.SZ,600000.SH"
+    """
+    from fastapi.responses import StreamingResponse
+
+    broadcast = get_broadcast_service()
+    code_set = set(c.strip() for c in codes.split(",") if c.strip())
+    queue = broadcast.register_sse_client(code_set)
+
+    async def event_generator():
+        try:
+            while True:
+                try:
+                    payload = await asyncio.wait_for(queue.get(), timeout=30.0)
+                    yield f"event: {payload['type']}\ndata: {json.dumps(payload)}\n\n"
+                except asyncio.TimeoutError:
+                    yield "event: heartbeat\ndata: \n\n"
+        except asyncio.CancelledError:
+            pass
+        finally:
+            broadcast.unregister_sse_client(queue.client_id)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+    )

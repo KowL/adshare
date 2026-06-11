@@ -54,37 +54,26 @@ def _init_sdk_login() -> bool:
         return False
 
 
-def _init_realtime_subscriber() -> bool:
-    """Start realtime subscriber (push to Redis)."""
+def _init_realtime_publisher() -> bool:
+    """Start realtime publisher (SDK → Redis + Pub/Sub)."""
     realtime_enabled = os.environ.get("REALTIME_ENABLED", "true").lower() in ("true", "1", "yes")
     if not realtime_enabled:
-        logger.info("Realtime subscriber disabled by REALTIME_ENABLED=false")
+        logger.info("Realtime publisher disabled by REALTIME_ENABLED=false")
         return False
 
     try:
-        import asyncio
-        from adshare.services.realtime import get_realtime_subscriber
+        from adshare.services.realtime_publisher import get_realtime_publisher
 
-        subscriber = get_realtime_subscriber()
-        if not subscriber.initialize():
-            logger.error("Realtime subscriber initialization failed")
+        publisher = get_realtime_publisher()
+        if not publisher.initialize():
+            logger.error("Realtime publisher initialization failed")
             return False
 
-        # Start broadcast loop in a background thread
-        loop = asyncio.new_event_loop()
-
-        def _run_loop():
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(subscriber.broadcast_loop())
-
-        broadcast_thread = threading.Thread(target=_run_loop, daemon=True)
-        broadcast_thread.start()
-
-        logger.info("Realtime subscriber started (codes=%s, index=%s)",
-                    len(subscriber._code_list), len(subscriber._index_code_list))
+        logger.info("Realtime publisher started (codes=%s, index=%s)",
+                    len(publisher._code_list), len(publisher._index_code_list))
         return True
     except Exception as e:
-        logger.error("Realtime subscriber init error: %s", e)
+        logger.error("Realtime publisher init error: %s", e)
         return False
 
 
@@ -169,8 +158,8 @@ def main() -> int:
     except Exception as e:
         logger.warning("Historical warehouse init failed: %s", e)
 
-    # 3. Realtime subscriber
-    _init_realtime_subscriber()
+    # 3. Realtime publisher
+    _init_realtime_publisher()
 
     # 4. Sync scheduler
     _init_sync_scheduler()
@@ -191,8 +180,8 @@ def main() -> int:
     shutdown_scheduler()
 
     try:
-        from adshare.services.realtime import get_realtime_subscriber
-        get_realtime_subscriber().shutdown()
+        from adshare.services.realtime_publisher import get_realtime_publisher
+        get_realtime_publisher().shutdown()
     except Exception:
         pass
 

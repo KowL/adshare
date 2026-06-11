@@ -58,7 +58,26 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠️  Historical warehouse init failed: {e}")
 
+    # Start realtime broadcast service (Redis Pub/Sub → WebSocket/SSE)
+    try:
+        from adshare.services.realtime_broadcast import get_broadcast_service
+
+        broadcast = get_broadcast_service()
+        await broadcast.start()
+        print("📡 Realtime broadcast service started")
+    except Exception as e:
+        print(f"⚠️  Realtime broadcast service init failed: {e}")
+
     yield
+
+    # Shutdown broadcast service
+    try:
+        from adshare.services.realtime_broadcast import get_broadcast_service
+
+        broadcast = get_broadcast_service()
+        await broadcast.stop()
+    except Exception:
+        pass
 
     print("👋 adshare api shutting down")
 
