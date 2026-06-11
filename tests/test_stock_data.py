@@ -237,3 +237,49 @@ class TestRouterImport:
     def test_router_imports(self):
         from adshare.routers import stock_data
         assert stock_data.router is not None
+
+
+
+class TestBuildLimitList:
+    def test_up_and_down(self):
+        from adshare.services.derived_metrics import build_limit_list
+
+        class FakeItem:
+            def __init__(self, code, name, price, change_pct, board, volume, amount, pre_close, limit_up_days=1):
+                self.code = code
+                self.name = name
+                self.price = price
+                self.changePct = change_pct
+                self.amplitude = 0.05
+                self.board = board
+                self.volume = volume
+                self.amount = amount
+                self.preClose = pre_close
+                self.firstTime = "09:35:00"
+                self.finalTime = "14:55:00"
+                self.limitUpDays = limit_up_days
+
+        up = [FakeItem("000001", "平安银行", 11.0, 0.1, "主板", 10000, 110000, 10.0)]
+        down = [FakeItem("300001", "特锐德", 18.0, -0.2, "创业板", 5000, 90000, 22.5)]
+        df = build_limit_list(up, down, 20250611)
+        assert len(df) == 2
+        assert df.iloc[0]["ts_code"] == "000001.SZ"
+        assert df.iloc[0]["limit"] == "U"
+        assert df.iloc[1]["ts_code"] == "300001.SZ"
+        assert df.iloc[1]["limit"] == "D"
+        assert df.iloc[1]["pct_chg"] == -20.0
+
+
+class TestFilterNewShares:
+    def test_filter(self):
+        from adshare.services.derived_metrics import filter_new_shares
+        import pandas as pd
+        df = pd.DataFrame({
+            "ts_code": ["000001.SZ", "000002.SZ", "688001.SH"],
+            "symbol": ["000001", "000002", "688001"],
+            "name": ["A", "B", "C"],
+            "list_date": [19910403, 20250601, 20250610],
+        })
+        result = filter_new_shares(df, 20250601)
+        assert len(result) == 2
+        assert list(result["ts_code"]) == ["000002.SZ", "688001.SH"]

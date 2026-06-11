@@ -155,6 +155,33 @@ class SuspendDParams(BaseModel):
 
 
 # ============================================================
+# Limit List
+# ============================================================
+
+
+class LimitListParams(BaseModel):
+    """Query parameters for /limit_list."""
+
+    trade_date: Optional[str] = Field(default=None, description="Trade date YYYYMMDD")
+    ts_code: Optional[str] = Field(default=None, description="TS code")
+    limit: Optional[str] = Field(default=None, description="U=up, D=down")
+    fields: Optional[str] = Field(default=None, description="Comma-separated fields")
+
+
+# ============================================================
+# New Share
+# ============================================================
+
+
+class NewShareParams(BaseModel):
+    """Query parameters for /new_share."""
+
+    start_date: Optional[str] = Field(default=None, description="Start date YYYYMMDD")
+    end_date: Optional[str] = Field(default=None, description="End date YYYYMMDD")
+    fields: Optional[str] = Field(default=None, description="Comma-separated fields")
+
+
+# ============================================================
 # Daily Basic
 # ============================================================
 
@@ -166,4 +193,64 @@ class DailyBasicParams(BaseModel):
     trade_date: Optional[str] = Field(default=None, description="Trade date YYYYMMDD")
     start_date: Optional[str] = Field(default=None, description="Start date YYYYMMDD")
     end_date: Optional[str] = Field(default=None, description="End date YYYYMMDD")
+    fields: Optional[str] = Field(default=None, description="Comma-separated fields")
+
+
+# ============================================================
+# Financial Statements
+# ============================================================
+
+
+class IncomeParams(BaseModel):
+    """Query parameters for /income."""
+
+    ts_code: Optional[str] = Field(default=None, description="TS code")
+    ann_date: Optional[str] = Field(default=None, description="Announcement date YYYYMMDD")
+    start_date: Optional[str] = Field(default=None, description="Start date YYYYMMDD")
+    end_date: Optional[str] = Field(default=None, description="End date YYYYMMDD")
+    period: Optional[str] = Field(default=None, description="Report period YYYYMMDD")
+    report_type: Optional[str] = Field(default=None, description="Report type")
+    comp_type: Optional[str] = Field(default=None, description="Company type")
+    fields: Optional[str] = Field(default=None, description="Comma-separated fields")
+
+
+class BalanceSheetParams(BaseModel):
+    """Query parameters for /balance_sheet."""
+
+    ts_code: Optional[str] = Field(default=None, description="TS code")
+    ann_date: Optional[str] = Field(default=None, description="Announcement date YYYYMMDD")
+    start_date: Optional[str] = Field(default=None, description="Start date YYYYMMDD")
+    end_date: Optional[str] = Field(default=None, description="End date YYYYMMDD")
+    period: Optional[str] = Field(default=None, description="Report period YYYYMMDD")
+    report_type: Optional[str] = Field(default=None, description="Report type")
+    comp_type: Optional[str] = Field(default=None, description="Company type")
+    fields: Optional[str] = Field(default=None, description="Comma-separated fields")
+
+
+class CashFlowParams(BaseModel):
+    """Query parameters for /cashflow."""
+
+    ts_code: Optional[str] = Field(default=None, description="TS code")
+    ann_date: Optional[str] = Field(default=None, description="Announcement date YYYYMMDD")
+    start_date: Optional[str] = Field(default=None, description="Start date YYYYMMDD")
+    end_date: Optional[str] = Field(default=None, description="End date YYYYMMDD")
+    period: Optional[str] = Field(default=None, description="Report period YYYYMMDD")
+    report_type: Optional[str] = Field(default=None, description="Report type")
+    comp_type: Optional[str] = Field(default=None, description="Company type")
+    fields: Optional[str] = Field(default=None, description="Comma-separated fields")
+
+
+# ============================================================
+# Financial Indicator
+# ============================================================
+
+
+class FinaIndicatorParams(BaseModel):
+    """Query parameters for /fina_indicator."""
+
+    ts_code: Optional[str] = Field(default=None, description="TS code")
+    ann_date: Optional[str] = Field(default=None, description="Announcement date YYYYMMDD")
+    start_date: Optional[str] = Field(default=None, description="Start date YYYYMMDD")
+    end_date: Optional[str] = Field(default=None, description="End date YYYYMMDD")
+    period: Optional[str] = Field(default=None, description="Report period YYYYMMDD")
     fields: Optional[str] = Field(default=None, description="Comma-separated fields")

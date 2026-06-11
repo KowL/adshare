@@ -403,6 +403,109 @@ def map_suspend_fields(df: pd.DataFrame) -> pd.DataFrame:
     return df[[c for c in cols if c in df.columns]]
 
 
+def build_limit_list(up_items: list, down_items: list, trade_date: int) -> pd.DataFrame:
+    """Build Pro-style limit_list DataFrame from LimitUpItem and LimitDownItem.
+
+    Args:
+        up_items: List of LimitUpItem objects.
+        down_items: List of LimitDownItem objects.
+        trade_date: Target trade date as int YYYYMMDD.
+
+    Returns:
+        DataFrame with Pro platform limit_list fields.
+    """
+    rows = []
+
+    def _ts_code_suffix(code: str) -> str:
+        if not code:
+            return ".SZ"
+        if code.startswith(("60", "68", "88", "89")):
+            return ".SH"
+        if code.startswith(("8", "4", "92", "93")):
+            return ".BJ"
+        return ".SZ"
+
+    def _add(items, limit_flag):
+        for item in items:
+            code = str(getattr(item, "code", ""))
+            row = {
+                "ts_code": f"{code}{_ts_code_suffix(code)}",
+                "trade_date": int(trade_date),
+                "name": getattr(item, "name", ""),
+                "close": getattr(item, "price", 0.0),
+                "pct_chg": round(getattr(item, "changePct", 0.0) * 100, 2),
+                "amp": getattr(item, "amplitude", 0.0),
+                "fc_ratio": None,
+                "fl_ratio": None,
+                "fd_amount": None,
+                "first_time": getattr(item, "firstTime", "") or "",
+                "last_time": getattr(item, "finalTime", "") or "",
+                "open_times": None,
+                "up_stat": f"{getattr(item, 'limitUpDays', 1)}连板" if limit_flag == "U" else "",
+                "limit": limit_flag,
+                "swing": None,
+                "board": getattr(item, "board", ""),
+                "volume": getattr(item, "volume", 0),
+                "amount": getattr(item, "amount", 0.0),
+                "pre_close": getattr(item, "preClose", 0.0),
+            }
+            rows.append(row)
+
+    _add(up_items, "U")
+    _add(down_items, "D")
+
+    df = pd.DataFrame(rows)
+    cols = [
+        "ts_code", "trade_date", "name", "close", "pct_chg", "amp",
+        "fc_ratio", "fl_ratio", "fd_amount", "first_time", "last_time",
+        "open_times", "up_stat", "limit", "swing", "board",
+        "volume", "amount", "pre_close",
+    ]
+    return df[[c for c in cols if c in df.columns]]
+
+
+def filter_new_shares(df: pd.DataFrame, list_date: int) -> pd.DataFrame:
+    """Filter stock_basic DataFrame to new shares listed on/after list_date.
+
+    Args:
+        df: DataFrame from map_stock_basic_fields.
+        list_date: Reference date int YYYYMMDD.
+
+    Returns:
+        DataFrame with new_share fields.
+    """
+    if df is None or df.empty:
+        return pd.DataFrame(columns=[
+            "ts_code", "sub_code", "name", "ipo_date", "issue_date",
+            "amount", "market_amount", "price", "pe",
+            "limit_amount", "funds", "ballot",
+        ])
+
+    df = df.copy()
+    df["list_date_int"] = pd.to_numeric(df["list_date"], errors="coerce").fillna(0).astype(int)
+    df = df[df["list_date_int"] >= int(list_date)]
+
+    # New share fields — only ts_code/name/ipo_date available from basic info
+    df["ts_code"] = df["ts_code"].astype(str)
+    df["sub_code"] = df["symbol"].astype(str)
+    df["ipo_date"] = df["list_date_int"]
+    df["issue_date"] = df["list_date_int"]
+    df["amount"] = None
+    df["market_amount"] = None
+    df["price"] = None
+    df["pe"] = None
+    df["limit_amount"] = None
+    df["funds"] = None
+    df["ballot"] = None
+
+    cols = [
+        "ts_code", "sub_code", "name", "ipo_date", "issue_date",
+        "amount", "market_amount", "price", "pe",
+        "limit_amount", "funds", "ballot",
+    ]
+    return df[[c for c in cols if c in df.columns]]
+
+
 def filter_fields(df: pd.DataFrame, fields: Optional[str]) -> pd.DataFrame:
     """Filter DataFrame to only specified fields.
 
