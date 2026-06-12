@@ -15,6 +15,8 @@ The module implements:
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -589,7 +591,8 @@ def init_scheduler(settings: Optional[Settings] = None) -> "BackgroundScheduler"
                 id="sync_meta_codes",
                 replace_existing=True,
             )
-            # Reference data sync (weekly)
+            # Reference data sync (weekly) — run in a subprocess to avoid
+            # AmazingData SDK GIL crashes in the main worker thread.
             scheduler.add_job(
                 _run_sync_financial,
                 "cron",
@@ -956,29 +959,42 @@ def sync_index_component(
 
 
 
-def _run_sync_financial() -> None:
+def _run_reference_sync_subprocess(target: str) -> None:
+    """Run reference data sync in a subprocess to isolate SDK GIL issues."""
+    script = Path(__file__).resolve().parents[2] / "scripts" / "sync_reference_data.py"
+    if not script.exists():
+        # Fallback for the Docker layout where cwd is /app
+        script = Path("/app/scripts/sync_reference_data.py")
+    cmd = ["python", str(script), target]
     try:
-        for statement_type in ("balance", "income", "cashflow"):
-            result = sync_financial(statement_type=statement_type)
-            logger.info("scheduled sync_financial(%s): success=%s rows=%s",
-                        statement_type, result.success, result.rows)
+        logger.info("Starting reference sync subprocess: %s", target)
+        proc = subprocess.run(
+            cmd,
+            cwd=str(script.parent.parent) if script.exists() else "/app",
+            capture_output=True,
+            text=True,
+            timeout=7200,
+        )
+        if proc.stdout:
+            for line in proc.stdout.strip().splitlines():
+                logger.info("[ref-sync] %s", line)
+        if proc.returncode != 0:
+            logger.error("Reference sync subprocess failed (%s): %s", target, proc.stderr)
+        else:
+            logger.info("Reference sync subprocess completed: %s", target)
+    except subprocess.TimeoutExpired:
+        logger.error("Reference sync subprocess timed out: %s", target)
     except Exception as e:
-        logger.exception("scheduled sync_financial failed: %s", e)
+        logger.exception("Reference sync subprocess error: %s", e)
+
+
+def _run_sync_financial() -> None:
+    _run_reference_sync_subprocess("financial")
 
 
 def _run_sync_shareholder() -> None:
-    try:
-        result = sync_shareholder()
-        logger.info("scheduled sync_shareholder: success=%s rows=%s",
-                    result.success, result.rows)
-    except Exception as e:
-        logger.exception("scheduled sync_shareholder failed: %s", e)
+    _run_reference_sync_subprocess("shareholder")
 
 
 def _run_sync_index_component() -> None:
-    try:
-        result = sync_index_component()
-        logger.info("scheduled sync_index_component: success=%s rows=%s",
-                    result.success, result.rows)
-    except Exception as e:
-        logger.exception("scheduled sync_index_component failed: %s", e)
+    _run_reference_sync_subprocess("index")

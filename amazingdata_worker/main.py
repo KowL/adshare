@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -93,6 +94,32 @@ def _init_sync_scheduler() -> bool:
         return False
 
 
+def _run_reference_sync_subprocess(target: str) -> None:
+    """Run reference data sync in a subprocess to isolate SDK GIL issues."""
+    script = Path("/app/scripts/sync_reference_data.py")
+    cmd = ["python", str(script), target]
+    try:
+        logger.info("Starting reference sync subprocess: %s", target)
+        proc = subprocess.run(
+            cmd,
+            cwd="/app",
+            capture_output=True,
+            text=True,
+            timeout=7200,
+        )
+        if proc.stdout:
+            for line in proc.stdout.strip().splitlines():
+                logger.info("[ref-sync] %s", line)
+        if proc.returncode != 0:
+            logger.error("Reference sync subprocess failed (%s): %s", target, proc.stderr)
+        else:
+            logger.info("Reference sync subprocess completed: %s", target)
+    except subprocess.TimeoutExpired:
+        logger.error("Reference sync subprocess timed out: %s", target)
+    except Exception as e:
+        logger.exception("Reference sync subprocess error: %s", e)
+
+
 def _run_once_sync() -> None:
     """Run an immediate sync if SYNC_ON_START is set."""
     if os.environ.get("SYNC_ON_START", "").lower() not in ("true", "1", "yes"):
@@ -132,6 +159,9 @@ def _run_once_sync() -> None:
         result = sync_kline_daily(from_date=begin_date, to_date=end_date)
         logger.info("sync_kline_daily: succeeded=%s failed=%s rows=%s duration=%.2fs",
                     result.succeeded, result.failed, result.rows, result.duration)
+
+        # Reference data sync in subprocess (isolates SDK GIL issues)
+        _run_reference_sync_subprocess("all")
     except Exception as e:
         logger.error("Immediate sync failed: %s", e)
 
