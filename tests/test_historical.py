@@ -922,9 +922,18 @@ class TestScheduler:
         try:
             scheduler = init_scheduler(isolated_settings)
             jobs = scheduler.get_jobs()
-            assert len(jobs) == 4  # daily, weekly, monthly, codes
+            assert len(jobs) == 7  # daily, weekly, monthly, codes, financial, shareholder, index_component
             job_ids = {j.id for j in jobs}
-            assert {"sync_kline_daily", "sync_kline_weekly", "sync_kline_monthly", "sync_meta_codes"} <= job_ids
+            expected = {
+                "sync_kline_daily",
+                "sync_kline_weekly",
+                "sync_kline_monthly",
+                "sync_meta_codes",
+                "sync_financial",
+                "sync_shareholder",
+                "sync_index_component",
+            }
+            assert expected <= job_ids
         finally:
             shutdown_scheduler()
 

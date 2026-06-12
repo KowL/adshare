@@ -66,6 +66,9 @@ def apply_adjustment(
 
     df = df.copy()
 
+    # Drop existing adj_factor to avoid _x/_y suffixes during merge
+    df = df.drop(columns=["adj_factor"], errors="ignore")
+
     # Merge adj_factor
     df = df.merge(adj_df[["date", "adj_factor"]], on="date", how="left")
     df["adj_factor"] = df["adj_factor"].ffill()
@@ -316,7 +319,10 @@ def map_trade_cal_fields(df: pd.DataFrame) -> pd.DataFrame:
             return "BSE"
         return m
 
-    df["exchange"] = df.get("market", "").apply(_exchange)
+    if "market" in df.columns:
+        df["exchange"] = df["market"].apply(_exchange)
+    else:
+        df["exchange"] = ""
 
     cols = ["exchange", "cal_date", "is_open", "pretrade_date"]
     return df[[c for c in cols if c in df.columns]]
