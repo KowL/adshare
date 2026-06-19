@@ -31,6 +31,13 @@ from adshare.historical.sync import (
     start_scheduler,
     shutdown_scheduler,
 )
+from adshare.historical.maintenance import (
+    MaintenanceResult,
+    repair_kline_directory,
+    repair_codes_table,
+    repair_financial_table,
+    repair_all,
+)
 
 __all__ = [
     "KLINE_COLUMNS",
@@ -57,4 +64,11 @@ __all__ = [
     "init_scheduler",
     "start_scheduler",
     "shutdown_scheduler",
+]
+__all__ += [
+    "MaintenanceResult",
+    "repair_kline_directory",
+    "repair_codes_table",
+    "repair_financial_table",
+    "repair_all",
 ]

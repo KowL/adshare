@@ -4,6 +4,10 @@
 
 ### Changed
 
+- **L3 historical warehouse: scope narrowed to SH/SZ A-share.** The warehouse no longer serves Beijing Stock Exchange codes. `.BJ` rows are filtered at sync time (`_filter_sh_sz_codes`) and on-disk legacy `.BJ.parquet` files are removed by `repair_kline_directory`. `sync_index_component` default index list drops `899050.BJ` (北证50).
+- **L3 historical warehouse: adj_factor placeholder.** Missing `adj_factor` values are filled with `1.0` (AmazingData SDK does not currently expose an adjustment factor); `standardize_kline_df` enforces the fill, `repair_kline_directory` retroactively backfills existing files. Downstream ratio math can run; real复权 needs SDK support.
+- **L3 historical warehouse: OHLCV-zero rows auto-marked suspended.** `validate_kline_df` flips `is_suspended=True` and nulls prices for rows where `open=high=low=close=0 && volume=0` to defend against upstream sync failures (e.g. 2026-06-12 weekly batch returned 0 for every stock).
+- **L3 financial tables: composite natural key dedup.** `sync_financial` and `repair_financial_table` deduplicate on `(market_code|ts_code, reporting_period, report_type, statement_type, comp_type_code)` to preserve the legitimate multi-version reports (合并/母公司) while removing exact duplicates from re-pulls. `report_type` enum is normalised to `{1, 2, 3, 4}` (SDK has occasionally returned a date string).
 - **L3 historical warehouse: flat layout migration.** Per-(period, year, code) files replaced by a single Parquet per (period, code) with all years merged (`A_share/{daily|weekly|monthly}/{code}.parquet`). Sync jobs now pull `[20200101, today]` per code and overwrite the single file. `_metadata.json` moved from per-year to per-period. `kline_file_path()` and `warehouse.kline_dir()` no longer require a `year` argument; the parameter is accepted but ignored for backward compatibility. `sync_kline_daily/weekly/monthly` now accept `from_date`/`to_date` (the legacy `year=` keyword still works). `warehouse.stats()` drops `year_count`, adds `first_date`/`last_date`. New migration script: `python -m scripts.migrate_to_flat_layout [--dry-run] [--keep-old] [--backup-root PATH]`.
 - Moved limit-up stock calculation from the market router into `LimitUpService`, using daily K-line data and theoretical limit-up prices.
 - Updated Phase 3 development plan status for completed `TechnicalResponse`, `tables`, `limit-up`, and changelog tasks.
@@ -14,6 +18,8 @@
 
 ### Added
 
+- `adshare.historical.maintenance` module with idempotent L3 warehouse repair routines (`repair_kline_directory`, `repair_codes_table`, `repair_financial_table`, `repair_all`). Use as `python -m adshare.historical.maintenance {kline|codes|financial|all} [--dry-run]` or via the new `POST /historical/admin/repair` admin endpoint. Each routine is safe to call repeatedly and skips rewrite when nothing changed.
+- `MAINTENANCE_SCHEDULE_ENABLED` (default off) wires the repair routines into APScheduler as weekly defensive crons after the regular sync jobs. Configurable via `MAINTENANCE_KLINE_*` and `MAINTENANCE_FINANCIAL_*` env vars (see `.env.example`) (`repair_kline_directory`, `repair_codes_table`, `repair_financial_table`, `repair_all`). Use as `python -m adshare.historical.maintenance {kline|codes|financial|all} [--dry-run]` or via the new `POST /historical/admin/repair` admin endpoint. Each routine is safe to call repeatedly and skips rewrite when nothing changed.
 - Added service contract tests for limit-up local metadata/K-line hits, AmazingData fallback without login checks, remote K-line persistence, board/ST filtering, limit-price rounding, partial K-line batch failures, and ladder generation.
 - Added adapter contract tests for `get_code_list`, `get_code_info`, and `get_calendar`.
 - Added service contract tests for technical analysis single-indicator, category, invalid input, empty data, and default date behavior.

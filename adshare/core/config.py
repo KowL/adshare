@@ -97,6 +97,31 @@ class Settings(BaseSettings):
     sync_workers: int = Field(default=4, alias="SYNC_WORKERS")
     sync_retry_attempts: int = Field(default=3, alias="SYNC_RETRY_ATTEMPTS")
 
+    # Maintenance (idempotent L3 warehouse repair) schedule.
+    # Disabled by default so operators opt in explicitly; the routines
+    # themselves are no-ops when the warehouse is clean.
+    maintenance_schedule_enabled: bool = Field(
+        default=False, alias="MAINTENANCE_SCHEDULE_ENABLED"
+    )
+    maintenance_kline_day_of_week: str = Field(
+        default="sun", alias="MAINTENANCE_KLINE_DAY_OF_WEEK"
+    )
+    maintenance_kline_hour: int = Field(
+        default=3, alias="MAINTENANCE_KLINE_HOUR"
+    )
+    maintenance_kline_minute: int = Field(
+        default=0, alias="MAINTENANCE_KLINE_MINUTE"
+    )
+    maintenance_financial_day_of_week: str = Field(
+        default="sun", alias="MAINTENANCE_FINANCIAL_DAY_OF_WEEK"
+    )
+    maintenance_financial_hour: int = Field(
+        default=4, alias="MAINTENANCE_FINANCIAL_HOUR"
+    )
+    maintenance_financial_minute: int = Field(
+        default=0, alias="MAINTENANCE_FINANCIAL_MINUTE"
+    )
+
     @property
     def amazingdata_connection_string(self) -> str:
         """Return AmazingData connection info string (without password)."""

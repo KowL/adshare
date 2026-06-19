@@ -134,7 +134,16 @@ def main() -> int:
     if code_list:
         print(f"🔎 Restricting to {len(code_list)} codes")
     else:
-        print("🔎 Backfilling all A-share codes")
+        # Read from local meta/codes.parquet instead of SDK to avoid GIL crashes
+        codes_path = warehouse.root / "meta" / "codes.parquet"
+        if codes_path.exists():
+            import pandas as pd
+            df = pd.read_parquet(codes_path)
+            code_list = df["code"].tolist()
+            print(f"🔎 Backfilling all A-share codes from local cache ({len(code_list)} codes)")
+        else:
+            print("❌ meta/codes.parquet not found; run sync_meta_codes first")
+            return 1
 
     batch_size = args.batch_size
     if batch_size is None and code_list is None:

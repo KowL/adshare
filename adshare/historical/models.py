@@ -195,6 +195,15 @@ def standardize_kline_df(df: pd.DataFrame, code: Optional[str] = None) -> pd.Dat
         else:
             df[col] = pd.Series([np.nan] * n, index=df.index, dtype="float64")
 
+    # The AmazingData SDK does not currently surface an adjustment
+    # factor column. Treat absence as "no adjustment" (factor 1.0)
+    # so the column is non-null and downstream ratio math
+    # (e.g. ``pre_close * adj_factor / prev_adj_factor``) can still
+    # run. Once the SDK exposes a real adj_factor column this
+    # default becomes a no-op because the column will be present.
+    if "adj_factor" in df.columns and df["adj_factor"].isna().all():
+        df["adj_factor"] = 1.0
+
     if "volume" in df.columns:
         df["volume"] = pd.to_numeric(df["volume"], errors="coerce").fillna(0).astype("int64")
     else:
@@ -261,6 +270,26 @@ def validate_kline_df(df: pd.DataFrame) -> pd.DataFrame:
     if not invalid.empty:
         df = df.drop(invalid.index)
     df = df[df["volume"] >= 0]
+
+    # Fix rows where the upstream pipeline reported OHLCV all zero
+    # (typically caused by a sync failure that returned 0 for every
+    # field on a single trading day). Force ``is_suspended=True`` and
+    # null out the prices so downstream math treats it as a halt, not
+    # a real close of 0.
+    if "is_suspended" in df.columns and {"open", "high", "low", "close", "volume"} <= set(df.columns):
+        zero_mask = (
+            (df["open"] == 0)
+            & (df["high"] == 0)
+            & (df["low"] == 0)
+            & (df["close"] == 0)
+            & (df["volume"] == 0)
+        )
+        if zero_mask.any():
+            for col in ("open", "high", "low", "close", "amount"):
+                if col in df.columns:
+                    df.loc[zero_mask, col] = np.nan
+            df.loc[zero_mask, "is_suspended"] = True
+
     df = df.drop_duplicates(subset=["date"])
     df = df.sort_values("date").reset_index(drop=True)
     return df

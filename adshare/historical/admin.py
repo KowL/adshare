@@ -22,6 +22,12 @@ from adshare.historical.sync import (
     sync_meta_calendar,
     sync_meta_codes,
 )
+from adshare.historical.maintenance import (
+    repair_all,
+    repair_codes_table,
+    repair_financial_table,
+    repair_kline_directory,
+)
 from adshare.historical.warehouse import get_warehouse
 
 router = APIRouter(prefix="/historical/admin", tags=["historical-admin"])
@@ -80,3 +86,42 @@ async def admin_sync(
     payload = result.to_dict()
     payload["wall_duration"] = time.time() - started
     return payload
+
+
+@router.post("/repair")
+async def admin_repair(
+    job: str = Query(
+        "all",
+        description="repair job: kline, codes, financial, or all",
+    ),
+    dry_run: bool = Query(
+        default=False,
+        description="If true, read+fix in memory but do not write back.",
+    ),
+) -> dict:
+    """Run an idempotent warehouse repair routine.
+
+    Each routine is safe to call repeatedly. Returns the per-job
+    :class:`MaintenanceResult` so the operator can audit what
+    actually changed.
+    """
+    job_lc = (job or "all").lower()
+    settings = get_settings()
+    warehouse = get_warehouse(settings)
+    started = time.time()
+    if job_lc == "kline":
+        results = [repair_kline_directory(dry_run=dry_run, warehouse=warehouse)]
+    elif job_lc == "codes":
+        results = [repair_codes_table(dry_run=dry_run, warehouse=warehouse)]
+    elif job_lc == "financial":
+        results = [repair_financial_table(dry_run=dry_run, warehouse=warehouse)]
+    elif job_lc == "all":
+        results = repair_all(dry_run=dry_run, warehouse=warehouse)
+    else:
+        raise HTTPException(status_code=400, detail=f"unknown job: {job}")
+    return {
+        "job": job_lc,
+        "dry_run": dry_run,
+        "wall_duration": time.time() - started,
+        "results": [r.to_dict() for r in results],
+    }
