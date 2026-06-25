@@ -271,6 +271,16 @@ def validate_kline_df(df: pd.DataFrame) -> pd.DataFrame:
         df = df.drop(invalid.index)
     df = df[df["volume"] >= 0]
 
+    # Drop rows with non-positive prices unless explicitly suspended.
+    # This catches SDK aggregation bugs that produce open/high > 0 while
+    # low/close are 0 (observed for weekly/monthly bars on 2026-06-12).
+    price_cols = [c for c in ("open", "high", "low", "close") if c in df.columns]
+    if price_cols:
+        not_suspended = ~df["is_suspended"].fillna(False)
+        bad_price = (df[price_cols] <= 0).any(axis=1) & not_suspended
+        if bad_price.any():
+            df = df.drop(df[bad_price].index)
+
     # Fix rows where the upstream pipeline reported OHLCV all zero
     # (typically caused by a sync failure that returned 0 for every
     # field on a single trading day). Force ``is_suspended=True`` and

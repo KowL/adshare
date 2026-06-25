@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import os
 import signal
-import subprocess
 import sys
 import threading
 import time
@@ -94,30 +93,80 @@ def _init_sync_scheduler() -> bool:
         return False
 
 
-def _run_reference_sync_subprocess(target: str) -> None:
-    """Run reference data sync in a subprocess to isolate SDK GIL issues."""
-    script = Path("/app/scripts/sync_reference_data.py")
-    cmd = ["python", str(script), target]
-    try:
-        logger.info("Starting reference sync subprocess: %s", target)
-        proc = subprocess.run(
-            cmd,
-            cwd="/app",
-            capture_output=True,
-            text=True,
-            timeout=7200,
-        )
-        if proc.stdout:
-            for line in proc.stdout.strip().splitlines():
-                logger.info("[ref-sync] %s", line)
-        if proc.returncode != 0:
-            logger.error("Reference sync subprocess failed (%s): %s", target, proc.stderr)
-        else:
-            logger.info("Reference sync subprocess completed: %s", target)
-    except subprocess.TimeoutExpired:
-        logger.error("Reference sync subprocess timed out: %s", target)
-    except Exception as e:
-        logger.exception("Reference sync subprocess error: %s", e)
+def _run_reference_sync(target: str) -> None:
+    """Run reference data sync directly in a background thread.
+
+    Uses the existing SDK connection (already logged in) with _SDK_CALL_LOCK
+    protection.  This matches the original amazingdata project architecture
+    where SubscribeData and MarketData share a single connection.
+    """
+    from adshare.historical.sync import (
+        _get_adapter_safe,
+        sync_financial,
+        sync_shareholder,
+        sync_index_component,
+    )
+
+    settings = get_settings()
+    warehouse = get_warehouse(settings)
+    adapter = _get_adapter_safe()
+
+    def _sync():
+        try:
+            if target in ("all", "financial"):
+                for statement_type in ("balance", "income", "cashflow"):
+                    logger.info("Starting financial sync: %s", statement_type)
+                    result = sync_financial(
+                        statement_type=statement_type,
+                        batch_size=50,
+                        settings=settings,
+                        warehouse=warehouse,
+                        adapter=adapter,
+                    )
+                    logger.info(
+                        "sync_financial(%s): success=%s rows=%s failed=%s duration=%.2fs",
+                        statement_type,
+                        result.success,
+                        result.rows,
+                        result.failed,
+                        result.duration,
+                    )
+            if target in ("all", "shareholder"):
+                logger.info("Starting shareholder sync")
+                result = sync_shareholder(
+                    batch_size=50,
+                    settings=settings,
+                    warehouse=warehouse,
+                    adapter=adapter,
+                )
+                logger.info(
+                    "sync_shareholder: success=%s rows=%s failed=%s duration=%.2fs",
+                    result.success,
+                    result.rows,
+                    result.failed,
+                    result.duration,
+                )
+            if target in ("all", "index"):
+                logger.info("Starting index component sync")
+                result = sync_index_component(
+                    settings=settings,
+                    warehouse=warehouse,
+                    adapter=adapter,
+                )
+                logger.info(
+                    "sync_index_component: success=%s rows=%s failed=%s duration=%.2fs",
+                    result.success,
+                    result.rows,
+                    result.failed,
+                    result.duration,
+                )
+        except Exception as e:
+            logger.exception("Reference sync failed: %s", e)
+
+    # Run in background thread so the main thread can continue
+    thread = threading.Thread(target=_sync, daemon=True, name=f"ref-sync-{target}")
+    thread.start()
+    logger.info("Reference sync thread started: target=%s thread=%s", target, thread.name)
 
 
 def _run_once_sync() -> None:
@@ -160,10 +209,10 @@ def _run_once_sync() -> None:
         logger.info("sync_kline_daily: succeeded=%s failed=%s rows=%s duration=%.2fs",
                     result.succeeded, result.failed, result.rows, result.duration)
 
-        # Reference data sync in subprocess (isolates SDK GIL issues)
-        _run_reference_sync_subprocess("all")
-    except Exception as e:
-        logger.error("Immediate sync failed: %s", e)
+        # Reference data sync in background thread (shares SDK connection)
+        _run_reference_sync("all")
+    except Exception:
+        logger.exception("Immediate sync failed")
 
 
 def main() -> int:

@@ -237,6 +237,8 @@ def _is_sh_sz_code(code: str) -> bool:
 
 def _filter_sh_sz_codes(codes):
     """Filter an iterable of codes to keep only SH/SZ main board entries."""
+    if codes is None:
+        return []
     return [c for c in codes if _is_sh_sz_code(c)]
 
 

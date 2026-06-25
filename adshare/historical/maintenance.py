@@ -85,13 +85,15 @@ class MaintenanceResult:
 # K-line repair
 # ----------------------------------------------------------------------
 
-def _fix_kline_df(df: pd.DataFrame) -> Tuple[pd.DataFrame, int, int]:
+def _fix_kline_df(df: pd.DataFrame) -> Tuple[pd.DataFrame, int, int, int]:
     """Repair a single K-line DataFrame in-memory.
 
-    Returns ``(cleaned_df, adj_filled, invalid_zero_rows)``.
+    Returns ``(cleaned_df, adj_filled, invalid_zero_rows, rows_dropped)``.
     """
     if df is None or df.empty:
-        return df, 0, 0
+        return df, 0, 0, 0
+
+    rows_in = len(df)
 
     adj_filled = 0
     if "adj_factor" in df.columns:
@@ -116,7 +118,8 @@ def _fix_kline_df(df: pd.DataFrame) -> Tuple[pd.DataFrame, int, int]:
         invalid_before = int(mask.sum())
 
     df = validate_kline_df(df)
-    return df, adj_filled, invalid_before
+    rows_dropped = rows_in - len(df)
+    return df, adj_filled, invalid_before, rows_dropped
 
 
 def repair_kline_directory(
@@ -163,14 +166,16 @@ def repair_kline_directory(
                 if df.empty:
                     continue
                 result.rows_in += len(df)
-                cleaned, adj_filled, invalid = _fix_kline_df(df)
+                cleaned, adj_filled, invalid, dropped = _fix_kline_df(df)
                 if cleaned is None or cleaned.empty:
+                    result.dropped += len(df)
                     continue
                 cleaned = cleaned[
                     [c for c in KLINE_COLUMNS if c in cleaned.columns]
                 ]
                 result.rows_out += len(cleaned)
-                mutated = adj_filled + invalid
+                result.dropped += dropped
+                mutated = adj_filled + invalid + dropped
                 result.mutated += mutated
                 if mutated == 0:
                     # Nothing changed: skip the rewrite so the routine

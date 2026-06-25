@@ -4,6 +4,7 @@ This module wraps the AmazingData SDK (Linux/amd64 only) and provides
 a unified interface for all data queries with connection pooling and retry logic.
 """
 
+import os
 import threading
 import time
 from datetime import datetime
@@ -15,6 +16,11 @@ from adshare.core.config import Settings, get_settings
 from adshare.core.logging import get_logger
 
 logger = get_logger(__name__)
+
+# Default local data folder used by AmazingData's DownloadInfoData.
+# The SDK writes per-statement HDF5 caches under this path and the query
+# functions read from it. The folder must be writable by the SDK process.
+_DEFAULT_LOCAL_DATA = os.environ.get("AMAZINGDATA_LOCAL_PATH", "/amazingdata/data")
 
 
 class AmazingDataAdapter:
@@ -67,23 +73,31 @@ class AmazingDataAdapter:
 
     def _ensure_base_data(self):
         """Lazy initialize BaseData and MarketData (may block)."""
-        if self._base_data is None:
-            import AmazingData as ad
-            self._base_data = ad.BaseData()
+        if self._base_data is not None and self._market_data is not None:
+            return
+        import AmazingData as ad
+        try:
+            if self._base_data is None:
+                self._base_data = ad.BaseData()
+            calendar = self._base_data.get_calendar()
+            logger.info(f"BaseData.get_calendar() returned type={type(calendar).__name__}")
+            if calendar is None:
+                logger.warning("BaseData.get_calendar() returned None, using empty calendar")
+                calendar = []
+            self._market_data = ad.query_api.market_data.MarketData(calendar=calendar)
+        except Exception as e:
+            logger.warning(f"BaseData/MarketData initialization failed: {e}, retrying with empty calendar")
+            # Reset BaseData so the next attempt can create a fresh instance.
+            self._base_data = None
+            self._market_data = None
             try:
-                calendar = self._base_data.get_calendar()
-                if calendar is None:
-                    logger.warning("BaseData.get_calendar() returned None, using empty calendar")
-                    calendar = []
-                self._market_data = ad.query_api.market_data.MarketData(calendar=calendar)
-            except Exception as e:
-                logger.warning(f"BaseData/MarketData initialization failed: {e}, retrying with empty calendar")
-                # Fallback: try with empty calendar
-                try:
-                    self._market_data = ad.query_api.market_data.MarketData(calendar=[])
-                except Exception as e2:
-                    logger.error(f"MarketData initialization failed completely: {e2}")
-                    raise RuntimeError(f"Cannot initialize MarketData: {e2}")
+                self._base_data = ad.BaseData()
+                self._market_data = ad.query_api.market_data.MarketData(calendar=[])
+            except Exception as e2:
+                self._base_data = None
+                self._market_data = None
+                logger.error(f"MarketData initialization failed completely: {e2}")
+                raise RuntimeError(f"Cannot initialize MarketData: {e2}")
 
     def login(self) -> bool:
         """Login to AmazingData server."""
@@ -165,7 +179,10 @@ class AmazingDataAdapter:
         def _fetch():
             self._get_client()
             self._ensure_base_data()
-            return list(self._base_data.get_code_list(security_type=security_type))
+            raw = self._base_data.get_code_list(security_type=security_type)
+            if raw is None:
+                raise RuntimeError(f"BaseData.get_code_list({security_type!r}) returned None")
+            return list(raw)
 
         return self._with_retry(_fetch)
 
@@ -335,30 +352,65 @@ class AmazingDataAdapter:
         end_date: Optional[int] = None,
     ) -> pd.DataFrame:
         """Get financial statement data.
-        
+
         Args:
             codes: Comma-separated stock codes
             statement_type: "balance", "income", or "cashflow"
-            begin_date: Start date YYYYMMDD (optional)
-            end_date: End date YYYYMMDD (optional)
+            begin_date: Start date YYYYMMDD (optional, default: 19900101)
+            end_date: End date YYYYMMDD (optional, default: 20980101)
         """
         def _fetch():
             self._get_client()
             code_list = [c.strip() for c in codes.split(",")] if "," in codes else [codes]
-            
-            # Map statement_type to InfoData method
-            statement_map = {
-                "balance": self._info_data.get_balance_sheet,
-                "income": self._info_data.get_income,
-                "cashflow": self._info_data.get_cash_flow,
-            }
-            
-            if statement_type not in statement_map:
-                raise ValueError(f"Invalid statement_type: {statement_type}. Must be one of: balance, income, cashflow")
-            
-            method = statement_map[statement_type]
-            df = method(code_list=code_list)
-            return df
+
+            # The TGW SDK query path (InfoData.get_balance_sheet) only reads
+            # from the local HDF5 cache populated by DownloadInfoData. Use the
+            # download path so the SDK pulls fresh data from the server on
+            # first run; subsequent runs hit the local cache and are fast.
+            try:
+                from AmazingData.download_data import download_info_data
+                local_path = os.environ.get("AMAZINGDATA_LOCAL_PATH", _DEFAULT_LOCAL_DATA)
+                dl = download_info_data.DownloadInfoData(local_path)
+                kwargs = {}
+                if begin_date is not None:
+                    kwargs["begin_date"] = str(begin_date)
+                if end_date is not None:
+                    kwargs["end_date"] = str(end_date)
+
+                method_map = {
+                    "balance": dl.download_balance_sheet,
+                    "income": dl.download_income,
+                    "cashflow": dl.download_cash_flow,
+                }
+                method = method_map.get(statement_type)
+                if method is None:
+                    raise ValueError(
+                        f"Invalid statement_type: {statement_type}. "
+                        "Must be one of: balance, income, cashflow"
+                    )
+                per_code_df: Dict[str, pd.DataFrame] = method(code_list=code_list, **kwargs)
+                frames = [df for df in per_code_df.values() if df is not None and not df.empty]
+                if not frames:
+                    return pd.DataFrame()
+                df = pd.concat(frames, ignore_index=True)
+                return df
+            except Exception:
+                # Fall back to the legacy query path for environments where
+                # the download module is not available.
+                self._get_client()
+                self._ensure_info_data()
+                statement_map = {
+                    "balance": self._info_data.get_balance_sheet,
+                    "income": self._info_data.get_income,
+                    "cashflow": self._info_data.get_cash_flow,
+                }
+                method = statement_map.get(statement_type)
+                if method is None:
+                    raise ValueError(
+                        f"Invalid statement_type: {statement_type}. "
+                        "Must be one of: balance, income, cashflow"
+                    )
+                return method(code_list=code_list)
 
         return self._with_retry(_fetch)
 
@@ -372,16 +424,48 @@ class AmazingDataAdapter:
         def _fetch():
             self._get_client()
             code_list = [c.strip() for c in codes.split(",")] if "," in codes else [codes]
-            df = self._info_data.get_share_holder(code_list=code_list)
-            return df
+            try:
+                from AmazingData.download_data import download_info_data
+                local_path = os.environ.get("AMAZINGDATA_LOCAL_PATH", _DEFAULT_LOCAL_DATA)
+                dl = download_info_data.DownloadInfoData(local_path)
+                kwargs = {}
+                if begin_date is not None:
+                    kwargs["begin_date"] = str(begin_date)
+                if end_date is not None:
+                    kwargs["end_date"] = str(end_date)
+                per_code_df = dl.download_holder_num(code_list=code_list, **kwargs)
+                frames = [df for df in per_code_df.values() if df is not None and not df.empty]
+                if not frames:
+                    return pd.DataFrame()
+                return pd.concat(frames, ignore_index=True)
+            except Exception:
+                self._get_client()
+                self._ensure_info_data()
+                df = self._info_data.get_share_holder(code_list=code_list)
+                return df if df is not None else pd.DataFrame()
 
         return self._with_retry(_fetch)
 
     def get_index_component(self, index_code: str) -> pd.DataFrame:
-        """Get index component stocks."""
+        """Get index component stocks.
+
+        ``index_code`` may be a single code (e.g. ``000300.SH``) or a
+        comma-separated list. Returns a DataFrame with columns
+        ``INDEX_CODE``, ``CON_CODE``, ``INDATE``, ``OUTDATE``,
+        ``INDEX_NAME``.
+        """
         def _fetch():
-            client = self._get_client()
-            return client.get_index_component(index_code=index_code)
+            self._get_client()
+            code_list = [c.strip() for c in index_code.split(",")] if "," in index_code else [index_code]
+            try:
+                from AmazingData.download_data import download_info_data
+                local_path = os.environ.get("AMAZINGDATA_LOCAL_PATH", _DEFAULT_LOCAL_DATA)
+                dl = download_info_data.DownloadInfoData(local_path)
+                df = dl.download_index_constituent(code_list=code_list)
+                return df if df is not None else pd.DataFrame()
+            except Exception:
+                client = self._get_client()
+                return client.get_index_component(index_code=index_code)
 
         return self._with_retry(_fetch)
 

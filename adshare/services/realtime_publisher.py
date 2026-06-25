@@ -89,10 +89,12 @@ class RealtimePublisher:
             import AmazingData as ad
 
             self._base_data = ad.BaseData()
-            self._code_list = self._base_data.get_code_list(
-                security_type="EXTRA_STOCK_A"
-            )
+            raw_codes = self._base_data.get_code_list(security_type="EXTRA_STOCK_A")
+            self._code_list = list(raw_codes) if raw_codes is not None else []
             if not self._code_list:
+                logger.warning(
+                    "Realtime publisher: A-share code list empty/None, using fallback codes"
+                )
                 self._code_list = ["000001.SZ", "600000.SH", "600519.SH"]
             logger.info(
                 "Realtime publisher: fetched %s A-share codes", len(self._code_list)
@@ -100,8 +102,11 @@ class RealtimePublisher:
 
             # Index codes
             try:
-                self._index_code_list = self._base_data.get_code_list(
+                raw_index_codes = self._base_data.get_code_list(
                     security_type="EXTRA_INDEX_A"
+                )
+                self._index_code_list = (
+                    list(raw_index_codes) if raw_index_codes is not None else []
                 )
                 logger.info(
                     "Realtime publisher: fetched %s index codes",
