@@ -38,7 +38,10 @@ services:
       - DUCKDB_MODE=${DUCKDB_MODE:-memory}
       - SYNC_SCHEDULE_ENABLED=${SYNC_SCHEDULE_ENABLED:-true}
       - SYNC_ON_START=${SYNC_ON_START:-false}
-      - REALTIME_ENABLED=${REALTIME_ENABLED:-true}
+      # IMPORTANT: For TGW accounts with a single concurrent connection,
+      # historical sync and realtime subscription cannot run at the same time.
+      # Keep false for after-hours sync; enable true only during market hours.
+      - REALTIME_ENABLED=${REALTIME_ENABLED:-false}
       - ADSHARE_LOG_LEVEL=${ADSHARE_LOG_LEVEL:-INFO}
       - AMAZINGDATA_LOCAL_PATH=${AMAZINGDATA_LOCAL_PATH:-/app/data/amazingdata}
       - MAINTENANCE_SCHEDULE_ENABLED=${MAINTENANCE_SCHEDULE_ENABLED:-true}
