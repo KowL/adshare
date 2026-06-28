@@ -125,13 +125,17 @@ class AmazingDataAdapter:
                     host=self.settings.ad_host,
                     port=self.settings.ad_port,
                 )
-                # login returns bool, store a simple dict instead
-                self._login_info = {"status": result, "timestamp": time.time()}
                 if result:
+                    # Only cache successful logins; failed attempts must be
+                    # retryable for accounts with a single TGW connection that
+                    # may be temporarily exhausted.
+                    self._login_info = {"status": result, "timestamp": time.time()}
                     logger.info(
                         f"AmazingData login successful: "
                         f"{self.settings.amazingdata_connection_string}"
                     )
+                else:
+                    logger.error("AmazingData login returned false")
                 return result
         except Exception as e:
             logger.error(f"AmazingData login failed: {e}")
