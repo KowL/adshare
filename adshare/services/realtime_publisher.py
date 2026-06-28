@@ -86,11 +86,14 @@ class RealtimePublisher:
                 )
                 return False
 
-            import AmazingData as ad
-
-            self._base_data = ad.BaseData()
-            raw_codes = self._base_data.get_code_list(security_type="EXTRA_STOCK_A")
-            self._code_list = list(raw_codes) if raw_codes is not None else []
+            # Reuse the adapter's cached code list / BaseData instead of
+            # creating a separate BaseData instance.  This is important for
+            # TGW accounts that only allow a single concurrent connection.
+            try:
+                self._code_list = adapter.get_code_list("EXTRA_STOCK_A")
+            except Exception as e:
+                logger.warning("Realtime publisher: adapter code list failed: %s", e)
+                self._code_list = []
             if not self._code_list:
                 logger.warning(
                     "Realtime publisher: A-share code list empty/None, using fallback codes"
@@ -102,12 +105,7 @@ class RealtimePublisher:
 
             # Index codes
             try:
-                raw_index_codes = self._base_data.get_code_list(
-                    security_type="EXTRA_INDEX_A"
-                )
-                self._index_code_list = (
-                    list(raw_index_codes) if raw_index_codes is not None else []
-                )
+                self._index_code_list = adapter.get_code_list("EXTRA_INDEX_A")
                 logger.info(
                     "Realtime publisher: fetched %s index codes",
                     len(self._index_code_list),
@@ -115,6 +113,8 @@ class RealtimePublisher:
             except Exception as e:
                 logger.warning("Failed to fetch index codes: %s", e)
                 self._index_code_list = []
+
+            import AmazingData as ad
 
             self._subscribe_data = ad.SubscribeData()
             self._setup_callbacks()

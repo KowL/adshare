@@ -37,21 +37,40 @@ def _signal_handler(signum, frame):  # noqa: ARG001
     _shutdown_event.set()
 
 
-def _init_sdk_login() -> bool:
-    """Login to AmazingData SDK."""
+def _init_sdk_login(max_wait_seconds: float = 1800.0) -> bool:
+    """Login to AmazingData SDK.
+
+    For accounts with a single concurrent connection, a previous worker
+    process may still hold the session on the TGW server.  Instead of
+    exiting immediately and letting Docker restart us (which creates more
+    zombie sessions), we retry in-process with exponential backoff up to
+    ``max_wait_seconds``.
+    """
     from amazingdata_worker.adapters.amazingdata import get_adapter
 
     adapter = get_adapter()
-    try:
-        login_ok = adapter.login()
-        if login_ok:
-            logger.info("AmazingData login successful: %s", adapter.login_info)
-            return True
-        logger.error("AmazingData login failed")
-        return False
-    except Exception as e:
-        logger.error("AmazingData login error: %s", e)
-        return False
+    deadline = time.time() + max_wait_seconds
+    delay = 5.0
+
+    while time.time() < deadline:
+        try:
+            login_ok = adapter.login()
+            if login_ok:
+                logger.info("AmazingData login successful: %s", adapter.login_info)
+                return True
+            logger.error("AmazingData login failed, will retry in %.1fs", delay)
+        except Exception as e:
+            logger.error("AmazingData login error: %s, will retry in %.1fs", e, delay)
+
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            break
+        sleep_for = min(delay, remaining)
+        time.sleep(sleep_for)
+        delay = min(delay * 2, 60.0)
+
+    logger.error("Failed to login to AmazingData within %.0fs", max_wait_seconds)
+    return False
 
 
 def _init_realtime_publisher() -> bool:

@@ -54,14 +54,19 @@ class AmazingDataAdapter:
     # ============================================================
 
     def _get_client(self) -> Any:
-        """Get or create AmazingData client."""
+        """Get or create AmazingData module reference.
+
+        This method only loads the SDK module; it does **not** create any
+        data interface objects such as ``InfoData`` or ``BaseData``.  Those
+        are created lazily by ``_ensure_info_data()`` / ``_ensure_base_data()``
+        so that accounts with a single TGW connection do not pay for objects
+        they never use.
+        """
         if self._client is None:
             try:
                 import AmazingData as ad
 
                 self._client = ad
-                # Initialize InfoData first (no push server needed)
-                self._info_data = ad.query_api.info_data.InfoData()
                 logger.info("AmazingData SDK loaded successfully")
             except ImportError:
                 logger.error(
@@ -70,6 +75,13 @@ class AmazingDataAdapter:
                 )
                 raise RuntimeError("AmazingData SDK not installed")
         return self._client
+
+    def _ensure_info_data(self) -> None:
+        """Lazy initialize InfoData."""
+        if self._info_data is None:
+            import AmazingData as ad
+
+            self._info_data = ad.query_api.info_data.InfoData()
 
     def _ensure_base_data(self):
         """Lazy initialize BaseData and MarketData (may block)."""
@@ -98,6 +110,7 @@ class AmazingDataAdapter:
                 self._market_data = None
                 logger.error(f"MarketData initialization failed completely: {e2}")
                 raise RuntimeError(f"Cannot initialize MarketData: {e2}")
+
 
     def login(self) -> bool:
         """Login to AmazingData server."""
@@ -326,6 +339,7 @@ class AmazingDataAdapter:
             else:
                 self._ensure_base_data()
                 code_list = list(self._base_data.get_code_list("EXTRA_STOCK_A_SH_SZ"))
+            self._ensure_info_data()
             df = self._info_data.get_stock_basic(code_list=code_list)
             # Normalize column names to lowercase snake_case
             col_map = {
@@ -394,10 +408,13 @@ class AmazingDataAdapter:
                     return pd.DataFrame()
                 df = pd.concat(frames, ignore_index=True)
                 return df
-            except Exception:
+            except Exception as e:
+                logger.warning(
+                    "DownloadInfoData path failed for %s (%d codes): %s; falling back to InfoData",
+                    statement_type, len(code_list), e,
+                )
                 # Fall back to the legacy query path for environments where
                 # the download module is not available.
-                self._get_client()
                 self._ensure_info_data()
                 statement_map = {
                     "balance": self._info_data.get_balance_sheet,
@@ -438,8 +455,11 @@ class AmazingDataAdapter:
                 if not frames:
                     return pd.DataFrame()
                 return pd.concat(frames, ignore_index=True)
-            except Exception:
-                self._get_client()
+            except Exception as e:
+                logger.warning(
+                    "DownloadInfoData holder path failed (%d codes): %s; falling back to InfoData",
+                    len(code_list), e,
+                )
                 self._ensure_info_data()
                 df = self._info_data.get_share_holder(code_list=code_list)
                 return df if df is not None else pd.DataFrame()
@@ -463,7 +483,11 @@ class AmazingDataAdapter:
                 dl = download_info_data.DownloadInfoData(local_path)
                 df = dl.download_index_constituent(code_list=code_list)
                 return df if df is not None else pd.DataFrame()
-            except Exception:
+            except Exception as e:
+                logger.warning(
+                    "DownloadInfoData index constituent path failed (%s): %s; falling back to client",
+                    code_list, e,
+                )
                 client = self._get_client()
                 return client.get_index_component(index_code=index_code)
 
