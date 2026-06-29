@@ -12,7 +12,8 @@ import math
 import threading
 import time
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 from adshare.core.cache import get_cache_manager
 from adshare.core.config import get_settings
@@ -70,6 +71,41 @@ class RealtimePublisher:
             "start_time": None,
         }
 
+    def _load_cached_codes(
+        self,
+        suffixes: Tuple[str, ...] = (".SH", ".SZ"),
+        fallback: Optional[List[str]] = None,
+    ) -> List[str]:
+        """Load codes from the cached ``meta/codes.parquet`` file.
+
+        This avoids creating a BaseData connection, which is critical when
+        the TGW account only allows a single concurrent connection that is
+        already used by SubscribeData.
+        """
+        try:
+            from adshare.core.config import get_settings
+
+            root = Path(get_settings().historical_path).resolve()
+            path = root / "meta" / "codes.parquet"
+            if not path.exists():
+                logger.warning("Cached codes file not found: %s", path)
+                return fallback or []
+
+            import pandas as pd
+
+            df = pd.read_parquet(path)
+            if df is None or df.empty or "code" not in df.columns:
+                return fallback or []
+
+            codes = df["code"].dropna().astype(str).tolist()
+            codes = [c for c in codes if any(c.endswith(s) for s in suffixes)]
+            if not codes:
+                return fallback or []
+            return codes
+        except Exception as e:
+            logger.warning("Failed to load cached codes: %s", e)
+            return fallback or []
+
     # ============================================================
     # Lifecycle
     # ============================================================
@@ -86,24 +122,20 @@ class RealtimePublisher:
                 )
                 return False
 
-            # Reuse the adapter's cached code list / BaseData instead of
-            # creating a separate BaseData instance.  This is important for
-            # TGW accounts that only allow a single concurrent connection.
-            try:
-                self._code_list = adapter.get_code_list("EXTRA_STOCK_A")
-            except Exception as e:
-                logger.warning("Realtime publisher: adapter code list failed: %s", e)
-                self._code_list = []
-            if not self._code_list:
-                logger.warning(
-                    "Realtime publisher: A-share code list empty/None, using fallback codes"
-                )
-                self._code_list = ["000001.SZ", "600000.SH", "600519.SH"]
+            # For TGW accounts with a single concurrent connection,
+            # SubscribeData holds the only connection and adapter.get_code_list
+            # (which uses BaseData) may fail.  Load the code list from the
+            # cached meta/codes.parquet file maintained by sync_meta_codes.
+            self._code_list = self._load_cached_codes(
+                suffixes=(".SH", ".SZ"), fallback=["000001.SZ", "600000.SH", "600519.SH"]
+            )
             logger.info(
-                "Realtime publisher: fetched %s A-share codes", len(self._code_list)
+                "Realtime publisher: loaded %s A-share codes", len(self._code_list)
             )
 
-            # Index codes
+            # Index codes - try adapter first, then fallback to common indices.
+            # With a single TGW connection held by SubscribeData, BaseData calls
+            # usually fail; the fallback covers the major A-share indices.
             try:
                 self._index_code_list = adapter.get_code_list("EXTRA_INDEX_A")
                 logger.info(
@@ -112,7 +144,15 @@ class RealtimePublisher:
                 )
             except Exception as e:
                 logger.warning("Failed to fetch index codes: %s", e)
-                self._index_code_list = []
+                self._index_code_list = [
+                    "000001.SH",  # 上证指数
+                    "399001.SZ",  # 深证成指
+                    "399006.SZ",  # 创业板指
+                    "000016.SH",  # 上证50
+                    "000300.SH",  # 沪深300
+                    "000905.SH",  # 中证500
+                    "000688.SH",  # 科创50
+                ]
 
             import AmazingData as ad
 
