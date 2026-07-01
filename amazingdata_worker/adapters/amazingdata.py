@@ -381,57 +381,22 @@ class AmazingDataAdapter:
             self._get_client()
             code_list = [c.strip() for c in codes.split(",")] if "," in codes else [codes]
 
-            # The TGW SDK query path (InfoData.get_balance_sheet) only reads
-            # from the local HDF5 cache populated by DownloadInfoData. Use the
-            # download path so the SDK pulls fresh data from the server on
-            # first run; subsequent runs hit the local cache and are fast.
-            try:
-                from AmazingData.download_data import download_info_data
-                local_path = os.environ.get("AMAZINGDATA_LOCAL_PATH", _DEFAULT_LOCAL_DATA)
-                dl = download_info_data.DownloadInfoData(local_path)
-                kwargs = {}
-                if begin_date is not None:
-                    kwargs["begin_date"] = str(begin_date)
-                if end_date is not None:
-                    kwargs["end_date"] = str(end_date)
-
-                method_map = {
-                    "balance": dl.download_balance_sheet,
-                    "income": dl.download_income,
-                    "cashflow": dl.download_cash_flow,
-                }
-                method = method_map.get(statement_type)
-                if method is None:
-                    raise ValueError(
-                        f"Invalid statement_type: {statement_type}. "
-                        "Must be one of: balance, income, cashflow"
-                    )
-                per_code_df: Dict[str, pd.DataFrame] = method(code_list=code_list, **kwargs)
-                frames = [df for df in per_code_df.values() if df is not None and not df.empty]
-                if not frames:
-                    return pd.DataFrame()
-                df = pd.concat(frames, ignore_index=True)
-                return df
-            except Exception as e:
-                logger.warning(
-                    "DownloadInfoData path failed for %s (%d codes): %s; falling back to InfoData",
-                    statement_type, len(code_list), e,
+            # The DownloadInfoData download path has been disabled because it
+            # hangs indefinitely in some TGW environments. We use the legacy
+            # InfoData query path directly.
+            self._ensure_info_data()
+            statement_map = {
+                "balance": self._info_data.get_balance_sheet,
+                "income": self._info_data.get_income,
+                "cashflow": self._info_data.get_cash_flow,
+            }
+            method = statement_map.get(statement_type)
+            if method is None:
+                raise ValueError(
+                    f"Invalid statement_type: {statement_type}. "
+                    "Must be one of: balance, income, cashflow"
                 )
-                # Fall back to the legacy query path for environments where
-                # the download module is not available.
-                self._ensure_info_data()
-                statement_map = {
-                    "balance": self._info_data.get_balance_sheet,
-                    "income": self._info_data.get_income,
-                    "cashflow": self._info_data.get_cash_flow,
-                }
-                method = statement_map.get(statement_type)
-                if method is None:
-                    raise ValueError(
-                        f"Invalid statement_type: {statement_type}. "
-                        "Must be one of: balance, income, cashflow"
-                    )
-                return method(code_list=code_list)
+            return method(code_list=code_list)
 
         return self._with_retry(_fetch)
 
@@ -445,28 +410,11 @@ class AmazingDataAdapter:
         def _fetch():
             self._get_client()
             code_list = [c.strip() for c in codes.split(",")] if "," in codes else [codes]
-            try:
-                from AmazingData.download_data import download_info_data
-                local_path = os.environ.get("AMAZINGDATA_LOCAL_PATH", _DEFAULT_LOCAL_DATA)
-                dl = download_info_data.DownloadInfoData(local_path)
-                kwargs = {}
-                if begin_date is not None:
-                    kwargs["begin_date"] = str(begin_date)
-                if end_date is not None:
-                    kwargs["end_date"] = str(end_date)
-                per_code_df = dl.download_holder_num(code_list=code_list, **kwargs)
-                frames = [df for df in per_code_df.values() if df is not None and not df.empty]
-                if not frames:
-                    return pd.DataFrame()
-                return pd.concat(frames, ignore_index=True)
-            except Exception as e:
-                logger.warning(
-                    "DownloadInfoData holder path failed (%d codes): %s; falling back to InfoData",
-                    len(code_list), e,
-                )
-                self._ensure_info_data()
-                df = self._info_data.get_share_holder(code_list=code_list)
-                return df if df is not None else pd.DataFrame()
+            # Use InfoData directly; DownloadInfoData is disabled because it
+            # hangs indefinitely in some TGW environments.
+            self._ensure_info_data()
+            df = self._info_data.get_share_holder(code_list=code_list)
+            return df if df is not None else pd.DataFrame()
 
         return self._with_retry(_fetch)
 
@@ -480,20 +428,11 @@ class AmazingDataAdapter:
         """
         def _fetch():
             self._get_client()
-            code_list = [c.strip() for c in index_code.split(",")] if "," in index_code else [index_code]
-            try:
-                from AmazingData.download_data import download_info_data
-                local_path = os.environ.get("AMAZINGDATA_LOCAL_PATH", _DEFAULT_LOCAL_DATA)
-                dl = download_info_data.DownloadInfoData(local_path)
-                df = dl.download_index_constituent(code_list=code_list)
-                return df if df is not None else pd.DataFrame()
-            except Exception as e:
-                logger.warning(
-                    "DownloadInfoData index constituent path failed (%s): %s; falling back to client",
-                    code_list, e,
-                )
-                client = self._get_client()
-                return client.get_index_component(index_code=index_code)
+            # Use the module-level index component API directly; the
+            # DownloadInfoData path is disabled because it hangs in some TGW
+            # environments.
+            client = self._get_client()
+            return client.get_index_component(index_code=index_code)
 
         return self._with_retry(_fetch)
 
