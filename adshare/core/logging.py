@@ -1,6 +1,7 @@
 """Logging configuration for adshare."""
 
 import logging
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -12,9 +13,10 @@ def setup_logging() -> None:
     """Configure application logging."""
     settings = get_settings()
 
-    # Create logs directory
-    log_dir = Path("./logs")
-    log_dir.mkdir(exist_ok=True)
+    # Create logs directory. Allow override via env var so containers can
+    # keep a stable log path regardless of working_dir.
+    log_dir = Path(os.environ.get("ADSHARE_LOG_DIR", "./logs"))
+    log_dir.mkdir(parents=True, exist_ok=True)
 
     # Formatters
     detailed_formatter = logging.Formatter(

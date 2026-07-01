@@ -48,6 +48,7 @@ services:
       # Keep false for after-hours sync; enable true only during market hours.
       - REALTIME_ENABLED=${REALTIME_ENABLED:-false}
       - ADSHARE_LOG_LEVEL=${ADSHARE_LOG_LEVEL:-INFO}
+      - ADSHARE_LOG_DIR=/app/logs
       - AMAZINGDATA_LOCAL_PATH=${AMAZINGDATA_LOCAL_PATH:-/app/data/amazingdata}
       - MAINTENANCE_SCHEDULE_ENABLED=${MAINTENANCE_SCHEDULE_ENABLED:-true}
       - MAINTENANCE_KLINE_DAY_OF_WEEK=${MAINTENANCE_KLINE_DAY_OF_WEEK:-sun}
