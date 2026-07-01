@@ -73,29 +73,6 @@ def _init_sdk_login(max_wait_seconds: float = 1800.0) -> bool:
     return False
 
 
-def _init_realtime_publisher() -> bool:
-    """Start realtime publisher (SDK → Redis + Pub/Sub)."""
-    realtime_enabled = os.environ.get("REALTIME_ENABLED", "true").lower() in ("true", "1", "yes")
-    if not realtime_enabled:
-        logger.info("Realtime publisher disabled by REALTIME_ENABLED=false")
-        return False
-
-    try:
-        from adshare.services.realtime_publisher import get_realtime_publisher
-
-        publisher = get_realtime_publisher()
-        if not publisher.initialize():
-            logger.error("Realtime publisher initialization failed")
-            return False
-
-        logger.info("Realtime publisher started (codes=%s, index=%s)",
-                    len(publisher._code_list), len(publisher._index_code_list))
-        return True
-    except Exception as e:
-        logger.error("Realtime publisher init error: %s", e)
-        return False
-
-
 def _init_sync_scheduler() -> bool:
     """Start APScheduler for periodic sync to L3 warehouse."""
     sync_enabled = os.environ.get("SYNC_SCHEDULE_ENABLED", "true").lower() in ("true", "1", "yes")
@@ -239,9 +216,18 @@ def main() -> int:
     setup_logging()
     settings = get_settings()
 
+    realtime_enabled = os.environ.get("REALTIME_ENABLED", "true").lower() in ("true", "1", "yes")
+    sync_enabled = os.environ.get("SYNC_SCHEDULE_ENABLED", "true").lower() in ("true", "1", "yes")
+    mode_parts = []
+    if sync_enabled:
+        mode_parts.append("data pull")
+    if realtime_enabled:
+        mode_parts.append("realtime subscription")
+    mode = " + ".join(mode_parts) if mode_parts else "idle"
+
     logger.info("=" * 50)
     logger.info("AmazingData Worker starting...")
-    logger.info("Mode: data pull + realtime subscription")
+    logger.info("Mode: %s", mode)
     logger.info("SDK: %s", settings.amazingdata_connection_string)
     logger.info("Redis: %s", settings.redis_url)
     logger.info("Warehouse: %s", settings.historical_path)
@@ -266,17 +252,21 @@ def main() -> int:
 
     # 3. Realtime publisher (run in main thread to avoid GIL issues)
     publisher = None
-    try:
-        from adshare.services.realtime_publisher import get_realtime_publisher
+    realtime_enabled = os.environ.get("REALTIME_ENABLED", "true").lower() in ("true", "1", "yes")
+    if realtime_enabled:
+        try:
+            from adshare.services.realtime_publisher import get_realtime_publisher
 
-        publisher = get_realtime_publisher()
-        if publisher.initialize():
-            logger.info("Realtime publisher initialized, will run in main thread")
-        else:
+            publisher = get_realtime_publisher()
+            if publisher.initialize():
+                logger.info("Realtime publisher initialized, will run in main thread")
+            else:
+                publisher = None
+        except Exception as e:
+            logger.warning("Realtime publisher init failed: %s", e)
             publisher = None
-    except Exception as e:
-        logger.warning("Realtime publisher init failed: %s", e)
-        publisher = None
+    else:
+        logger.info("Realtime publisher disabled by REALTIME_ENABLED=false")
 
     # Register signal handlers after publisher is available so shutdown
     # can call publisher.shutdown() to interrupt subscribe_data.run().
