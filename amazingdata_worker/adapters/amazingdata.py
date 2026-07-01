@@ -396,7 +396,16 @@ class AmazingDataAdapter:
                     f"Invalid statement_type: {statement_type}. "
                     "Must be one of: balance, income, cashflow"
                 )
-            return method(code_list=code_list)
+            raw = method(code_list=code_list)
+            # InfoData returns a dict mapping code -> DataFrame.
+            frames = []
+            if isinstance(raw, dict):
+                frames = [df for df in raw.values() if df is not None and not df.empty]
+            elif raw is not None and not raw.empty:
+                frames = [raw]
+            if not frames:
+                return pd.DataFrame()
+            return pd.concat(frames, ignore_index=True)
 
         return self._with_retry(_fetch)
 
@@ -413,8 +422,15 @@ class AmazingDataAdapter:
             # Use InfoData directly; DownloadInfoData is disabled because it
             # hangs indefinitely in some TGW environments.
             self._ensure_info_data()
-            df = self._info_data.get_share_holder(code_list=code_list)
-            return df if df is not None else pd.DataFrame()
+            raw = self._info_data.get_share_holder(code_list=code_list)
+            frames = []
+            if isinstance(raw, dict):
+                frames = [df for df in raw.values() if df is not None and not df.empty]
+            elif raw is not None and not raw.empty:
+                frames = [raw]
+            if not frames:
+                return pd.DataFrame()
+            return pd.concat(frames, ignore_index=True)
 
         return self._with_retry(_fetch)
 
