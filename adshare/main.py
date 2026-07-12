@@ -31,6 +31,7 @@ from adshare.routers import (
     realtime,
     stock_data,
     technical,
+    tushare_compat,
 )
 
 # Setup logging
@@ -134,6 +135,7 @@ def create_app() -> FastAPI:
     app.include_router(factor.router)
     app.include_router(realtime.router)
     app.include_router(stock_data.router)
+    app.include_router(tushare_compat.router)
     if settings.historical_enabled:
         app.include_router(historical.router)
         app.include_router(historical_admin_router)
@@ -152,6 +154,7 @@ def create_app() -> FastAPI:
             "mode": "api",
             "docs": "/docs",
             "health": "/health",
+            "skill": "/skill",
             "metrics": settings.metrics_path if settings.metrics_enabled else None,
             "realtime": "/realtime",
             "websocket": "/realtime/ws",
@@ -171,5 +174,5 @@ if __name__ == "__main__":
         host=settings.app_host,
         port=settings.app_port,
         reload=settings.debug,
-        log_level=settings.app_log_level.lower(),
+        log_level=settings.log_level.lower(),
     )

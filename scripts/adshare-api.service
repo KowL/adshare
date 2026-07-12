@@ -1,0 +1,21 @@
+[Unit]
+Description=adshare-api service
+After=network.target redis.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/adshare
+Environment=PYTHONPATH=/opt/adshare
+EnvironmentFile=/opt/adshare/.env
+ExecStart=/opt/adshare/venv/bin/python -m adshare.main
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+KillMode=mixed
+StandardOutput=append:/opt/adshare/logs/api.log
+StandardError=append:/opt/adshare/logs/api.log
+
+[Install]
+WantedBy=multi-user.target

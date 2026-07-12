@@ -27,23 +27,9 @@ logger = get_logger("sync_reference_data")
 
 
 def _sync_financial_all(settings, warehouse, adapter):
-    for statement_type in ("balance", "income", "cashflow"):
-        logger.info("Syncing financial: %s", statement_type)
-        result = sync_financial(
-            statement_type=statement_type,
-            batch_size=50,
-            settings=settings,
-            warehouse=warehouse,
-            adapter=adapter,
-        )
-        logger.info(
-            "sync_financial(%s): success=%s rows=%s failed=%s duration=%.2fs",
-            statement_type,
-            result.success,
-            result.rows,
-            result.failed,
-            result.duration,
-        )
+    # Financial statement sync is disabled; balance/income/cashflow
+    # data is not used and its HDF5 cache consumes several GB.
+    logger.info("Skipping financial sync (disabled)")
 
 
 def _sync_shareholder(settings, warehouse, adapter):

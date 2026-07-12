@@ -73,6 +73,7 @@ services:
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
+      - ${HOME}/.ssh:/root/.ssh:ro
     restart: unless-stopped
     depends_on:
       - adshare-api

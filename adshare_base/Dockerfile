@@ -34,16 +34,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /base
 
 # 复制 SDK whl 文件（AmazingData 强制要求 pydantic + numba + scipy + statsmodels）
-COPY AmazingData-1.1.8-cp311-none-any.whl tgw-1.0.8.7-py3-none-any.whl ./
+COPY AmazingData-1.0.30-cp311-none-any.whl tgw-1.0.8.7-py3-none-any.whl ./
 
-# 安装 SDK（会自动拉 Requires-Dist 列出的强制依赖）
+# 安装 SDK（AmazingData-1.0.30 的 METADATA 未声明依赖，需显式安装）
 # 这层构建耗时 1-3 分钟（llvmlite 编译），所以放进 base
 RUN pip install --no-cache-dir \
     tgw-1.0.8.7-py3-none-any.whl \
-    AmazingData-1.1.8-cp311-none-any.whl
+    AmazingData-1.0.30-cp311-none-any.whl \
+    pydantic>=2.6.4 \
+    numba \
+    scipy \
+    statsmodels
 
 # 健康检查标记（base 本身不跑服务，但保持平台一致）
 LABEL org.adshare.base="adshare-base:1.0"
 LABEL org.adshare.base.python="3.11-slim"
-LABEL org.adshare.base.amazingdata="1.1.8"
+LABEL org.adshare.base.amazingdata="1.0.30"
 LABEL org.adshare.base.tgw="1.0.8.7"

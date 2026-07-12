@@ -655,6 +655,37 @@ class TestSync:
         df = pd.read_parquet(path)
         assert set(df["code"]) == {"000001.SZ", "600000.SH"}
 
+    def test_sync_meta_codes_preserves_names_when_reusing_fresh_cache(
+        self, warehouse, isolated_settings
+    ):
+        """Regression: fresh codes.parquet must not lose names on reuse."""
+        path = warehouse.meta_dir() / "codes.parquet"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame(
+            {
+                "code": ["000001.SZ", "600000.SH"],
+                "name": ["平安银行", "浦发银行"],
+                "list_date": [0, 0],
+                "delist_date": [0, 0],
+                "is_listed": [True, True],
+                "board": ["主板", "主板"],
+                "industry": ["银行", "银行"],
+                "sync_at": [int(time.time()), int(time.time())],
+            }
+        ).to_parquet(path, index=False)
+
+        # Adapter returns different names; freshness reuse should ignore it.
+        fake = self._fake_adapter()
+        result = sync_meta_codes(
+            settings=isolated_settings, warehouse=warehouse, adapter=fake
+        )
+        assert result.success
+        df = pd.read_parquet(path)
+        assert set(df["code"]) == {"000001.SZ", "600000.SH"}
+        names = {row["code"]: row["name"] for _, row in df.iterrows()}
+        assert names["000001.SZ"] == "平安银行"
+        assert names["600000.SH"] == "浦发银行"
+
     def test_sync_meta_calendar(self, warehouse, isolated_settings):
         fake = self._fake_adapter()
         result = sync_meta_calendar(

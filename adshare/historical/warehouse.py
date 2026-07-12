@@ -399,10 +399,11 @@ class HistoricalWarehouse:
         return self._query_reference(
             view_name,
             file_name,
+            ts_code_col="market_code",
             ts_code=ts_code,
             begin_date=begin_date,
             end_date=end_date,
-            date_col="end_date",
+            date_col="reporting_period",
         )
 
     def query_shareholder(

@@ -1,8 +1,9 @@
 """Health check routers."""
 
 from datetime import datetime
+from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Response
 
 from adshare.core.cache import get_cache_manager
 from adshare.core.config import get_settings
@@ -29,6 +30,20 @@ async def health_check():
         rate_limit_enabled=settings.rate_limit_enabled,
         metrics_enabled=settings.metrics_enabled,
     )
+
+
+@router.get("/skill", response_class=Response)
+async def get_skill():
+    """Return the agent skill guide for this adshare deployment.
+
+    This endpoint makes the skill.md available to external agents that can
+    reach the API over HTTP but do not have SSH access to the server.
+    """
+    skill_path = Path("/opt/adshare/skills/adshare-remote-api-usage/SKILL.md")
+    if not skill_path.exists():
+        raise HTTPException(status_code=404, detail=f"Skill file not found at {skill_path}")
+    content = skill_path.read_text(encoding="utf-8")
+    return Response(content=content, media_type="text/markdown; charset=utf-8")
 
 
 @router.get("/login/status")

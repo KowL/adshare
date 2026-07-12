@@ -109,24 +109,10 @@ def _run_reference_sync(target: str) -> None:
 
     def _sync():
         try:
+            # Financial statement sync is disabled; balance/income/cashflow
+            # data is not used and its HDF5 cache consumes several GB.
             if target in ("all", "financial"):
-                for statement_type in ("balance", "income", "cashflow"):
-                    logger.info("Starting financial sync: %s", statement_type)
-                    result = sync_financial(
-                        statement_type=statement_type,
-                        batch_size=50,
-                        settings=settings,
-                        warehouse=warehouse,
-                        adapter=adapter,
-                    )
-                    logger.info(
-                        "sync_financial(%s): success=%s rows=%s failed=%s duration=%.2fs",
-                        statement_type,
-                        result.success,
-                        result.rows,
-                        result.failed,
-                        result.duration,
-                    )
+                logger.info("Skipping financial sync (disabled)")
             if target in ("all", "shareholder"):
                 logger.info("Starting shareholder sync")
                 result = sync_shareholder(

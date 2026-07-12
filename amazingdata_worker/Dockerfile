@@ -21,6 +21,7 @@ COPY amazingdata_worker/requirements.txt ./requirements-worker.txt
 
 # 安装 worker 专用 Python 依赖（adshare 仓库自身的依赖，不含 SDK 强制要求的部分）
 # 注：numba/scipy/statsmodels/pydantic 由 base image 提供，这里不重复装
+RUN apt-get update && apt-get install -y --no-install-recommends rsync openssh-client && rm -rf /var/lib/apt/lists/*
 RUN pip install --no-cache-dir -r requirements-worker.txt
 
 # 安装 adshare 包本身（无依赖模式 - 上面 requirements.txt 已覆盖）

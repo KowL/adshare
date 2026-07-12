@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -45,6 +46,34 @@ logger = get_logger(__name__)
 # Default earliest date the sync job will pull from. Mirrors the
 # ``default_begin_date`` constant in :mod:`adshare.core.config`.
 _DEFAULT_BEGIN_DATE = 20200101
+
+
+def _load_codes_from_meta(
+    warehouse: Optional[HistoricalWarehouse] = None,
+    settings: Optional[Settings] = None,
+) -> Optional[List[str]]:
+    """Load the A-share code list from the cached ``meta/codes.parquet``.
+
+    Returns ``None`` if the file is missing or empty.  Reference sync jobs
+    use this cache as their primary code source so they do not depend on the
+    SDK's ``BaseData.get_code_list`` / ``get_code_info`` calls, which we have
+    observed returning ``None`` or raising ``'NoneType' object is not
+    subscriptable`` when the SDK session is under pressure.
+    """
+    try:
+        settings = settings or get_settings()
+        warehouse = warehouse or get_warehouse(settings)
+        path = warehouse.meta_dir() / "codes.parquet"
+        if not path.exists():
+            return None
+        df = pd.read_parquet(path)
+        if df is None or df.empty or "code" not in df.columns:
+            return None
+        codes = df["code"].dropna().astype(str).tolist()
+        return [c for c in codes if _is_sh_sz_code(c)]
+    except Exception as e:
+        logger.warning("Failed to load codes from meta/codes.parquet: %s", e)
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -691,12 +720,48 @@ def sync_meta_codes(
     settings = settings or get_settings()
     warehouse = warehouse or get_warehouse(settings)
     result = SyncResult(job="sync_meta_codes", started_at=time.time())
+
+    # Avoid hanging the scheduler on SDK calls that have been observed to
+    # block indefinitely when the session is under pressure.  If the cached
+    # code list is reasonably fresh, reuse it.
+    codes_path = warehouse.meta_dir() / "codes.parquet"
+    max_age_seconds = 3 * 24 * 3600  # 3 days
+    try:
+        if codes_path.exists() and (time.time() - codes_path.stat().st_mtime) <= max_age_seconds:
+            cached_codes = _load_codes_from_meta(warehouse=warehouse, settings=settings)
+            if cached_codes:
+                logger.info(
+                    "sync_meta_codes: codes file is fresh (%d codes), skipping SDK call",
+                    len(cached_codes),
+                )
+                # Preserve the full cached file (including names) instead of
+                # re-creating it from codes only, which would wipe names.
+                cached_df = pd.read_parquet(codes_path)
+                std = standardize_codes_df(cached_df)
+                path = _persist_meta(std, codes_path)
+                result.success = path is not None
+                result.rows = len(std) if std is not None else 0
+                result.finished_at = time.time()
+                return result
+    except Exception as e:
+        logger.warning("sync_meta_codes: freshness check failed: %s", e)
+
     try:
         adapter_obj = adapter or _get_adapter_safe()
-        with _SDK_CALL_LOCK:
-            raw = adapter_obj.get_code_info(security_type="EXTRA_STOCK_A")
-            if raw is None or (hasattr(raw, "empty") and raw.empty):
-                raw = adapter_obj.get_stock_basic(summary_only=False)
+        raw: Optional[pd.DataFrame] = None
+        try:
+            with _SDK_CALL_LOCK:
+                raw = adapter_obj.get_code_info(security_type="EXTRA_STOCK_A")
+                if raw is None or (hasattr(raw, "empty") and raw.empty):
+                    raw = adapter_obj.get_stock_basic(summary_only=False)
+        except Exception as e:
+            logger.warning("SDK code info fetch failed: %s; using cached codes", e)
+            cached_codes = _load_codes_from_meta(warehouse=warehouse, settings=settings)
+            if cached_codes:
+                raw = pd.DataFrame({"code": cached_codes})
+            else:
+                raise
+
         if raw is not None and not (hasattr(raw, "empty") and raw.empty):
             # Drop Beijing Stock Exchange rows: we no longer store or
             # serve them in the L3 warehouse.
@@ -824,15 +889,17 @@ def init_scheduler(settings: Optional[Settings] = None) -> "BackgroundScheduler"
             )
             # Reference data sync (weekly) — run directly in scheduler thread
             # with SDK call lock protection (single-process architecture).
-            scheduler.add_job(
-                _run_sync_financial,
-                "cron",
-                day_of_week="sat",
-                hour=2,
-                minute=0,
-                id="sync_financial",
-                replace_existing=True,
-            )
+            # NOTE: financial statement sync is disabled; balance/income/cashflow
+            # data is not used and its HDF5 cache consumes several GB.
+            # scheduler.add_job(
+            #     _run_sync_financial,
+            #     "cron",
+            #     day_of_week="sat",
+            #     hour=2,
+            #     minute=0,
+            #     id="sync_financial",
+            #     replace_existing=True,
+            # )
             scheduler.add_job(
                 _run_sync_shareholder,
                 "cron",
@@ -929,6 +996,7 @@ def _run_sync_kline_daily() -> None:
         except Exception:
             logger.warning("scheduled sync_kline_daily: failed to probe last date, using 20200101")
         sync_kline_daily(from_date=begin_date, to_date=end_date)
+        _sync_to_remote()
     except Exception as e:  # noqa: BLE001
         logger.exception("scheduled sync_kline_daily failed: %s", e)
 
@@ -948,6 +1016,7 @@ def _run_sync_kline_weekly() -> None:
         except Exception:
             logger.warning("scheduled sync_kline_weekly: failed to probe last date, using 20200101")
         sync_kline_weekly(from_date=begin_date, to_date=end_date)
+        _sync_to_remote()
     except Exception as e:  # noqa: BLE001
         logger.exception("scheduled sync_kline_weekly failed: %s", e)
 
@@ -967,15 +1036,60 @@ def _run_sync_kline_monthly() -> None:
         except Exception:
             logger.warning("scheduled sync_kline_monthly: failed to probe last date, using 20200101")
         sync_kline_monthly(from_date=begin_date, to_date=end_date)
+        _sync_to_remote()
     except Exception as e:  # noqa: BLE001
         logger.exception("scheduled sync_kline_monthly failed: %s", e)
+
+
+def _sync_to_remote() -> None:
+    """Push updated L3 data to the remote adshare-api server.
+
+    Runs after a scheduled kline sync completes.  The companion script
+    lives at ``scripts/sync_to_remote.sh`` and is shared with manual runs.
+    """
+    import subprocess
+
+    project_root = Path(__file__).resolve().parents[2]
+    script = project_root / "scripts" / "sync_to_remote.sh"
+    if not script.exists():
+        logger.warning("sync_to_remote: script not found at %s", script)
+        return
+    logger.info("sync_to_remote: starting %s", script)
+    try:
+        result = subprocess.run(
+            ["/bin/bash", str(script)],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=1800,
+        )
+        if result.returncode == 0:
+            logger.info("sync_to_remote: success\n%s", result.stdout)
+        else:
+            logger.error(
+                "sync_to_remote: failed (exit %s)\nstdout:\n%s\nstderr:\n%s",
+                result.returncode,
+                result.stdout,
+                result.stderr,
+            )
+    except Exception as e:
+        logger.exception("sync_to_remote: error running script: %s", e)
 
 
 def _run_sync_meta_codes() -> None:
     try:
         sync_meta_codes()
+        _sync_to_remote()
     except Exception as e:  # noqa: BLE001
         logger.exception("scheduled sync_meta_codes failed: %s", e)
+
+
+def _run_sync_meta_calendar() -> None:
+    try:
+        sync_meta_calendar()
+        _sync_to_remote()
+    except Exception as e:  # noqa: BLE001
+        logger.exception("scheduled sync_meta_calendar failed: %s", e)
 
 
 # ----------------------------------------------------------------------
@@ -1074,15 +1188,17 @@ def sync_financial(
 
     adapter_obj = adapter or _get_adapter_safe()
     if codes is None:
-        try:
-            with _SDK_CALL_LOCK:
-                codes = _filter_sh_sz_codes(
-                    adapter_obj.get_code_list("EXTRA_STOCK_A_SH_SZ")
-                )
-        except Exception as e:
-            result.errors.append(f"code list fetch failed: {e}")
-            result.finished_at = time.time()
-            return result
+        codes = _load_codes_from_meta(warehouse=warehouse, settings=settings)
+        if codes is None:
+            try:
+                with _SDK_CALL_LOCK:
+                    codes = _filter_sh_sz_codes(
+                        adapter_obj.get_code_list("EXTRA_STOCK_A_SH_SZ")
+                    )
+            except Exception as e:
+                result.errors.append(f"code list fetch failed: {e}")
+                result.finished_at = time.time()
+                return result
 
     codes = list(codes)
     result.total = len(codes)
@@ -1188,15 +1304,17 @@ def sync_shareholder(
 
     adapter_obj = adapter or _get_adapter_safe()
     if codes is None:
-        try:
-            with _SDK_CALL_LOCK:
-                codes = _filter_sh_sz_codes(
-                    adapter_obj.get_code_list("EXTRA_STOCK_A_SH_SZ")
-                )
-        except Exception as e:
-            result.errors.append(f"code list fetch failed: {e}")
-            result.finished_at = time.time()
-            return result
+        codes = _load_codes_from_meta(warehouse=warehouse, settings=settings)
+        if codes is None:
+            try:
+                with _SDK_CALL_LOCK:
+                    codes = _filter_sh_sz_codes(
+                        adapter_obj.get_code_list("EXTRA_STOCK_A_SH_SZ")
+                    )
+            except Exception as e:
+                result.errors.append(f"code list fetch failed: {e}")
+                result.finished_at = time.time()
+                return result
 
     codes = list(codes)
     result.total = len(codes)

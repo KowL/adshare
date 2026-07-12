@@ -1,0 +1,6 @@
+services:
+  amazingdata-worker:
+    environment:
+      - SYNC_SCHEDULE_ENABLED=false
+      - REALTIME_ENABLED=true
+      - SYNC_ON_START=false
