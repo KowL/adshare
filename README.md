@@ -8,6 +8,7 @@ adshare is a standalone data service that wraps the AmazingData SDK (Linux/amd64
 
 ## Features
 
+- **Tushare Compatible**: Drop-in `tushare.py` adapter and `/tushare/*` endpoints for existing tushare-based projects
 - **Market Data**: K-line, snapshot, code list, stock basic info, trading calendar
 - **Financial Data**: Balance sheet, income statement, cash flow, shareholder data
 - **Technical Analysis**: 56 indicators (MACD, KDJ, RSI, BOLL, DMI, etc.)
@@ -93,7 +94,29 @@ curl http://localhost:8000/fundamental/factors
 | `/factor/analyze` | GET | Run factor analysis |
 | `/factor/composite` | POST | Composite multiple factors |
 
+| `/tushare/stock/daily` | GET/POST | Tushare Pro compatible daily K-line |
+| `/tushare/stock/weekly` | GET/POST | Tushare Pro compatible weekly K-line |
+| `/tushare/stock/monthly` | GET/POST | Tushare Pro compatible monthly K-line |
+| `/tushare/stock/stock_basic` | GET/POST | Tushare Pro compatible stock basic |
+| `/tushare/stock/trade_cal` | GET/POST | Tushare Pro compatible trading calendar |
+| `/tushare/stock/adj_factor` | GET/POST | Tushare Pro compatible adjustment factor |
+| `/tushare/stock/suspend_d` | GET/POST | Tushare Pro compatible suspension info |
+| `/tushare/stock/limit_list` | GET/POST | Tushare Pro compatible limit-up/down list |
+
 See `/docs` for full OpenAPI documentation.
+
+## Tushare Compatibility
+
+adshare provides a tushare Pro protocol compatible layer. Existing projects using `import tushare as ts` can switch to adshare by copying the project-root `tushare.py` file and pointing `pro_api()` at the adshare server:
+
+```python
+import tushare as ts
+
+pro = ts.pro_api("http://localhost:8000/tushare")
+df = pro.daily(ts_code="000001.SZ", start_date="20240101", end_date="20240131")
+```
+
+See [docs/tushare-migration.md](docs/tushare-migration.md) for details.
 
 ## Architecture
 

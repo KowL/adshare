@@ -10,12 +10,12 @@ from __future__ import annotations
 from typing import Optional
 
 import pandas as pd
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
-from adshare.core.config import get_settings
+from adshare import dependencies as deps
 from adshare.core.logging import get_logger
 from adshare.historical.models import normalize_period
-from adshare.historical.warehouse import get_warehouse
+from adshare.historical.warehouse import HistoricalWarehouse
 from adshare.services.dataframe_formatter import build_response, build_error_response, to_fields_items
 from adshare.services.derived_metrics import (
     apply_adjustment,
@@ -32,8 +32,8 @@ from adshare.services.derived_metrics import (
     map_suspend_fields,
     map_trade_cal_fields,
 )
-from adshare.services.limit_up import get_limit_down_service, get_limit_up_service
-from adshare.services.market_data import get_market_data_service
+from adshare.services.limit_up import LimitDownService, LimitUpService
+from adshare.services.market_data import MarketDataService
 
 logger = get_logger(__name__)
 router = APIRouter(tags=["stock-data"])
@@ -50,18 +50,6 @@ def _parse_date_str(date_str: Optional[str]) -> Optional[int]:
     try:
         return int(date_str)
     except (ValueError, TypeError):
-        return None
-
-
-def _get_warehouse_or_none():
-    """Return warehouse instance or None if disabled."""
-    settings = get_settings()
-    if not settings.historical_enabled:
-        return None
-    try:
-        return get_warehouse(settings)
-    except Exception as e:
-        logger.warning("Warehouse init failed: %s", e)
         return None
 
 
@@ -85,10 +73,10 @@ async def get_stock_basic(
     is_hs: Optional[str] = Query(default=None, description="HSC: N/H/S"),
     list_status: Optional[str] = Query(default=None, description="L/D/P"),
     fields: Optional[str] = Query(default=None, description="Comma-separated fields"),
+    warehouse: Optional[HistoricalWarehouse] = Depends(deps.get_warehouse_dep),
 ):
     """Get stock basic information."""
     try:
-        warehouse = _get_warehouse_or_none()
         if warehouse is None:
             return build_error_response("Historical warehouse is disabled")
 
@@ -141,10 +129,10 @@ async def get_trade_cal(
     start_date: Optional[str] = Query(default=None, description="Start date YYYYMMDD"),
     end_date: Optional[str] = Query(default=None, description="End date YYYYMMDD"),
     is_open: Optional[str] = Query(default=None, description="1=open, 0=closed"),
+    warehouse: Optional[HistoricalWarehouse] = Depends(deps.get_warehouse_dep),
 ):
     """Get trading calendar."""
     try:
-        warehouse = _get_warehouse_or_none()
         if warehouse is None:
             return build_error_response("Historical warehouse is disabled")
 
@@ -187,6 +175,7 @@ def _get_kline_data(
     end_date: Optional[str],
     period: str,
     fields: Optional[str],
+    service: MarketDataService,
 ) -> dict:
     """Shared logic for daily/weekly/monthly endpoints."""
     codes = _codes_from_param(ts_code)
@@ -212,7 +201,6 @@ def _get_kline_data(
         from datetime import datetime
         ed = int(datetime.now().strftime("%Y%m%d"))
 
-    service = get_market_data_service()
     result = service.get_kline(
         codes=codes,
         begin_date=sd,
@@ -240,10 +228,11 @@ async def get_daily(
     start_date: Optional[str] = Query(default=None, description="Start date YYYYMMDD"),
     end_date: Optional[str] = Query(default=None, description="End date YYYYMMDD"),
     fields: Optional[str] = Query(default=None, description="Comma-separated fields"),
+    service: MarketDataService = Depends(deps.get_market_data_service_dep),
 ):
     """Get daily K-line data."""
     try:
-        return _get_kline_data(ts_code, trade_date, start_date, end_date, "day", fields)
+        return _get_kline_data(ts_code, trade_date, start_date, end_date, "day", fields, service)
     except Exception as e:
         logger.error("daily failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
@@ -256,10 +245,11 @@ async def get_weekly(
     start_date: Optional[str] = Query(default=None, description="Start date YYYYMMDD"),
     end_date: Optional[str] = Query(default=None, description="End date YYYYMMDD"),
     fields: Optional[str] = Query(default=None, description="Comma-separated fields"),
+    service: MarketDataService = Depends(deps.get_market_data_service_dep),
 ):
     """Get weekly K-line data."""
     try:
-        return _get_kline_data(ts_code, trade_date, start_date, end_date, "week", fields)
+        return _get_kline_data(ts_code, trade_date, start_date, end_date, "week", fields, service)
     except Exception as e:
         logger.error("weekly failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
@@ -272,10 +262,11 @@ async def get_monthly(
     start_date: Optional[str] = Query(default=None, description="Start date YYYYMMDD"),
     end_date: Optional[str] = Query(default=None, description="End date YYYYMMDD"),
     fields: Optional[str] = Query(default=None, description="Comma-separated fields"),
+    service: MarketDataService = Depends(deps.get_market_data_service_dep),
 ):
     """Get monthly K-line data."""
     try:
-        return _get_kline_data(ts_code, trade_date, start_date, end_date, "month", fields)
+        return _get_kline_data(ts_code, trade_date, start_date, end_date, "month", fields, service)
     except Exception as e:
         logger.error("monthly failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
@@ -292,6 +283,7 @@ async def get_adj_factor(
     start_date: Optional[str] = Query(default=None, description="Start date YYYYMMDD"),
     end_date: Optional[str] = Query(default=None, description="End date YYYYMMDD"),
     fields: Optional[str] = Query(default=None, description="Comma-separated fields"),
+    warehouse: Optional[HistoricalWarehouse] = Depends(deps.get_warehouse_dep),
 ):
     """Get adjustment factor data."""
     try:
@@ -316,7 +308,6 @@ async def get_adj_factor(
             from datetime import datetime
             ed = int(datetime.now().strftime("%Y%m%d"))
 
-        warehouse = _get_warehouse_or_none()
         if warehouse is None:
             return build_error_response("Historical warehouse is disabled")
 
@@ -348,6 +339,7 @@ async def get_pro_bar(
     adj: Optional[str] = Query(default=None, description="None/qfq/hfq"),
     freq: Optional[str] = Query(default="D", description="D/W/M"),
     ma: Optional[str] = Query(default=None, description="Moving averages, e.g. 5,10,20"),
+    service: MarketDataService = Depends(deps.get_market_data_service_dep),
 ):
     """Get universal bar data with optional adjustment and moving averages."""
     try:
@@ -372,7 +364,6 @@ async def get_pro_bar(
             from datetime import datetime
             ed = int(datetime.now().strftime("%Y%m%d"))
 
-        service = get_market_data_service()
         result = service.get_kline(
             codes=codes,
             begin_date=sd,
@@ -428,6 +419,7 @@ async def get_suspend_d(
     start_date: Optional[str] = Query(default=None, description="Start date YYYYMMDD"),
     end_date: Optional[str] = Query(default=None, description="End date YYYYMMDD"),
     fields: Optional[str] = Query(default=None, description="Comma-separated fields"),
+    warehouse: Optional[HistoricalWarehouse] = Depends(deps.get_warehouse_dep),
 ):
     """Get suspension records derived from K-line data."""
     try:
@@ -452,7 +444,6 @@ async def get_suspend_d(
             from datetime import datetime
             ed = int(datetime.now().strftime("%Y%m%d"))
 
-        warehouse = _get_warehouse_or_none()
         if warehouse is None:
             return build_error_response("Historical warehouse is disabled")
 
@@ -480,6 +471,8 @@ async def get_limit_list(
     ts_code: Optional[str] = Query(default=None, description="TS code"),
     limit: Optional[str] = Query(default=None, description="U=up, D=down"),
     fields: Optional[str] = Query(default=None, description="Comma-separated fields"),
+    up_service: LimitUpService = Depends(deps.get_limit_up_service_dep),
+    down_service: LimitDownService = Depends(deps.get_limit_down_service_dep),
 ):
     """Get limit-up/down list in Pro platform format."""
     try:
@@ -492,11 +485,11 @@ async def get_limit_list(
         down_items = []
 
         if limit is None or limit.upper() in ("U", "UP", ""):
-            up_resp = get_limit_up_service().get_limit_up(date=td, exclude_st=True)
+            up_resp = up_service.get_limit_up(date=td, exclude_st=True)
             up_items = getattr(up_resp, "stocks", []) or []
 
         if limit is None or limit.upper() in ("D", "DOWN"):
-            down_resp = get_limit_down_service().get_limit_down(date=td, exclude_st=True)
+            down_resp = down_service.get_limit_down(date=td, exclude_st=True)
             down_items = getattr(down_resp, "stocks", []) or []
 
         # Filter by ts_code if requested
@@ -523,10 +516,10 @@ async def get_new_share(
     start_date: Optional[str] = Query(default=None, description="Start date YYYYMMDD"),
     end_date: Optional[str] = Query(default=None, description="End date YYYYMMDD"),
     fields: Optional[str] = Query(default=None, description="Comma-separated fields"),
+    warehouse: Optional[HistoricalWarehouse] = Depends(deps.get_warehouse_dep),
 ):
     """Get new shares listed within a date range."""
     try:
-        warehouse = _get_warehouse_or_none()
         if warehouse is None:
             return build_error_response("Historical warehouse is disabled")
 
@@ -650,13 +643,13 @@ async def get_income(
     report_type: Optional[str] = Query(default=None, description="Report type"),
     comp_type: Optional[str] = Query(default=None, description="Company type"),
     fields: Optional[str] = Query(default=None, description="Comma-separated fields"),
+    warehouse: Optional[HistoricalWarehouse] = Depends(deps.get_warehouse_dep),
 ):
     """Get income statement data (Pro platform format).
 
     Data is populated by the worker service to warehouse.reference.income.
     """
     try:
-        warehouse = _get_warehouse_or_none()
         if warehouse is None:
             return build_error_response("Historical warehouse is disabled")
 
@@ -682,13 +675,13 @@ async def get_balance_sheet(
     report_type: Optional[str] = Query(default=None, description="Report type"),
     comp_type: Optional[str] = Query(default=None, description="Company type"),
     fields: Optional[str] = Query(default=None, description="Comma-separated fields"),
+    warehouse: Optional[HistoricalWarehouse] = Depends(deps.get_warehouse_dep),
 ):
     """Get balance sheet data (Pro platform format).
 
     Data is populated by the worker service to warehouse.reference.balance_sheet.
     """
     try:
-        warehouse = _get_warehouse_or_none()
         if warehouse is None:
             return build_error_response("Historical warehouse is disabled")
 
@@ -714,13 +707,13 @@ async def get_cashflow(
     report_type: Optional[str] = Query(default=None, description="Report type"),
     comp_type: Optional[str] = Query(default=None, description="Company type"),
     fields: Optional[str] = Query(default=None, description="Comma-separated fields"),
+    warehouse: Optional[HistoricalWarehouse] = Depends(deps.get_warehouse_dep),
 ):
     """Get cash flow statement data (Pro platform format).
 
     Data is populated by the worker service to warehouse.reference.cashflow.
     """
     try:
-        warehouse = _get_warehouse_or_none()
         if warehouse is None:
             return build_error_response("Historical warehouse is disabled")
 
@@ -785,13 +778,13 @@ async def get_fina_indicator(
     end_date: Optional[str] = Query(default=None, description="End date YYYYMMDD"),
     period: Optional[str] = Query(default=None, description="Report period YYYYMMDD"),
     fields: Optional[str] = Query(default=None, description="Comma-separated fields"),
+    warehouse: Optional[HistoricalWarehouse] = Depends(deps.get_warehouse_dep),
 ):
     """Get financial indicator data (Pro platform format).
 
     Data is populated by the worker service; returns empty until synchronized.
     """
     try:
-        warehouse = _get_warehouse_or_none()
         if warehouse is None:
             return build_error_response("Historical warehouse is disabled")
 
@@ -901,6 +894,7 @@ async def get_daily_basic(
     start_date: Optional[str] = Query(default=None, description="Start date YYYYMMDD"),
     end_date: Optional[str] = Query(default=None, description="End date YYYYMMDD"),
     fields: Optional[str] = Query(default=None, description="Comma-separated fields"),
+    warehouse: Optional[HistoricalWarehouse] = Depends(deps.get_warehouse_dep),
 ):
     """Get daily basic indicators (Pro platform format).
 
@@ -909,7 +903,6 @@ async def get_daily_basic(
     data not yet synchronized to the warehouse.
     """
     try:
-        warehouse = _get_warehouse_or_none()
         if warehouse is None:
             return build_error_response("Historical warehouse is disabled")
 
@@ -964,13 +957,13 @@ async def get_index_basic(
     publisher: Optional[str] = Query(default=None, description="Publisher"),
     category: Optional[str] = Query(default=None, description="Category"),
     fields: Optional[str] = Query(default=None, description="Comma-separated fields"),
+    warehouse: Optional[HistoricalWarehouse] = Depends(deps.get_warehouse_dep),
 ):
     """Get index basic information (Pro platform format).
 
     Data is populated by the worker service; returns empty until synchronized.
     """
     try:
-        warehouse = _get_warehouse_or_none()
         if warehouse is None:
             return build_error_response("Historical warehouse is disabled")
 
@@ -996,13 +989,13 @@ async def get_index_daily(
     start_date: Optional[str] = Query(default=None, description="Start date YYYYMMDD"),
     end_date: Optional[str] = Query(default=None, description="End date YYYYMMDD"),
     fields: Optional[str] = Query(default=None, description="Comma-separated fields"),
+    warehouse: Optional[HistoricalWarehouse] = Depends(deps.get_warehouse_dep),
 ):
     """Get index daily K-line (Pro platform format).
 
     Data is populated by the worker service; returns empty until synchronized.
     """
     try:
-        warehouse = _get_warehouse_or_none()
         if warehouse is None:
             return build_error_response("Historical warehouse is disabled")
 
@@ -1026,13 +1019,13 @@ async def get_index_member(
     index_code: Optional[str] = Query(default=None, description="Index TS code"),
     ts_code: Optional[str] = Query(default=None, description="Constituent TS code"),
     fields: Optional[str] = Query(default=None, description="Comma-separated fields"),
+    warehouse: Optional[HistoricalWarehouse] = Depends(deps.get_warehouse_dep),
 ):
     """Get index constituent stocks (Pro platform format).
 
     Data is populated by the worker service to warehouse.reference.index_member.
     """
     try:
-        warehouse = _get_warehouse_or_none()
         if warehouse is None:
             return build_error_response("Historical warehouse is disabled")
 
@@ -1056,13 +1049,13 @@ async def get_index_weight(
     index_code: Optional[str] = Query(default=None, description="Index TS code"),
     trade_date: Optional[str] = Query(default=None, description="Trade date YYYYMMDD"),
     fields: Optional[str] = Query(default=None, description="Comma-separated fields"),
+    warehouse: Optional[HistoricalWarehouse] = Depends(deps.get_warehouse_dep),
 ):
     """Get index constituent weights (Pro platform format).
 
     Data is populated by the worker service; returns empty until synchronized.
     """
     try:
-        warehouse = _get_warehouse_or_none()
         if warehouse is None:
             return build_error_response("Historical warehouse is disabled")
 
@@ -1095,13 +1088,13 @@ async def get_moneyflow(
     start_date: Optional[str] = Query(default=None, description="Start date YYYYMMDD"),
     end_date: Optional[str] = Query(default=None, description="End date YYYYMMDD"),
     fields: Optional[str] = Query(default=None, description="Comma-separated fields"),
+    warehouse: Optional[HistoricalWarehouse] = Depends(deps.get_warehouse_dep),
 ):
     """Get stock money flow data (Pro platform format).
 
     Data is populated by the worker service; returns empty until synchronized.
     """
     try:
-        warehouse = _get_warehouse_or_none()
         if warehouse is None:
             return build_error_response("Historical warehouse is disabled")
 
@@ -1127,13 +1120,13 @@ async def get_margin(
     start_date: Optional[str] = Query(default=None, description="Start date YYYYMMDD"),
     end_date: Optional[str] = Query(default=None, description="End date YYYYMMDD"),
     fields: Optional[str] = Query(default=None, description="Comma-separated fields"),
+    warehouse: Optional[HistoricalWarehouse] = Depends(deps.get_warehouse_dep),
 ):
     """Get margin trading summary (Pro platform format).
 
     Data is populated by the worker service; returns empty until synchronized.
     """
     try:
-        warehouse = _get_warehouse_or_none()
         if warehouse is None:
             return build_error_response("Historical warehouse is disabled")
 
@@ -1159,13 +1152,13 @@ async def get_margin_detail(
     start_date: Optional[str] = Query(default=None, description="Start date YYYYMMDD"),
     end_date: Optional[str] = Query(default=None, description="End date YYYYMMDD"),
     fields: Optional[str] = Query(default=None, description="Comma-separated fields"),
+    warehouse: Optional[HistoricalWarehouse] = Depends(deps.get_warehouse_dep),
 ):
     """Get margin trading detail per stock (Pro platform format).
 
     Data is populated by the worker service; returns empty until synchronized.
     """
     try:
-        warehouse = _get_warehouse_or_none()
         if warehouse is None:
             return build_error_response("Historical warehouse is disabled")
 
@@ -1192,13 +1185,13 @@ async def get_top_list(
     start_date: Optional[str] = Query(default=None, description="Start date YYYYMMDD"),
     end_date: Optional[str] = Query(default=None, description="End date YYYYMMDD"),
     fields: Optional[str] = Query(default=None, description="Comma-separated fields"),
+    warehouse: Optional[HistoricalWarehouse] = Depends(deps.get_warehouse_dep),
 ):
     """Get top list (dragon tiger list) data (Pro platform format).
 
     Data is populated by the worker service; returns empty until synchronized.
     """
     try:
-        warehouse = _get_warehouse_or_none()
         if warehouse is None:
             return build_error_response("Historical warehouse is disabled")
 
@@ -1224,13 +1217,13 @@ async def get_top_inst(
     start_date: Optional[str] = Query(default=None, description="Start date YYYYMMDD"),
     end_date: Optional[str] = Query(default=None, description="End date YYYYMMDD"),
     fields: Optional[str] = Query(default=None, description="Comma-separated fields"),
+    warehouse: Optional[HistoricalWarehouse] = Depends(deps.get_warehouse_dep),
 ):
     """Get top institution trading detail (Pro platform format).
 
     Data is populated by the worker service; returns empty until synchronized.
     """
     try:
-        warehouse = _get_warehouse_or_none()
         if warehouse is None:
             return build_error_response("Historical warehouse is disabled")
 
@@ -1255,13 +1248,13 @@ async def get_block_trade(
     start_date: Optional[str] = Query(default=None, description="Start date YYYYMMDD"),
     end_date: Optional[str] = Query(default=None, description="End date YYYYMMDD"),
     fields: Optional[str] = Query(default=None, description="Comma-separated fields"),
+    warehouse: Optional[HistoricalWarehouse] = Depends(deps.get_warehouse_dep),
 ):
     """Get block trade data (Pro platform format).
 
     Data is populated by the worker service; returns empty until synchronized.
     """
     try:
-        warehouse = _get_warehouse_or_none()
         if warehouse is None:
             return build_error_response("Historical warehouse is disabled")
 
@@ -1291,13 +1284,13 @@ async def get_stk_holdernumber(
     start_date: Optional[str] = Query(default=None, description="Start date YYYYMMDD"),
     end_date: Optional[str] = Query(default=None, description="End date YYYYMMDD"),
     fields: Optional[str] = Query(default=None, description="Comma-separated fields"),
+    warehouse: Optional[HistoricalWarehouse] = Depends(deps.get_warehouse_dep),
 ):
     """Get shareholder number data (Pro platform format).
 
     Data is populated by the worker service to warehouse.reference.stk_holdernumber.
     """
     try:
-        warehouse = _get_warehouse_or_none()
         if warehouse is None:
             return build_error_response("Historical warehouse is disabled")
 
@@ -1324,13 +1317,13 @@ async def get_namechange(
     start_date: Optional[str] = Query(default=None, description="Start date YYYYMMDD"),
     end_date: Optional[str] = Query(default=None, description="End date YYYYMMDD"),
     fields: Optional[str] = Query(default=None, description="Comma-separated fields"),
+    warehouse: Optional[HistoricalWarehouse] = Depends(deps.get_warehouse_dep),
 ):
     """Get stock name change history (Pro platform format).
 
     Data is populated by the worker service; returns empty until synchronized.
     """
     try:
-        warehouse = _get_warehouse_or_none()
         if warehouse is None:
             return build_error_response("Historical warehouse is disabled")
 

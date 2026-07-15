@@ -7,6 +7,9 @@ from typing import Any, Optional
 import pandas as pd
 import pytest
 
+from adshare import dependencies as deps
+from adshare.services.market_data import MarketDataService
+
 
 # ============================================================
 # Fakes (same pattern as test_stock_data_e2e)
@@ -41,7 +44,7 @@ class EmptyWarehouse:
 
 
 class DisabledWarehouse:
-    """Simulates disabled warehouse (returns None from _get_warehouse_or_none)."""
+    """Simulates disabled warehouse (dependency provider returns None)."""
 
     pass
 
@@ -49,21 +52,25 @@ class DisabledWarehouse:
 @pytest.fixture
 def empty_warehouse_client(client, monkeypatch):
     """TestClient with warehouse returning empty results."""
-    import adshare.routers.stock_data as _sd_mod
-
-    _sd_mod._get_warehouse_or_none = lambda: EmptyWarehouse()
+    client.app.dependency_overrides[deps.get_warehouse_dep] = lambda: EmptyWarehouse()
+    client.app.dependency_overrides[deps.get_market_data_service_dep] = lambda: MarketDataService()
 
     yield client
+
+    client.app.dependency_overrides.pop(deps.get_warehouse_dep, None)
+    client.app.dependency_overrides.pop(deps.get_market_data_service_dep, None)
 
 
 @pytest.fixture
 def disabled_warehouse_client(client, monkeypatch):
     """TestClient with warehouse disabled."""
-    import adshare.routers.stock_data as _sd_mod
-
-    _sd_mod._get_warehouse_or_none = lambda: None
+    client.app.dependency_overrides[deps.get_warehouse_dep] = lambda: None
+    client.app.dependency_overrides[deps.get_market_data_service_dep] = lambda: MarketDataService()
 
     yield client
+
+    client.app.dependency_overrides.pop(deps.get_warehouse_dep, None)
+    client.app.dependency_overrides.pop(deps.get_market_data_service_dep, None)
 
 
 # ============================================================
@@ -218,20 +225,19 @@ class TestServerErrors:
     """Tests for unexpected server errors."""
 
     def test_warehouse_exception_returns_500(self, client, monkeypatch):
-        """If warehouse raises an exception, endpoint should return 500."""
-        import adshare.routers.stock_data as _sd_mod
-
+        """If warehouse dependency raises an exception, it surfaces as a server error."""
         def _broken_warehouse():
             raise RuntimeError("warehouse exploded")
 
-        _sd_mod._get_warehouse_or_none = _broken_warehouse
+        client.app.dependency_overrides[deps.get_warehouse_dep] = _broken_warehouse
 
-        response = client.get("/stock_basic")
-        assert response.status_code == 500
+        with pytest.raises(RuntimeError, match="warehouse exploded"):
+            client.get("/stock_basic")
+
+        client.app.dependency_overrides.pop(deps.get_warehouse_dep, None)
 
     def test_kline_exception_returns_500(self, client, monkeypatch):
         """If kline service raises an exception, daily endpoint should return 500."""
-        import adshare.routers.stock_data as _sd_mod
 
         def _broken_service():
             class _Broken:
@@ -240,8 +246,11 @@ class TestServerErrors:
 
             return _Broken()
 
-        _sd_mod.get_market_data_service = _broken_service
-        _sd_mod._get_warehouse_or_none = lambda: object()  # not used
+        client.app.dependency_overrides[deps.get_market_data_service_dep] = _broken_service
+        client.app.dependency_overrides[deps.get_warehouse_dep] = lambda: object()
 
         response = client.get("/daily?ts_code=000001.SZ")
         assert response.status_code == 500
+
+        client.app.dependency_overrides.pop(deps.get_market_data_service_dep, None)
+        client.app.dependency_overrides.pop(deps.get_warehouse_dep, None)

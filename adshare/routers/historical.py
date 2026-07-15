@@ -10,11 +10,12 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
+from adshare import dependencies as deps
 from adshare.core.config import get_settings
 from adshare.core.logging import get_logger
-from adshare.historical.warehouse import get_warehouse
+from adshare.historical.warehouse import HistoricalWarehouse, get_warehouse
 from adshare.models.schemas import (
     HistoricalCalendarResponse,
     HistoricalCodesResponse,
@@ -23,7 +24,7 @@ from adshare.models.schemas import (
     HistoricalSqlResponse,
 )
 from adshare.services.mappers import dataframe_to_historical_kline_records, dataframe_to_json_rows
-from adshare.services.market_data import get_market_data_service
+from adshare.services.market_data import MarketDataService
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/historical", tags=["historical"])
@@ -50,6 +51,7 @@ async def historical_kline(
         default="auto",
         description="Data source: auto (warehouse when synced, else SDK), warehouse, sdk",
     ),
+    service: MarketDataService = Depends(deps.get_market_data_service_dep),
 ):
     """Return K-line data from the on-disk Parquet warehouse."""
     _require_enabled()
@@ -69,7 +71,6 @@ async def historical_kline(
         )
 
     try:
-        service = get_market_data_service()
         result = service.get_kline(
             codes=code_list,
             begin_date=begin_date,
@@ -103,11 +104,13 @@ async def historical_calendar(
     market: Optional[str] = Query(default=None, description="Market filter"),
     begin_date: Optional[int] = Query(default=None, description="Start date YYYYMMDD"),
     end_date: Optional[int] = Query(default=None, description="End date YYYYMMDD"),
+    warehouse: Optional[HistoricalWarehouse] = Depends(deps.get_warehouse_dep),
 ):
     """Return the trading calendar from the warehouse."""
     _require_enabled()
-    settings = get_settings()
-    warehouse = get_warehouse(settings)
+    if warehouse is None:
+        raise HTTPException(status_code=503, detail="historical warehouse is not available")
+
     df = warehouse.query_calendar(
         market=market,
         begin_date=begin_date,
@@ -125,22 +128,29 @@ async def historical_calendar(
 async def historical_codes(
     board: Optional[str] = Query(default=None, description="Filter by board"),
     is_listed: Optional[bool] = Query(default=None, description="Filter by listing status"),
+    warehouse: Optional[HistoricalWarehouse] = Depends(deps.get_warehouse_dep),
 ):
     """Return the codes table from the warehouse."""
     _require_enabled()
-    settings = get_settings()
-    warehouse = get_warehouse(settings)
+    if warehouse is None:
+        raise HTTPException(status_code=503, detail="historical warehouse is not available")
+
     df = warehouse.query_codes(board=board, is_listed=is_listed)
     data = df.to_dict("records") if not df.empty else []
     return HistoricalCodesResponse(count=len(data), data=data)
 
 
 @router.post("/sql", response_model=HistoricalSqlResponse)
-async def historical_sql(request: HistoricalSqlRequest):
+async def historical_sql(
+    request: HistoricalSqlRequest,
+    warehouse: Optional[HistoricalWarehouse] = Depends(deps.get_warehouse_dep),
+):
     """Run a constrained SELECT against the warehouse."""
     _require_enabled()
+    if warehouse is None:
+        raise HTTPException(status_code=503, detail="historical warehouse is not available")
+
     settings = get_settings()
-    warehouse = get_warehouse(settings)
     cap = int(request.max_rows) if request.max_rows else int(settings.duckdb_max_rows)
     cap = max(1, min(cap, 1_000_000))
     try:

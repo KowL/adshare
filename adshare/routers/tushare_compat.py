@@ -17,13 +17,14 @@ Returns the same JSON shape as tushare Pro: {"code": 0, "msg": "", "data": {"fie
 from typing import Any, Optional
 
 import pandas as pd
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
+from adshare.core.auth import require_auth
 from adshare.core.logging import get_logger
 from adshare.services.market_data import get_market_data_service
 
 logger = get_logger(__name__)
-router = APIRouter(prefix="/dataapi", tags=["tushare_compat"])
+router = APIRouter(prefix="/dataapi", tags=["tushare_compat"], dependencies=[Depends(require_auth)])
 
 
 def _df_to_tushare_payload(df: pd.DataFrame) -> dict[str, Any]:

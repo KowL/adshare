@@ -2,14 +2,15 @@
 
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
+from adshare import dependencies as deps
 from adshare.core.logging import get_logger
 from adshare.engines.technical.indicators import CATEGORY_MAP
 from adshare.models.schemas import TechnicalResponse
 from adshare.services.technical_analysis import (
     TechnicalAnalysisError,
-    get_technical_analysis_service,
+    TechnicalAnalysisService,
 )
 
 logger = get_logger(__name__)
@@ -26,10 +27,10 @@ async def analyze_technical(
         default=None,
         description="Category: overbought_oversold, trend, energy, volume, ma, path, other",
     ),
+    service: TechnicalAnalysisService = Depends(deps.get_technical_analysis_service_dep),
 ):
     """Run technical analysis for a stock."""
     try:
-        service = get_technical_analysis_service()
         return service.analyze(
             code=code,
             begin_date=begin_date,

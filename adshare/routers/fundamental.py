@@ -2,13 +2,14 @@
 
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
+from adshare import dependencies as deps
 from adshare.core.logging import get_logger
 from adshare.models.schemas import FundamentalResponse
 from adshare.services.fundamental_analysis import (
     FundamentalAnalysisError,
-    get_fundamental_analysis_service,
+    FundamentalAnalysisService,
 )
 
 logger = get_logger(__name__)
@@ -25,10 +26,10 @@ async def analyze_fundamental(
     factor: Optional[str] = Query(default=None, description="Specific factor name"),
     begin_date: Optional[int] = Query(default=None, description="K-line start date YYYYMMDD"),
     end_date: Optional[int] = Query(default=None, description="K-line end date YYYYMMDD"),
+    service: FundamentalAnalysisService = Depends(deps.get_fundamental_analysis_service_dep),
 ):
     """Run fundamental analysis for a stock."""
     try:
-        service = get_fundamental_analysis_service()
         return service.analyze(
             code=code,
             category=category,
@@ -42,7 +43,8 @@ async def analyze_fundamental(
 
 
 @router.get("/factors")
-async def list_factors():
+async def list_factors(
+    service: FundamentalAnalysisService = Depends(deps.get_fundamental_analysis_service_dep),
+):
     """List all available fundamental factors."""
-    service = get_fundamental_analysis_service()
     return service.list_categories()

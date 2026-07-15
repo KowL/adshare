@@ -3,9 +3,11 @@
 from typing import Optional
 
 import pandas as pd
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
+from adshare.core.exceptions import AdshareException, map_exception_to_http_status
 from adshare.core.logging import get_logger
+from adshare import dependencies as deps
 from adshare.models.schemas import (
     CalendarResponse,
     CodeListResponse,
@@ -20,25 +22,34 @@ from adshare.models.schemas import (
     StrongStockPoolResponse,
 )
 from adshare.services.limit_up import (
-    get_limit_down_service,
-    get_limit_up_service,
-    get_market_activity_service,
-    get_strong_stock_pool_service,
+    LimitDownService,
+    LimitUpService,
+    MarketActivityService,
+    StrongStockPoolService,
 )
 from adshare.services.mappers import dataframe_to_kline_items, dataframe_to_snapshot_items
-from adshare.services.market_data import get_market_data_service
+from adshare.services.market_data import MarketDataService
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/market", tags=["market"])
 
 
+def _handle_exception(exc: Exception) -> HTTPException:
+    """Map domain exceptions to HTTP exceptions."""
+    if isinstance(exc, AdshareException):
+        status = map_exception_to_http_status(exc)
+        return HTTPException(status_code=status, detail=str(exc))
+    logger.error("Unhandled exception: %s", exc)
+    return HTTPException(status_code=500, detail=str(exc) or "Internal server error")
+
+
 @router.get("/codes", response_model=CodeListResponse)
 async def get_code_list(
-    security_type: str = Query(default="EXTRA_STOCK_A", description="Security type")
+    security_type: str = Query(default="EXTRA_STOCK_A", description="Security type"),
+    service: MarketDataService = Depends(deps.get_market_data_service_dep),
 ):
     """Get security code list."""
     try:
-        service = get_market_data_service()
         codes = service.get_code_list(security_type=security_type)
         return CodeListResponse(
             security_type=security_type,
@@ -47,18 +58,17 @@ async def get_code_list(
             data=codes,
         )
     except Exception as e:
-        logger.error(f"get_code_list failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _handle_exception(e) from e
 
 
 @router.get("/calendar", response_model=CalendarResponse)
 async def get_calendar(
     market: str = Query(default="SH", description="Market code"),
     date: Optional[int] = Query(default=None, description="Query date YYYYMMDD"),
+    service: MarketDataService = Depends(deps.get_market_data_service_dep),
 ):
     """Get trading calendar."""
     try:
-        service = get_market_data_service()
         df = service.get_calendar(market=market, date=date)
         calendar = df["date"].tolist() if "date" in df.columns else []
         return CalendarResponse(
@@ -69,8 +79,7 @@ async def get_calendar(
             data=calendar,
         )
     except Exception as e:
-        logger.error(f"get_calendar failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _handle_exception(e) from e
 
 
 @router.get("/kline", response_model=KlineResponse)
@@ -81,6 +90,7 @@ async def get_kline(
     period: str = Query(default="day", description="Period: day, week, month, min1, min5"),
     limit: Optional[int] = Query(default=None, description="Max records"),
     offset: int = Query(default=0, description="Records to skip"),
+    service: MarketDataService = Depends(deps.get_market_data_service_dep),
 ):
     """Get K-line data.
 
@@ -88,7 +98,6 @@ async def get_kline(
     SDK fallback is disabled in API-only mode.
     """
     try:
-        service = get_market_data_service()
         result = service.get_kline(
             codes=codes,
             begin_date=begin_date,
@@ -113,8 +122,7 @@ async def get_kline(
             data=items,
         )
     except Exception as e:
-        logger.error(f"get_kline failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _handle_exception(e) from e
 
 
 @router.get("/kline/simple", response_model=KlineResponse)
@@ -122,6 +130,7 @@ async def get_kline_simple(
     symbol: str = Query(..., description="Stock code, e.g. 002654.SZ"),
     count: int = Query(default=60, description="Number of bars to fetch"),
     period: str = Query(default="day", description="Period: day, week, month"),
+    service: MarketDataService = Depends(deps.get_market_data_service_dep),
 ):
     """Simplified K-line endpoint: auto-calculate date range from count.
     
@@ -138,7 +147,6 @@ async def get_kline_simple(
         begin_date = int(start_dt.strftime("%Y%m%d"))
         end_date = int(end_dt.strftime("%Y%m%d"))
         
-        service = get_market_data_service()
         result = service.get_kline(
             codes=symbol,
             begin_date=begin_date,
@@ -163,8 +171,7 @@ async def get_kline_simple(
             data=items,
         )
     except Exception as e:
-        logger.error(f"get_kline_simple failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _handle_exception(e) from e
 
 
 @router.get("/snapshot", response_model=SnapshotResponse)
@@ -172,27 +179,26 @@ async def get_snapshot(
     codes: str = Query(..., description="Comma-separated stock codes"),
     date: Optional[int] = Query(default=None, description="Trade date YYYYMMDD"),
     time: Optional[int] = Query(default=None, description="Trade time HHMMSS"),
+    service: MarketDataService = Depends(deps.get_market_data_service_dep),
 ):
     """Get snapshot data."""
     try:
-        service = get_market_data_service()
         df = service.get_snapshot(codes=codes, date=date, time=time)
         items = dataframe_to_snapshot_items(df)
 
         return SnapshotResponse(count=len(items), data=items)
     except Exception as e:
-        logger.error(f"get_snapshot failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _handle_exception(e) from e
 
 
 @router.get("/stock/basic", response_model=StockBasicResponse)
 async def get_stock_basic(
     codes: Optional[str] = Query(default=None, description="Comma-separated codes, empty for all"),
     summary_only: bool = Query(default=False, description="Return summary only"),
+    service: MarketDataService = Depends(deps.get_market_data_service_dep),
 ):
     """Get stock basic information."""
     try:
-        service = get_market_data_service()
         df = service.get_stock_basic(codes=codes, summary_only=summary_only)
 
         if summary_only:
@@ -223,8 +229,7 @@ async def get_stock_basic(
 
         return StockBasicResponse(count=len(items), data=items)
     except Exception as e:
-        logger.error(f"get_stock_basic failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _handle_exception(e) from e
 
 
 # ============================================================
@@ -241,23 +246,18 @@ async def get_limit_up(
         description="Filter by board: 主板, 创业板, 科创板, 北交所",
     ),
     exclude_st: bool = Query(default=True, description="Exclude ST/*ST stocks"),
+    service: LimitUpService = Depends(deps.get_limit_up_service_dep),
 ):
-    """Get limit-up stocks for recent trading days.
-    
-    This endpoint calculates limit-up stocks from daily K-line data.
-    Since AmazingData SDK doesn't provide native limit-up data,
-    we compute the theoretical limit-up price from the previous close and board rate.
-    """
+    """Get limit-up stocks for recent trading days."""
     try:
-        return get_limit_up_service().get_limit_up(
+        return service.get_limit_up(
             days=days,
             date=date,
             board_filter=board_filter,
             exclude_st=exclude_st,
         )
     except Exception as e:
-        logger.error(f"get_limit_up failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _handle_exception(e) from e
 
 
 @router.get("/limit-up/ladder", response_model=LimitUpLadderResponse)
@@ -266,23 +266,20 @@ async def get_limit_up_ladder(
     date: Optional[int] = Query(default=None, description="Trade date YYYYMMDD"),
     board_filter: Optional[str] = Query(default=None, description="Filter by board: 主板, 创业板, 科创板, 北交所"),
     exclude_st: bool = Query(default=True, description="Exclude ST/*ST stocks"),
+    service: LimitUpService = Depends(deps.get_limit_up_service_dep),
 ):
-    """Get limit-up ladder (consecutive limit-up levels).
-    
-    Note: Since the current implementation uses single-day K-line data,
-    limitUpDays is always 1.
-    For true consecutive days calculation, historical K-line data would be needed.
-    """
+    """Get limit-up ladder (consecutive limit-up levels)."""
     try:
-        return get_limit_up_service().get_ladder(
+        return service.get_ladder(
             days=days,
             date=date,
             board_filter=board_filter,
             exclude_st=exclude_st,
         )
     except Exception as e:
-        logger.error(f"get_limit_up_ladder failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _handle_exception(e) from e
+
+
 # ============================================================
 # Limit-Down Data
 # ============================================================
@@ -297,21 +294,18 @@ async def get_limit_down(
         description="Filter by board: 主板, 创业板, 科创板, 北交所",
     ),
     exclude_st: bool = Query(default=True, description="Exclude ST/*ST stocks"),
+    service: LimitDownService = Depends(deps.get_limit_down_service_dep),
 ):
-    """Get limit-down stocks for recent trading days.
-    
-    Calculated from daily K-line data: close reaches the theoretical limit-down price.
-    """
+    """Get limit-down stocks for recent trading days."""
     try:
-        return get_limit_down_service().get_limit_down(
+        return service.get_limit_down(
             days=days,
             date=date,
             board_filter=board_filter,
             exclude_st=exclude_st,
         )
     except Exception as e:
-        logger.error(f"get_limit_down failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _handle_exception(e) from e
 
 
 # ============================================================
@@ -322,16 +316,13 @@ async def get_limit_down(
 @router.get("/market-activity", response_model=MarketActivityResponse)
 async def get_market_activity(
     date: Optional[int] = Query(default=None, description="Trade date YYYYMMDD"),
+    service: MarketActivityService = Depends(deps.get_market_activity_service_dep),
 ):
-    """Get market activity / 赚钱效应 for a trading day.
-    
-    Returns distribution of rising, falling, limit-up, limit-down, flat and suspended stocks.
-    """
+    """Get market activity / 赚钱效应 for a trading day."""
     try:
-        return get_market_activity_service().get_market_activity(date=date)
+        return service.get_market_activity(date=date)
     except Exception as e:
-        logger.error(f"get_market_activity failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _handle_exception(e) from e
 
 
 # ============================================================
@@ -344,23 +335,14 @@ async def get_strong_pool(
     date: Optional[int] = Query(default=None, description="Trade date YYYYMMDD"),
     lookback_days: int = Query(default=20, description="Lookback window for new-high and limit-up count"),
     min_change_pct: float = Query(default=0.03, description="Minimum change pct to be considered strong"),
+    service: StrongStockPoolService = Depends(deps.get_strong_stock_pool_service_dep),
 ):
-    """Get strong stock pool for a trading day.
-    
-    Screens stocks that meet at least one of:
-    - Change pct >= min_change_pct (default 3%)
-    - New high within lookback_days
-    - Has limit-up genes in lookback period
-    - Volume ratio >= 1.5
-    
-    Sorted by changePct descending.
-    """
+    """Get strong stock pool for a trading day."""
     try:
-        return get_strong_stock_pool_service().get_strong_pool(
+        return service.get_strong_pool(
             date=date,
             lookback_days=lookback_days,
             min_change_pct=min_change_pct,
         )
     except Exception as e:
-        logger.error(f"get_strong_pool failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _handle_exception(e) from e

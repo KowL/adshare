@@ -11,6 +11,8 @@ from typing import Any, NamedTuple, Optional
 import pandas as pd
 import pytest
 
+from adshare import dependencies as deps
+
 
 # ============================================================
 # Fakes
@@ -129,21 +131,17 @@ def stock_client(client, monkeypatch):
     """Provide a TestClient with mocked warehouse and market data service."""
     fake_warehouse = FakeWarehouse()
 
-    # Patch warehouse accessor in stock_data router
-    import adshare.routers.stock_data as _sd_mod
-
-    _sd_mod._get_warehouse_or_none = lambda: fake_warehouse
-
-    # Patch MarketDataService factory used by daily/weekly/monthly/pro_bar.
-    # Must patch the reference inside the router module because stock_data.py
-    # imports get_market_data_service at module level.
-    original_factory = _sd_mod.get_market_data_service
-    _sd_mod.get_market_data_service = lambda: FakeMarketDataService(fake_warehouse)
+    # Override FastAPI dependencies in the stock_data router
+    client.app.dependency_overrides[deps.get_warehouse_dep] = lambda: fake_warehouse
+    client.app.dependency_overrides[deps.get_market_data_service_dep] = (
+        lambda: FakeMarketDataService(fake_warehouse)
+    )
 
     yield client
 
     # Restore
-    _sd_mod.get_market_data_service = original_factory
+    client.app.dependency_overrides.pop(deps.get_warehouse_dep, None)
+    client.app.dependency_overrides.pop(deps.get_market_data_service_dep, None)
 
 
 # ============================================================

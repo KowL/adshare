@@ -2,13 +2,14 @@
 
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
+from adshare import dependencies as deps
 from adshare.core.logging import get_logger
 from adshare.models.schemas import FactorAnalysisResponse
 from adshare.services.factor_analysis import (
     FactorAnalysisError,
-    get_factor_analysis_service,
+    FactorAnalysisService,
 )
 
 logger = get_logger(__name__)
@@ -16,9 +17,10 @@ router = APIRouter(prefix="/factor", tags=["factor"])
 
 
 @router.get("/capabilities")
-async def factor_capabilities():
+async def factor_capabilities(
+    service: FactorAnalysisService = Depends(deps.get_factor_analysis_service_dep),
+):
     """Return factor analysis capabilities."""
-    service = get_factor_analysis_service()
     return service.capabilities()
 
 
@@ -31,10 +33,10 @@ async def analyze_factor(
     benchmark: str = Query(default="000300.SH", description="Benchmark index code"),
     group_num: int = Query(default=5, description="Number of stratification groups"),
     ic_decay: int = Query(default=20, description="IC decay period"),
+    service: FactorAnalysisService = Depends(deps.get_factor_analysis_service_dep),
 ):
     """Run factor analysis for given stocks."""
     try:
-        service = get_factor_analysis_service()
         return service.analyze(
             factor_name=factor_name,
             stock_list=[s.strip() for s in stock_list.split(",") if s.strip()],
@@ -59,10 +61,10 @@ async def composite_factor(
     end_date: Optional[int] = None,
     weight_method: str = "equal",
     use_orthogonal: bool = True,
+    service: FactorAnalysisService = Depends(deps.get_factor_analysis_service_dep),
 ):
     """Composite multiple factors into a single factor."""
     try:
-        service = get_factor_analysis_service()
         return service.composite(
             factor_names=factor_names,
             stock_list=stock_list,

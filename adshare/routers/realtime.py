@@ -7,12 +7,13 @@ import asyncio
 import json
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 
-from adshare.core.cache import get_cache_manager
+from adshare import dependencies as deps
+from adshare.core.cache import CacheManager
 from adshare.core.logging import get_logger
 from adshare.models.schemas import RealtimeQuotesResponse, RealtimeStatsResponse
-from adshare.services.realtime_broadcast import get_broadcast_service
+from adshare.services.realtime_broadcast import RealtimeBroadcastService
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/realtime", tags=["realtime"])
@@ -29,10 +30,10 @@ REALTIME_INDEX_KEY = "realtime:index"
 @router.get("/quote/{code}", response_model=RealtimeQuotesResponse)
 async def get_realtime_quote(
     code: str,
+    cache: CacheManager = Depends(deps.get_cache_manager_dep),
 ):
     """Get the latest real-time quote for a single stock from Redis cache."""
     try:
-        cache = get_cache_manager()
         data = cache.get_realtime_market(REALTIME_QUOTE_KEY, code)
         if data is None:
             return RealtimeQuotesResponse(
@@ -52,11 +53,11 @@ async def get_realtime_quote(
 @router.get("/quotes", response_model=RealtimeQuotesResponse)
 async def get_realtime_quotes(
     codes: str = Query(..., description="Comma-separated stock codes"),
+    cache: CacheManager = Depends(deps.get_cache_manager_dep),
 ):
     """Get latest real-time quotes for multiple stocks from Redis cache."""
     try:
         code_list = [c.strip() for c in codes.split(",") if c.strip()]
-        cache = get_cache_manager()
         results: List[Dict[str, Any]] = []
         for code in code_list:
             data = cache.get_realtime_market(REALTIME_QUOTE_KEY, code)
@@ -79,10 +80,10 @@ async def get_realtime_quotes(
 @router.get("/index/{code}", response_model=RealtimeQuotesResponse)
 async def get_realtime_index(
     code: str,
+    cache: CacheManager = Depends(deps.get_cache_manager_dep),
 ):
     """Get the latest real-time index snapshot from Redis cache."""
     try:
-        cache = get_cache_manager()
         data = cache.get_realtime_market(REALTIME_INDEX_KEY, code)
         if data is None:
             return RealtimeQuotesResponse(
@@ -102,11 +103,11 @@ async def get_realtime_index(
 @router.get("/index", response_model=RealtimeQuotesResponse)
 async def get_realtime_index_batch(
     codes: str = Query(..., description="Comma-separated index codes"),
+    cache: CacheManager = Depends(deps.get_cache_manager_dep),
 ):
     """Get latest real-time index snapshots for multiple indices."""
     try:
         code_list = [c.strip() for c in codes.split(",") if c.strip()]
-        cache = get_cache_manager()
         results: List[Dict[str, Any]] = []
         for code in code_list:
             data = cache.get_realtime_market(REALTIME_INDEX_KEY, code)
@@ -130,10 +131,10 @@ async def get_realtime_index_batch(
 async def get_realtime_kline(
     code: str,
     period: str = Query(default="min1", description="K-line period: min1, min5, min15, min30, min60, day, week, month"),
+    cache: CacheManager = Depends(deps.get_cache_manager_dep),
 ):
     """Get the latest real-time K-line tick for a single stock from Redis cache."""
     try:
-        cache = get_cache_manager()
         data = cache.get_realtime_market(REALTIME_KLINE_KEY, period, code)
         if data is None:
             return RealtimeQuotesResponse(
@@ -154,11 +155,11 @@ async def get_realtime_kline(
 async def get_realtime_kline_batch(
     codes: str = Query(..., description="Comma-separated stock codes"),
     period: str = Query(default="min1", description="K-line period"),
+    cache: CacheManager = Depends(deps.get_cache_manager_dep),
 ):
     """Get latest real-time K-line ticks for multiple stocks."""
     try:
         code_list = [c.strip() for c in codes.split(",") if c.strip()]
-        cache = get_cache_manager()
         results: List[Dict[str, Any]] = []
         for code in code_list:
             data = cache.get_realtime_market(REALTIME_KLINE_KEY, period, code)
@@ -179,10 +180,11 @@ async def get_realtime_kline_batch(
 
 
 @router.get("/stats", response_model=RealtimeStatsResponse)
-async def get_realtime_stats():
+async def get_realtime_stats(
+    broadcast: RealtimeBroadcastService = Depends(deps.get_broadcast_service_dep),
+):
     """Get realtime broadcast statistics and WebSocket connection info."""
     try:
-        broadcast = get_broadcast_service()
         stats = broadcast.get_stats()
         return RealtimeStatsResponse(
             ws_connections=stats["ws_active_connections"],
@@ -205,7 +207,10 @@ async def get_realtime_stats():
 
 
 @router.websocket("/ws")
-async def realtime_websocket(websocket: WebSocket):
+async def realtime_websocket(
+    websocket: WebSocket,
+    broadcast: RealtimeBroadcastService = Depends(deps.get_broadcast_service_dep),
+):
     """WebSocket endpoint for real-time quote streaming.
 
     Protocol:
@@ -215,7 +220,6 @@ async def realtime_websocket(websocket: WebSocket):
       - Ping → send {"action": "ping"} → server replies {"type": "pong"}
       - Quote data → server pushes {"type": "quote", "code": "...", "data": {...}}
     """
-    broadcast = get_broadcast_service()
     await websocket.accept()
     client_id = broadcast.ws_manager.connect(websocket)
 
@@ -276,6 +280,7 @@ async def realtime_sse(
     request: Request,
     codes: str = Query(..., description="Comma-separated stock codes"),
     types: str = Query(default="quote", description="Data types: quote,index,kline"),
+    broadcast: RealtimeBroadcastService = Depends(deps.get_broadcast_service_dep),
 ):
     """Server-Sent Events for real-time quotes.
 
@@ -284,7 +289,6 @@ async def realtime_sse(
     """
     from fastapi.responses import StreamingResponse
 
-    broadcast = get_broadcast_service()
     code_set = set(c.strip() for c in codes.split(",") if c.strip())
     queue = broadcast.register_sse_client(code_set)
 

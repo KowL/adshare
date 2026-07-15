@@ -162,7 +162,9 @@ class MarketDataService:
 
 def get_market_data_service() -> MarketDataService:
     """Create a market data service for the current settings."""
-    return MarketDataService()
+    settings = get_settings()
+    warehouse = get_warehouse(settings) if settings.historical_enabled else None
+    return MarketDataService(settings=settings, warehouse=warehouse)
 
 
 def _normalize_codes(codes: str | Sequence[str]) -> list[str]:

@@ -31,7 +31,7 @@ from adshare.routers import (
     realtime,
     stock_data,
     technical,
-    tushare_compat,
+    tushare,
 )
 
 # Setup logging
@@ -135,10 +135,19 @@ def create_app() -> FastAPI:
     app.include_router(factor.router)
     app.include_router(realtime.router)
     app.include_router(stock_data.router)
-    app.include_router(tushare_compat.router)
+    app.include_router(tushare.router)
     if settings.historical_enabled:
         app.include_router(historical.router)
         app.include_router(historical_admin_router)
+
+    # Deprecated /dataapi compatibility: return 410 Gone to inform clients
+    @app.api_route("/dataapi/{path:path}", methods=["GET", "POST"], include_in_schema=False)
+    async def dataapi_gone(path: str):
+        return {
+            "code": -1,
+            "msg": f"/dataapi/{path} is deprecated, use /tushare/{path} instead",
+            "data": None,
+        }
 
     # Metrics endpoint
     if settings.metrics_enabled:
