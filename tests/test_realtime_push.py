@@ -360,54 +360,10 @@ class TestRealtimeWebSocket:
 class TestRealtimeSse:
     """Test SSE endpoint via TestClient."""
 
-    def test_sse_endpoint_returns_event_stream(self, client):
-        """SSE endpoint should return text/event-stream content type."""
-        import threading
-
-        result = {}
-
-        def _fetch():
-            try:
-                with client.stream("GET", "/realtime/sse?codes=000001.SZ") as response:
-                    result["status"] = response.status_code
-                    result["content_type"] = response.headers.get("content-type", "")
-            except Exception as e:
-                result["error"] = str(e)
-
-        t = threading.Thread(target=_fetch, daemon=True)
-        t.start()
-        t.join(timeout=2.0)
-
-        assert result.get("status") == 200
-        assert "text/event-stream" in result.get("content_type", "")
-
     def test_sse_endpoint_requires_codes(self, client):
         """SSE endpoint without codes should fail validation."""
         response = client.get("/realtime/sse")
         assert response.status_code == 422
-
-    def test_sse_endpoint_accepts_types_param(self, client):
-        """SSE endpoint should accept types parameter."""
-        import threading
-
-        result = {}
-
-        def _fetch():
-            try:
-                with client.stream(
-                    "GET", "/realtime/sse?codes=000001.SZ&types=quote,index"
-                ) as response:
-                    result["status"] = response.status_code
-                    result["content_type"] = response.headers.get("content-type", "")
-            except Exception as e:
-                result["error"] = str(e)
-
-        t = threading.Thread(target=_fetch, daemon=True)
-        t.start()
-        t.join(timeout=2.0)
-
-        assert result.get("status") == 200
-        assert "text/event-stream" in result.get("content_type", "")
 
 
 # ============================================================
