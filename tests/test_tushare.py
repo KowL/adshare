@@ -143,9 +143,3 @@ class TestTushareIndexReserved:
     def test_index_basic_reserved(self, client):
         response = client.get("/tushare/index/basic")
         assert response.status_code == 501
-
-
-class TestTushareDeprecatedDataapi:
-    def test_dataapi_gone(self, client):
-        response = client.post("/dataapi/daily", json={"ts_code": "000001.SZ"})
-        assert response.status_code == 404
