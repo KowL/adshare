@@ -1,0 +1,45 @@
+# amazingdata/docker-compose.realtime.yml
+# Realtime subscription service.
+#
+# IMPORTANT (TGW single-connection constraint):
+#   - Only ONE of {realtime, batch} may run at a time on the same host.
+#   - Schedule them externally (cron / k8s / manual).
+#
+# Build:
+#   docker compose -f amazingdata/docker-compose.realtime.yml build
+# Run:
+#   docker compose -f amazingdata/docker-compose.realtime.yml up -d
+
+services:
+  amazingdata-realtime:
+    build:
+      context: ..
+      dockerfile: amazingdata/realtime.Dockerfile
+    platform: linux/amd64
+    container_name: amazingdata-realtime
+    # SDK (InfoData) hardcodes a Windows-style local path "D://AmazingData_local_data"
+    # and creates it relative to the working directory. Set working_dir to /app/data
+    # so the cache lands inside the mounted host data directory.
+    working_dir: /app/data
+    env_file:
+      - .env
+    environment:
+      - AD_USERNAME=${AD_USERNAME}
+      - AD_PASSWORD=${AD_PASSWORD}
+      - AD_HOST=${AD_HOST}
+      - AD_PORT=${AD_PORT}
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - REDIS_DB=${REDIS_DB:-0}
+      - HISTORICAL_PATH=/app/data
+      - AMAZINGDATA_LOCAL_PATH=${AMAZINGDATA_LOCAL_PATH:-/app/data/sdk_cache}
+      - ADSHARE_LOG_LEVEL=${ADSHARE_LOG_LEVEL:-INFO}
+      - ADSHARE_LOG_DIR=/app/logs
+      # Ensure amazingdata package stays importable when working_dir is /app/data
+      - PYTHONPATH=/app
+    volumes:
+      - ../data:/app/data
+      - ../cache:/app/cache
+      - ../logs:/app/logs
+    restart: unless-stopped

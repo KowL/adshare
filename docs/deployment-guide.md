@@ -35,11 +35,14 @@ pip install -e ".[dev]"
 ### 3. 启动服务
 
 ```bash
-# 单服务模式（仅 API，无 SDK 依赖）
+# API 服务（任意平台）
 python -m adshare.main
 
-# 或带实时行情订阅
-REALTIME_ENABLED=true python -m adshare.main
+# 实时行情订阅（仅 Linux/amd64，依赖 AmazingData SDK）
+python -m amazingdata.realtime
+
+# 盘后数据同步（仅 Linux/amd64，依赖 AmazingData SDK）
+python -m amazingdata.batch
 ```
 
 服务启动后访问 http://localhost:8000/docs 查看 Swagger UI。
@@ -50,38 +53,46 @@ REALTIME_ENABLED=true python -m adshare.main
 
 ### 1. 环境变量配置
 
-创建 `.env` 文件：
+创建两份 `.env` 文件（API 和 worker 配置已分离）：
 
+`adshare/.env`（API 服务）：
 ```env
-# 服务配置
-APP_HOST=0.0.0.0
-APP_PORT=8000
-LOG_LEVEL=INFO
+ADSHARE_HOST=0.0.0.0
+ADSHARE_PORT=8000
+ADSHARE_LOG_LEVEL=INFO
 
-# Redis
 REDIS_HOST=redis
 REDIS_PORT=6379
 
-# 历史数据仓
 HISTORICAL_ENABLED=true
 HISTORICAL_PATH=/data/historical
 
-# 同步调度
-SYNC_SCHEDULE_ENABLED=true
-
-# 认证（可选）
 AUTH_ENABLED=false
 ADSHARE_API_KEY=your-secret-key
+```
 
-# AmazingData SDK（仅 worker 服务需要）
-AD_USER=your-username
+`amazingdata/.env`（worker 服务）：
+```env
+AD_USERNAME=your-username
 AD_PASSWORD=your-password
+AD_HOST=your-sdk-server
+AD_PORT=8600
+
+SYNC_SCHEDULE_ENABLED=true
+REALTIME_ENABLED=false   # 与 SYNC_SCHEDULE_ENABLED 互斥（TGW 单连接）
 ```
 
 ### 2. 启动服务
 
 ```bash
-docker compose up -d
+# API 服务（cd 到 adshare/ 后启动）
+cd adshare && docker compose up -d
+
+# Worker 服务（盘后模式，TGW 单连接约束下与 realtime 二选一）
+docker compose -f amazingdata/docker-compose.batch.yml up -d
+
+# 实时行情订阅
+docker compose -f amazingdata/docker-compose.realtime.yml up -d
 ```
 
 ### 3. 验证部署
@@ -120,7 +131,7 @@ curl http://localhost:8000/historical/admin/health
 └─────────────────────────────────────────────────────────────┘
                            │
 ┌──────────────────────────▼──────────────────────────────────┐
-│              amazingdata_worker 服务                         │
+│         amazingdata batch / realtime 服务                         │
 │  ┌─────────────┐ ┌──────────────┐ ┌──────────────────────┐  │
 │  │ SDK Adapter │ │ Realtime     │ │ Sync Scheduler       │  │
 │  │ (Linux/x86) │ │ Subscriber   │ │ (日K/周K/月K/代码表)  │  │
@@ -143,10 +154,10 @@ curl http://localhost:8000/historical/admin/health
 **排查**:
 ```bash
 # 检查环境变量
-docker compose exec worker env | grep AD_
+docker compose -f amazingdata/docker-compose.batch.yml exec amazingdata-batch env | grep AD_
 
 # 查看日志
-docker compose logs worker | tail -50
+docker compose -f amazingdata/docker-compose.batch.yml logs amazingdata-batch | tail -50
 ```
 
 **解决**:
@@ -164,7 +175,7 @@ docker compose logs worker | tail -50
 curl http://localhost:8000/historical/admin/stats
 
 # 检查文件是否存在
-docker compose exec api ls /data/historical/A_share/daily/
+docker compose -f adshare/docker-compose.yml exec adshare-api ls /app/data/A_share/daily/
 ```
 
 **解决**:
@@ -173,11 +184,11 @@ docker compose exec api ls /data/historical/A_share/daily/
 `/historical/admin/sync` 端点）：
 
 ```bash
-# 方式一：重启 worker 并触发启动即同步
-SYNC_ON_START=true docker compose up -d worker
+# 方式一：重启 batch worker 并触发启动即同步
+SYNC_ON_START=true docker compose -f amazingdata/docker-compose.batch.yml up -d amazingdata-batch
 
-# 方式二：在 worker 容器内手动跑同步脚本
-docker compose exec worker python scripts/backfill_kline.py --help
+# 方式二：在 batch 容器内手动跑同步脚本
+docker compose -f amazingdata/docker-compose.batch.yml exec amazingdata-batch python scripts/backfill_kline.py --help
 ```
 
 ### Q3: `/market/snapshot` 返回空数据
@@ -186,8 +197,9 @@ docker compose exec worker python scripts/backfill_kline.py --help
 
 **解决**:
 ```bash
-# 启动实时行情订阅（在 worker 中）
-REALTIME_ENABLED=true docker compose up -d worker
+# 切到实时行情模式（先停 batch）
+docker compose -f amazingdata/docker-compose.batch.yml down
+REALTIME_ENABLED=true docker compose -f amazingdata/docker-compose.realtime.yml up -d amazingdata-realtime
 ```
 
 ### Q4: `/fundamental/analyze` 返回 503
@@ -205,9 +217,9 @@ REALTIME_ENABLED=true docker compose up -d worker
 - **生产环境**: 必须在 x86 Linux 服务器上部署 worker
 
 ```bash
-# 开发模式（ARM Mac）
-docker compose up -d api redis
-# 不启动 worker
+# 开发模式（ARM Mac，只跑 API，不跑 worker）
+cd adshare && docker compose up -d adshare-api
+# 不启动 amazingdata batch / realtime
 ```
 
 ### Q6: 测试失败 "APScheduler is not installed"
@@ -272,7 +284,7 @@ curl http://localhost:8000/technical/indicators
 git pull origin main
 
 # 2. 重建镜像
-docker compose build
+cd adshare && docker compose build
 
 # 3. 重启服务
 docker compose up -d

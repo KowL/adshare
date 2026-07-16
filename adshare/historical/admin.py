@@ -7,7 +7,7 @@ Routes:
 * ``POST /historical/admin/repair``  — run an idempotent repair routine
 
 Sync jobs are **not** exposed here: they require a data-source session and
-run only in the worker process (see :mod:`amazingdata_worker.sync`), on a
+run only in the worker process (see :mod:`amazingdata.batch`), on a
 schedule or via ``SYNC_ON_START``.
 """
 

@@ -93,30 +93,3 @@ def test_client_auth_error():
 
     with pytest.raises(TushareAuthError):
         client.query("daily", ts_code="000001.SZ")
-
-
-def test_project_root_tushare_module():
-    """Smoke test for the independent project-root tushare.py shim."""
-    import tushare as ts
-
-    assert callable(ts.pro_api)
-    assert callable(ts.set_token)
-
-    payload = {
-        "code": 0,
-        "msg": "",
-        "data": {
-            "fields": ["ts_code", "trade_date", "close"],
-            "items": [["000001.SZ", 20240102, 10.2]],
-        },
-    }
-    transport = MockTushareTransport(payload)
-    http_client = httpx.Client(transport=transport)
-    pro = ts.pro_api("http://test/tushare", http_client=http_client)
-
-    df = pro.daily(ts_code="000001.SZ", start_date="20240101", end_date="20240110")
-    assert isinstance(df, pd.DataFrame)
-    assert "close" in df.columns
-
-    ts.set_token("test-token")
-    assert ts.get_token() == "test-token"

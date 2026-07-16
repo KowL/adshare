@@ -106,7 +106,7 @@ class AmazingDataAdapter:
 ### 4.1 新增/修改文件
 
 ```
-amazingdata_worker/
+amazingdata/
 ├── adapters/
 │   ├── __init__.py
 │   ├── amazingdata.py          # 保持兼容，内部委托给 pool
@@ -124,7 +124,7 @@ adshare/
 ### 4.2 AmazingDataSession
 
 ```python
-# amazingdata_worker/adapters/amazingdata_session.py
+# amazingdata/adapters/amazingdata_session.py
 
 import threading
 import time
@@ -267,14 +267,14 @@ class AmazingDataSession:
 ### 4.3 AmazingDataClient
 
 ```python
-# amazingdata_worker/adapters/amazingdata_client.py
+# amazingdata/adapters/amazingdata_client.py
 
 from typing import Any, List, Optional
 
 import pandas as pd
 
 from adshare.core.logging import get_logger
-from amazingdata_worker.adapters.amazingdata_session import AmazingDataSession
+from amazingdata.adapters.amazingdata_session import AmazingDataSession
 
 logger = get_logger(__name__)
 
@@ -375,7 +375,7 @@ class AmazingDataClient:
 ### 4.4 SessionPool
 
 ```python
-# amazingdata_worker/adapters/session_pool.py
+# amazingdata/adapters/session_pool.py
 
 import random
 import threading
@@ -384,7 +384,7 @@ from typing import Any, Callable, Dict, List, Optional, TypeVar
 
 from adshare.core.config import get_settings
 from adshare.core.logging import get_logger
-from amazingdata_worker.adapters.amazingdata_session import AmazingDataSession
+from amazingdata.adapters.amazingdata_session import AmazingDataSession
 
 logger = get_logger(__name__)
 
@@ -531,7 +531,7 @@ def get_session_pool(size: Optional[int] = None) -> SessionPool:
 ### 4.5 兼容层 AmazingDataAdapter
 
 ```python
-# amazingdata_worker/adapters/amazingdata.py
+# amazingdata/adapters/amazingdata.py
 
 from typing import Any, Dict, List, Optional
 
@@ -539,8 +539,8 @@ import pandas as pd
 
 from adshare.core.config import Settings, get_settings
 from adshare.core.logging import get_logger
-from amazingdata_worker.adapters.amazingdata_client import AmazingDataClient
-from amazingdata_worker.adapters.session_pool import SessionPool, get_session_pool
+from amazingdata.adapters.amazingdata_client import AmazingDataClient
+from amazingdata.adapters.session_pool import SessionPool, get_session_pool
 
 logger = get_logger(__name__)
 
@@ -688,7 +688,7 @@ ad_lb_strategy: str = Field(default="round_robin", alias="AD_LB_STRATEGY")
 ## 6. Worker 启动流程
 
 ```python
-# amazingdata_worker/main.py
+# amazingdata/main.py
 
 def main() -> int:
     # ...

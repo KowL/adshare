@@ -90,8 +90,8 @@ Phase 4: 生态与扩展       [进行中]  2026.Q3
 | 市场路由瘦身 | ✅ 已完成 | 常规市场数据与 `limit-up` 已收口到 service；Router 只负责 HTTP 参数与响应 |
 | 分析服务化 | 🟡 部分完成 | 技术分析已迁移到 `TechnicalAnalysisService`；基本面、因子分析与 MCP 复用仍待迁移 |
 | 缓存边界收口 | ✅ 已完成 | Adapter 不再缓存普通查询结果；Redis 仅用于实时/订阅行情状态；历史文件由定时任务维护 |
-| Adapter 瘦身 | ✅ 已完成 | `AmazingDataAdapter` 已移至 `amazingdata_worker/` 目录，adshare 包不再依赖 SDK |
-| 双服务架构 | ✅ 已完成 | API 服务（adshare）与 Worker 服务（amazingdata_worker）分离部署，Docker Compose 已配置 |
+| Adapter 瘦身 | ✅ 已完成 | `AmazingDataAdapter` 已移至 `amazingdata/` 目录，adshare 包不再依赖 SDK |
+| 双服务架构 | ✅ 已完成 | API 服务（adshare）与 Worker 服务（amazingdata.batch/realtime）分离部署，Docker Compose 已配置 |
 | L3 历史仓扁平化 | ✅ 已完成 | 一股票一文件（所有年份合并），`_metadata.json` 移至 per-period 级别 |
 | 实时行情订阅 | ✅ 已完成 | 实时 K 线订阅（§3.5.3.9）+ 实时指数快照订阅（§3.5.3.1）已接入 |
 | 涨停榜服务化 | ✅ 已完成 | `LimitUpService` 基于日线 K 线计算，支持跌停榜、市场活跃度、强势股池；性能 47s→3s |
@@ -124,7 +124,7 @@ Phase 4: 生态与扩展       [进行中]  2026.Q3
 |------|------|------|
 | [x] 涨停榜服务化 | 路由瘦身 | 已由 `LimitUpService` 基于日线 K 线计算；优先读取本地历史仓，缺失时回源 AmazingData 并落盘；性能优化 47s→3s |
 | [x] K 线历史仓扁平化 | 减少文件碎片 | 一股票一文件（所有年份合并），`_metadata.json` 移至 per-period 级别；新增迁移脚本 `scripts/migrate_to_flat_layout.py` |
-| [x] 双服务架构拆分 | 解耦 API 与 SDK | API 服务（adshare）与 Worker 服务（amazingdata_worker）分离；adshare 包不再依赖 AmazingData SDK |
+| [x] 双服务架构拆分 | 解耦 API 与 SDK | API 服务（adshare）与 Worker 服务（amazingdata.batch/realtime）分离；adshare 包不再依赖 AmazingData SDK |
 | [x] 实时行情订阅迁移 | 统一数据入口 | 实时 K 线订阅（§3.5.3.9）+ 实时指数快照订阅（§3.5.3.1）已迁移到 adshare |
 | [x] K 线历史仓局部命中优化 | SDK 回源更少 | 已移除 `is_synced` 全有或全无阻塞，`query_kline` 直接查询存在的文件，缺失代码自动跳过 |
 | [x] 历史文件路径安全 | 零非法路径风险 | `_safe_code` 替换非法字符 + `normalize_period` 白名单校验已确认完善 |
@@ -208,7 +208,7 @@ Phase 4: 生态与扩展       [进行中]  2026.Q3
 | TD-09 | 无变更日志 (CHANGELOG) | ✅ 已完成 | Phase 3 P3 |
 | TD-10 | 单指标与多指标响应 key 不统一 | 🟢 低 | Phase 3 P0 |
 | TD-11 | Router 承担数据源编排与响应转换（市场/技术分析/基本面/因子分析已全部收口到 Service） | ✅ 已完成 | Phase 3 P1 — 全部 Router 已瘦身 |
-| TD-12 | AmazingData Adapter 同时负责 SDK 生命周期和数据规整 | ✅ 已完成 | Phase 3 P1 — Adapter 已移至 `amazingdata_worker/` 目录，adshare 包完全解耦 |
+| TD-12 | AmazingData Adapter 同时负责 SDK 生命周期和数据规整 | ✅ 已完成 | Phase 3 P1 — Adapter 已移至 `amazingdata/` 目录，adshare 包完全解耦 |
 | TD-13 | HTTP 与 MCP 缺少共享分析服务入口（技术分析/基本面/因子 service 均已建立，MCP 仍待接入） | 🟡 中 | Phase 3 P1 — 分析服务层已就绪 |
 
 ---

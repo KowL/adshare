@@ -1,25 +1,44 @@
-"""Real-time publisher service for the Worker process.
+"""盘中模式: realtime subscription -> Redis + Pub/Sub.
 
-Subscribes to realtime ticks via the data-source adapter, writes them to
-Redis, and publishes to Redis Pub/Sub for API-side broadcast consumption.
-Runs in the Worker service process — the only process holding a
-data-source session.
+启动:
+    python -m amazingdata.realtime
+
+镜像:
+    amazingdata-realtime  (FROM amazingdata-base)
+
+Docker:
+    docker compose -f amazingdata/docker-compose.realtime.yml up -d
+
+职责:
+- 登录 AmazingData SDK
+- 启动 RealtimePublisher（订阅 snapshot / index / kline）
+- 写入 Redis（供 REST API 读）和 Redis Pub/Sub（供 SSE/WS 广播）
+- 阻塞主循环，按 SIGTERM/SIGINT 优雅退出
+
+TGW 单连接账户约束:
+- 此服务独占一个 SDK 会话
+- 同一主机上 batch 服务的 SDK 会话必须互斥（通过外部调度切换容器）
 """
 
 from __future__ import annotations
 
 import json
 import math
+import signal
+import sys
 import threading
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from adshare.core.cache import get_cache_manager
-from adshare.core.config import get_settings
-from adshare.core.logging import get_logger
-from adshare.core.realtime_keys import (
+# Allow running as ``python amazingdata/realtime.py``
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from adshare.core.cache import get_cache_manager  # noqa: E402
+from amazingdata.config import get_worker_settings  # noqa: E402
+from adshare.core.logging import setup_logging, get_logger  # noqa: E402
+from adshare.core.realtime_keys import (  # noqa: E402
     CHANNEL_INDEX,
     CHANNEL_KLINE_PREFIX,
     CHANNEL_QUOTE,
@@ -28,18 +47,55 @@ from adshare.core.realtime_keys import (
     REALTIME_QUOTE_KEY,
 )
 
-from amazingdata_worker.adapters.base import DataSourceAdapter, SubscriptionSource
+from amazingdata.adapters.amazingdata import get_adapter  # noqa: E402
+from amazingdata.adapters.base import DataSourceAdapter, SubscriptionSource  # noqa: E402
 
-logger = get_logger(__name__)
+logger = get_logger("amazingdata.realtime")
 
+_shutdown_event = threading.Event()
+
+
+# ============================================================
+# SDK login (with retry for TGW single-connection accounts)
+# ============================================================
+
+def _init_sdk_login(max_wait_seconds: float = 1800.0) -> bool:
+    """Login to AmazingData SDK with exponential backoff.
+
+    For accounts with a single concurrent connection, a previous worker
+    process may still hold the session on the TGW server. Instead of
+    exiting immediately, we retry in-process up to ``max_wait_seconds``.
+    """
+    adapter = get_adapter()
+    deadline = time.time() + max_wait_seconds
+    delay = 5.0
+    while time.time() < deadline:
+        try:
+            if adapter.login():
+                logger.info("AmazingData login successful: %s", adapter.login_info)
+                return True
+            logger.error("AmazingData login failed, will retry in %.1fs", delay)
+        except Exception as e:
+            logger.error("AmazingData login error: %s, will retry in %.1fs", e, delay)
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            break
+        time.sleep(min(delay, remaining))
+        delay = min(delay * 2, 60.0)
+    logger.error("Failed to login to AmazingData within %.0fs", max_wait_seconds)
+    return False
+
+
+# ============================================================
+# RealtimePublisher
+# ============================================================
 
 class RealtimePublisher:
-    """Worker-side real-time data publisher.
+    """Realtime data publisher (worker-side).
 
     - Subscribes to realtime ticks via the data-source adapter
     - Writes to Redis (for REST API queries)
     - Publishes to Redis Pub/Sub (for broadcast consumption)
-    - Runs in the Worker service process
     """
 
     def __init__(self) -> None:
@@ -70,9 +126,7 @@ class RealtimePublisher:
         already used by SubscribeData.
         """
         try:
-            from adshare.core.config import get_settings
-
-            root = Path(get_settings().historical_path).resolve()
+            root = Path(get_worker_settings().historical_path).resolve()
             path = root / "meta" / "codes.parquet"
             if not path.exists():
                 logger.warning("Cached codes file not found: %s", path)
@@ -93,36 +147,28 @@ class RealtimePublisher:
             logger.warning("Failed to load cached codes: %s", e)
             return fallback or []
 
-    # ============================================================
+    # ------------------------------------------------------------------
     # Lifecycle
-    # ============================================================
+    # ------------------------------------------------------------------
 
     def initialize(self) -> bool:
-        """Login, fetch code list, set up callbacks and start subscriber thread."""
+        """Login, fetch code list, set up callbacks and prepare subscriber."""
         try:
-            from amazingdata_worker.adapters.amazingdata import get_adapter
-
             adapter = get_adapter()
             if not adapter.ensure_login():
-                logger.error(
-                    "Data source not logged in, cannot start realtime publisher"
-                )
+                logger.error("Data source not logged in, cannot start realtime publisher")
                 return False
 
             # For TGW accounts with a single concurrent connection,
             # SubscribeData holds the only connection and adapter.get_code_list
             # (which uses BaseData) may fail.  Load the code list from the
-            # cached meta/codes.parquet file maintained by sync_meta_codes.
+            # cached meta/codes.parquet file maintained by batch.sync_meta_codes.
             self._code_list = self._load_cached_codes(
-                suffixes=(".SH", ".SZ"), fallback=["000001.SZ", "600000.SH", "600519.SH"]
+                suffixes=(".SH", ".SZ"),
+                fallback=["000001.SZ", "600000.SH", "600519.SH"],
             )
-            logger.info(
-                "Realtime publisher: loaded %s A-share codes", len(self._code_list)
-            )
+            logger.info("Realtime publisher: loaded %s A-share codes", len(self._code_list))
 
-            # Index codes - try adapter first, then fallback to common indices.
-            # With a single TGW connection held by SubscribeData, BaseData calls
-            # usually fail; the fallback covers the major A-share indices.
             try:
                 self._index_code_list = adapter.get_code_list("EXTRA_INDEX_A")
                 logger.info(
@@ -148,17 +194,12 @@ class RealtimePublisher:
             self.stats["start_time"] = datetime.now().isoformat()
             logger.info("Realtime publisher initialized (run in caller thread)")
             return True
-
         except Exception as e:
             logger.error("Realtime publisher initialization failed: %s", e)
             return False
 
     def run_blocking(self) -> None:
-        """Blocking loop that runs SubscribeData in the caller thread.
-
-        Moved from background thread to main thread to avoid GIL issues
-        with the AmazingData SDK C extension.
-        """
+        """Blocking loop that runs SubscribeData in the caller thread."""
         self._running = True
         while self._running:
             try:
@@ -179,25 +220,21 @@ class RealtimePublisher:
                 logger.warning("Error stopping SubscribeData: %s", e)
         logger.info("Realtime publisher shutdown")
 
-    # ============================================================
+    # ------------------------------------------------------------------
     # Internal
-    # ============================================================
+    # ------------------------------------------------------------------
 
     def _setup_callbacks(self) -> None:
-        """Register subscription callbacks for snapshot, index snapshot and kline."""
         assert self._adapter is not None and self._subscribe_data is not None
         snapshot_period = self._adapter.period_value("snapshot")
 
-        # Stock snapshot callback
         @self._subscribe_data.register(
             code_list=self._code_list, period=snapshot_period
         )
         def on_snapshot(data, period_val):  # noqa: N806
             self._handle_snapshot(data, period_val)
 
-        # Index snapshot callback
         if self._index_code_list:
-
             @self._subscribe_data.register(
                 code_list=self._index_code_list,
                 period=snapshot_period,
@@ -205,7 +242,6 @@ class RealtimePublisher:
             def on_index_snapshot(data, period_val):  # noqa: N806
                 self._handle_index_snapshot(data, period_val)
 
-        # K-line callbacks
         settings = get_settings()
         kline_periods = getattr(settings, "realtime_kline_periods", ["min1"])
         for period_str in kline_periods:
@@ -223,27 +259,20 @@ class RealtimePublisher:
         def on_kline(data, pval):  # noqa: N806
             self._handle_kline(data, pval, period_str)
 
-    # ============================================================
+    # ------------------------------------------------------------------
     # Handlers
-    # ============================================================
+    # ------------------------------------------------------------------
 
     def _handle_snapshot(self, data: Any, period: int) -> None:
-        """Process a single tick of snapshot data."""
         try:
             self.stats["total_received"] += 1
-
             code = self._extract_code(data)
             if not code:
                 return
-
             serialized = self._serialize_data(data)
-
-            # 1. Persist to Redis (for REST API queries)
             cache = get_cache_manager()
             if cache.set_realtime_market(serialized, REALTIME_QUOTE_KEY, code):
                 self.stats["saved_to_redis"] += 1
-
-            # 2. Publish to Redis Pub/Sub (for broadcast)
             msg = json.dumps(
                 {
                     "type": "quote",
@@ -254,28 +283,20 @@ class RealtimePublisher:
             )
             cache.redis.publish(CHANNEL_QUOTE, msg)
             self.stats["published"] += 1
-
         except Exception as e:
             logger.error("Handle snapshot error: %s", e)
             self.stats["failed"] += 1
 
     def _handle_index_snapshot(self, data: Any, period: int) -> None:
-        """Process a single tick of index snapshot data."""
         try:
             self.stats["total_received"] += 1
-
             code = self._extract_code(data)
             if not code:
                 return
-
             serialized = self._serialize_data(data)
-
-            # 1. Persist to Redis
             cache = get_cache_manager()
             if cache.set_realtime_market(serialized, REALTIME_INDEX_KEY, code):
                 self.stats["saved_to_redis"] += 1
-
-            # 2. Publish to Pub/Sub
             msg = json.dumps(
                 {
                     "type": "index",
@@ -286,30 +307,22 @@ class RealtimePublisher:
             )
             cache.redis.publish(CHANNEL_INDEX, msg)
             self.stats["published"] += 1
-
         except Exception as e:
             logger.error("Handle index snapshot error: %s", e)
             self.stats["failed"] += 1
 
     def _handle_kline(self, data: Any, period: int, period_str: str) -> None:
-        """Process a single tick of kline data."""
         try:
             self.stats["total_received"] += 1
-
             code = self._extract_code(data)
             if not code:
                 return
-
             serialized = self._serialize_data(data)
-
-            # 1. Persist to Redis
             cache = get_cache_manager()
             if cache.set_realtime_market(
                 serialized, REALTIME_KLINE_KEY, period_str, code
             ):
                 self.stats["saved_to_redis"] += 1
-
-            # 2. Publish to Pub/Sub
             msg = json.dumps(
                 {
                     "type": "kline",
@@ -321,14 +334,13 @@ class RealtimePublisher:
             )
             cache.redis.publish(f"{CHANNEL_KLINE_PREFIX}{period_str}", msg)
             self.stats["published"] += 1
-
         except Exception as e:
             logger.error("Handle kline error: %s", e)
             self.stats["failed"] += 1
 
-    # ============================================================
+    # ------------------------------------------------------------------
     # Helpers
-    # ============================================================
+    # ------------------------------------------------------------------
 
     @staticmethod
     def _extract_code(data: Any) -> Optional[str]:
@@ -378,3 +390,69 @@ def get_realtime_publisher() -> RealtimePublisher:
     if _publisher_instance is None:
         _publisher_instance = RealtimePublisher()
     return _publisher_instance
+
+
+# ============================================================
+# Entry point
+# ============================================================
+
+def main() -> int:
+    setup_logging()
+    settings = get_settings()
+    logger.info("=" * 50)
+    logger.info("AmazingData Realtime starting...")
+    logger.info("SDK: %s", settings.amazingdata_connection_string)
+    logger.info("Redis: %s", settings.redis_url)
+    logger.info("=" * 50)
+
+    if not _init_sdk_login():
+        logger.error("Failed to login to AmazingData, exiting")
+        return 1
+
+    publisher = None
+    try:
+        publisher = get_realtime_publisher()
+        if not publisher.initialize():
+            logger.error("Realtime publisher init failed")
+            return 1
+    except Exception as e:
+        logger.exception("Realtime publisher init error: %s", e)
+        return 1
+
+    def _signal_handler(signum, frame):  # noqa: ARG001
+        logger.info("Received signal %s, shutting down...", signum)
+        _shutdown_event.set()
+        if publisher is not None:
+            try:
+                publisher.shutdown()
+            except Exception:
+                pass
+
+    signal.signal(signal.SIGTERM, _signal_handler)
+    signal.signal(signal.SIGINT, _signal_handler)
+
+    try:
+        logger.info("Realtime publisher running in main thread. "
+                    "Press Ctrl+C or send SIGTERM to stop.")
+        publisher.run_blocking()
+    except KeyboardInterrupt:
+        logger.info("Keyboard interrupt received")
+
+    logger.info("Shutting down realtime...")
+    try:
+        publisher.shutdown()
+    except Exception:
+        pass
+
+    try:
+        get_adapter().logout()
+        logger.info("AmazingData logged out")
+    except Exception as e:
+        logger.warning("Logout error: %s", e)
+
+    logger.info("Realtime stopped")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

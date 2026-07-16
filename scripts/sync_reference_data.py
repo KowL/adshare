@@ -1,7 +1,7 @@
 """One-off reference data sync script.
 
 Run from the project root with:
-    docker compose run --rm amazingdata-worker python scripts/sync_reference_data.py [all|balance|income|cashflow|shareholder|index]
+    docker compose -f amazingdata/docker-compose.batch.yml run --rm amazingdata-batch python scripts/sync_reference_data.py [all|balance|income|cashflow|shareholder|index]
 
 Or directly inside the worker container.
 """
@@ -16,12 +16,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from adshare.core.config import get_settings
 from adshare.core.logging import setup_logging, get_logger
 from adshare.historical.warehouse import get_warehouse
-from amazingdata_worker.sync import (
+from amazingdata.batch import (
     sync_financial,
     sync_shareholder,
     sync_index_component,
 )
-from amazingdata_worker.adapters.amazingdata import get_adapter
+from amazingdata.adapters.amazingdata import get_adapter
 
 logger = get_logger("sync_reference_data")
 

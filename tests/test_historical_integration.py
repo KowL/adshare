@@ -19,7 +19,7 @@ from unittest.mock import MagicMock
 import pandas as pd
 import pytest
 
-from amazingdata_worker import sync as hist_sync
+from amazingdata import batch as hist_sync
 from adshare.historical import warehouse as hist_warehouse
 from adshare.historical.models import (
     KLINE_COLUMNS,
@@ -119,7 +119,12 @@ class FakeSDK:
 
 @pytest.fixture
 def five_year_settings(monkeypatch, tmp_path):
-    """Settings with a temporary warehouse root and short retry/worker values."""
+    """WorkerSettings with a temporary warehouse root and short retry/worker values.
+
+    WorkerSettings carries both worker-only fields (sync_workers,
+    sync_retry_attempts, sync_schedule_enabled) and shared L3 fields
+    (historical_path, duckdb_*), which the batch sync functions need.
+    """
     env = {
         "HISTORICAL_ENABLED": "true",
         "HISTORICAL_PATH": str(tmp_path / "historical"),
@@ -134,9 +139,11 @@ def five_year_settings(monkeypatch, tmp_path):
     for k, v in env.items():
         monkeypatch.setenv(k, v)
     from adshare.core.config import get_settings as _gs
+    from amazingdata.config import get_worker_settings as _gw
     _gs.cache_clear()
+    _gw.cache_clear()
     hist_warehouse.reset_warehouse()
-    yield _gs()
+    yield _gw()
     hist_warehouse.reset_warehouse()
 
 

@@ -6,9 +6,9 @@ project architecture where all SDK calls share a single connection.
 
 Usage::
 
-    docker compose run --rm amazingdata-worker python scripts/backfill_financial.py
-    docker compose run --rm amazingdata-worker python scripts/backfill_financial.py --type balance
-    docker compose run --rm amazingdata-worker python scripts/backfill_financial.py --resume
+    docker compose -f amazingdata/docker-compose.batch.yml run --rm amazingdata-batch python scripts/backfill_financial.py
+    docker compose -f amazingdata/docker-compose.batch.yml run --rm amazingdata-batch python scripts/backfill_financial.py --type balance
+    docker compose -f amazingdata/docker-compose.batch.yml run --rm amazingdata-batch python scripts/backfill_financial.py --resume
 """
 
 from __future__ import annotations
@@ -24,9 +24,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from adshare.core.config import get_settings
 from adshare.core.logging import setup_logging, get_logger
-from amazingdata_worker.sync import sync_financial
+from amazingdata.batch import sync_financial
 from adshare.historical.warehouse import get_warehouse
-from amazingdata_worker.adapters.amazingdata import get_adapter
+from amazingdata.adapters.amazingdata import get_adapter
 
 logger = get_logger("backfill_financial")
 
@@ -85,7 +85,7 @@ def _run_batch(statement_type: str, batch_size: int, offset: int, codes: List[st
 # ---------------------------------------------------------------------------
 
 def _all_codes() -> List[str]:
-    from amazingdata_worker.sync import sync_meta_codes
+    from amazingdata.batch import sync_meta_codes
     from adshare.core.config import get_settings
     from adshare.historical.warehouse import get_warehouse
     settings = get_settings()

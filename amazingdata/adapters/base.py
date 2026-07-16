@@ -1,9 +1,9 @@
-"""Data-source contract for the AmazingData worker.
+"""Data-source contract for the AmazingData subsystem.
 
 Every market-data source (currently AmazingData; future vendors) must
 satisfy the :class:`DataSourceAdapter` protocol. Sync jobs
-(:mod:`amazingdata_worker.sync`) and the realtime publisher
-(:mod:`amazingdata_worker.realtime_publisher`) depend only on this
+(:mod:`amazingdata.batch`) and the realtime publisher
+(:mod:`amazingdata.realtime`) depend only on this
 protocol plus plain ``pandas.DataFrame`` results — never on a concrete
 SDK class — so swapping the source means writing one new adapter that
 satisfies this protocol.

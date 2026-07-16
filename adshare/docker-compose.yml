@@ -1,0 +1,47 @@
+# adshare/docker-compose.yml
+# adshare API service.
+#
+# Build:
+#   docker compose -f adshare/docker-compose.yml build
+# Run:
+#   docker compose -f adshare/docker-compose.yml up -d
+#
+# This compose is **API-only**. The AmazingData SDK workers are separate:
+#   - amazingdata/docker-compose.realtime.yml  (intraday subscription)
+#   - amazingdata/docker-compose.batch.yml     (after-hours sync)
+# Both workers must share the same Redis instance configured here.
+
+version: "3.8"
+
+services:
+  adshare-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: adshare-api
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - REDIS_DB=${REDIS_DB:-0}
+      - ADSHARE_HOST=0.0.0.0
+      - ADSHARE_PORT=8000
+      - HISTORICAL_ENABLED=${HISTORICAL_ENABLED:-true}
+      - HISTORICAL_PATH=${HISTORICAL_PATH:-/app/data}
+      - DUCKDB_MODE=${DUCKDB_MODE:-memory}
+      - ADSHARE_LOG_LEVEL=${ADSHARE_LOG_LEVEL:-INFO}
+    volumes:
+      - ../data:/app/data
+      - ../cache:/app/cache
+      - ../logs:/app/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s

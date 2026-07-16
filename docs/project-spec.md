@@ -136,7 +136,9 @@ skills/                  # AI Agent Skill 定义（供外部 Agent 读取）
 docs/                    # 项目文档（本文档所在目录）
 ```
 
-所有配置均通过环境变量 / `.env` 注入（见 `.env.example`），无独立配置文件。
+所有配置均通过环境变量注入（无独立配置文件）。API 与 worker 配置已拆分:
+- `adshare/.env.example` — API 服务（Redis / L3 / auth / rate limit）
+- `amazingdata/.env.example` — Worker 服务（SDK 登录 / 同步调度 / 实时订阅 / 维护任务）
 
 **分层约束**:
 - `routers` 只能调用 `adapters`、`engines`、`core`
@@ -226,7 +228,7 @@ docs/                    # 项目文档（本文档所在目录）
 ### 7.1 配置来源优先级
 
 1. 环境变量（最高优先级，生产环境唯一来源）
-2. `.env` 文件（本地开发，参考 `.env.example`）
+2. `.env` 文件（本地开发，参考 `adshare/.env.example` + `amazingdata/.env.example`）
 3. `adshare.core.config.Settings` 中的字段默认值
 
 ### 7.2 敏感信息清单
@@ -290,7 +292,7 @@ class TestMarket:
 ### 9.3 部署检查清单
 
 - [ ] 目标服务器架构为 x86_64（`uname -m`）
-- [ ] `.env` 文件已配置且权限为 `600`
+- [ ] `adshare/.env` 和 `amazingdata/.env` 已配置，权限为 `600`
 - [ ] Docker Compose 版本 >= 2.x
 - [ ] 防火墙开放 8000（API）与 6379（Redis，如外部访问）
 

@@ -1,48 +1,35 @@
+# Hatch workspace: each member package has its own pyproject.toml.
+#   adshare/         — FastAPI HTTP API + MCP server (any platform)
+#   amazingdata/     — AmazingData SDK worker (linux/amd64 only)
+#
+# This root pyproject.toml exists for:
+#   - hatch workspace membership declaration
+#   - dev tooling (pytest, ruff, mypy) shared across the workspace
+#   - shared `[project.optional-dependencies.dev]`
+#
+# `pip install -e .` at the workspace root installs ALL member packages
+# plus the shared dev extras in one go. To install a single member, cd
+# into it: `pip install -e ./adshare`.
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.workspace]
+members = ["adshare", "amazingdata"]
+
 [project]
-name = "adshare"
+name = "adshare-workspace"
 version = "0.1.0"
-description = "AmazingData share service - A financial data middleware for China A-share markets"
+description = "adshare monorepo — HTTP API + AmazingData SDK subsystem"
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}
 authors = [
     {name = "adshare", email = "adshare@example.com"},
 ]
-keywords = ["finance", "a-share", "amazingdata", "quant", "api"]
-classifiers = [
-    "Development Status :: 3 - Alpha",
-    "Intended Audience :: Financial and Insurance Industry",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
-]
-
-dependencies = [
-    "fastapi>=0.115.0",
-    "uvicorn[standard]>=0.32.0",
-    "pydantic>=2.9.0",
-    "pydantic-settings>=2.6.0",
-    "redis>=5.2.0",
-    "httpx>=0.27.0",
-    "pandas==2.0.3",
-    "numpy==1.26.4",
-    "pyarrow==15.0.0",
-    "python-multipart>=0.0.17",
-    "prometheus-client>=0.21.0",
-    "slowapi>=0.1.9",
-    "structlog>=24.4.0",
-    "python-dotenv>=1.0.0",
-    "orjson>=3.10.0",
-    "scipy==1.12.0",
-    "tables>=3.9.0",
-    "duckdb>=1.0.0",
-    "apscheduler>=3.10.0",
-]
+# Runtime deps live in each member's pyproject.toml.
+dependencies = []
 
 [project.optional-dependencies]
 dev = [
@@ -53,9 +40,6 @@ dev = [
     "mypy>=1.13.0",
     "pre-commit>=4.0.0",
 ]
-
-[tool.hatch.build.targets.wheel]
-packages = ["adshare"]
 
 [tool.ruff]
 target-version = "py311"

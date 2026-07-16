@@ -3,7 +3,7 @@
 This is the API-only service. It does NOT connect to AmazingData SDK directly.
 It reads from:
 - L3 historical warehouse (Parquet/DuckDB) for historical data
-- Redis for real-time data (written by amazingdata-worker)
+- Redis for real-time data (written by amazingdata.realtime)
 """
 
 import asyncio

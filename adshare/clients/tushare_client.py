@@ -1,7 +1,6 @@
 """Tushare Pro compatible HTTP client for adshare.
 
-This client can be used directly or via the project-root ``tushare.py``
-shim. It speaks the tushare Pro request/response protocol:
+This client speaks the tushare Pro request/response protocol:
 
     POST {base_url}
     Body: {"api_name": "daily", "token": "...", "params": {...}, "fields": ""}

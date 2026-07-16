@@ -4,7 +4,7 @@
 # 为什么不在 docker-compose.yml 里 build？
 # - base 是"中间产物"，不是服务
 # - base 一年改 2-3 次（升级 whl / 换 base 镜像 / 加 apt 包）
-# - worker 和 api 经常改，频繁触发 base 重 build 是浪费
+# - realtime 和 batch 经常改，频繁触发 base 重 build 是浪费
 # - 手动 build + tag 锁版本，出问题能快速回滚
 #
 # 用法:
@@ -15,6 +15,9 @@
 # 预计耗时：
 #   首次（cold）：3-5 分钟（apt 80s + SDK whl + numba 编译 1-2 分钟）
 #   增量（warm）：10-30 秒（只下变更层）
+#
+# wheels 位置: amazingdata/wheels/
+# Dockerfile 位置: amazingdata/base.Dockerfile
 
 set -euo pipefail
 
@@ -38,12 +41,12 @@ done
 # 定位项目根
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-DOCKERFILE="$PROJECT_ROOT/adshare_base/Dockerfile"
+DOCKERFILE="$PROJECT_ROOT/amazingdata/base.Dockerfile"
 
-# 检查 whl 文件
+# 检查 whl 文件（位于 amazingdata/wheels/）
 for f in AmazingData-1.0.30-cp311-none-any.whl tgw-1.0.8.7-py3-none-any.whl; do
-  if [[ ! -f "$PROJECT_ROOT/$f" ]]; then
-    echo "❌ Missing $PROJECT_ROOT/$f"
+  if [[ ! -f "$PROJECT_ROOT/amazingdata/wheels/$f" ]]; then
+    echo "❌ Missing $PROJECT_ROOT/amazingdata/wheels/$f"
     echo "   Run from project root with whl files present."
     exit 1
   fi
@@ -81,5 +84,6 @@ echo "📦 Image info:"
 docker images adshare-base --format "  {{.Repository}}:{{.Tag}}\t{{.Size}}"
 echo ""
 echo "🔍 Next steps:"
-echo "  - Worker: docker compose build amazingdata-worker && docker compose up -d --force-recreate amazingdata-worker"
+echo "  - Batch:    docker compose -f amazingdata/docker-compose.batch.yml build && docker compose -f amazingdata/docker-compose.batch.yml up -d
+  - Realtime: docker compose -f amazingdata/docker-compose.realtime.yml build && docker compose -f amazingdata/docker-compose.realtime.yml up -d"
 echo "  - Verify: docker run --rm adshare-base:latest python -c 'import tgw, AmazingData; print(\"SDK OK\")'"

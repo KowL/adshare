@@ -52,9 +52,15 @@ cache/*.parquet
 !logs/.gitkeep
 !cache/.gitkeep
 
-# Local/remote environment files
+# Local/remote environment files (NEVER commit — contain secrets)
+.env
 .env.remote-api
 PY
+
+# Package .env files (contain Redis password / SDK login / API key)
+# Ignored by the root ".env" rule above, but listed explicitly for clarity.
+/adshare/.env
+/amazingdata/.env
 
 # Local data
 cache/
@@ -63,5 +69,9 @@ data/
 *.db
 *.sqlite3
 
-# Binary dependencies (amazingdata SDK wheels)
+# Binary dependencies (amazingdata SDK wheels inside amazingdata/wheels/)
+# NOTE: whl files are vendor binaries — do NOT commit. They live in
+# amazingdata/wheels/ and are installed into the Docker base image
+# (amazingdata/base.Dockerfile) at build time.
+amazingdata/wheels/*.whl
 *.whl

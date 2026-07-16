@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
-from adshare.core.config import Settings, get_settings
+from amazingdata.config import WorkerSettings, get_worker_settings
 from adshare.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -40,7 +40,7 @@ class AmazingDataAdapter:
     _instance: Optional["AmazingDataAdapter"] = None
     _lock = threading.Lock()
 
-    def __new__(cls, settings: Optional[Settings] = None) -> "AmazingDataAdapter":
+    def __new__(cls, settings: Optional[WorkerSettings] = None) -> "AmazingDataAdapter":
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
@@ -48,10 +48,10 @@ class AmazingDataAdapter:
                     cls._instance._initialized = False
         return cls._instance
 
-    def __init__(self, settings: Optional[Settings] = None) -> None:
+    def __init__(self, settings: Optional[WorkerSettings] = None) -> None:
         if self._initialized:
             return
-        self.settings = settings or get_settings()
+        self.settings = settings or get_worker_settings()
         self._client: Optional[Any] = None
         self._base_data: Optional[Any] = None
         self._info_data: Optional[Any] = None
@@ -495,7 +495,7 @@ class AmazingDataAdapter:
         """Create a ``SubscribeData`` realtime subscription handle.
 
         The returned object satisfies
-        :class:`~amazingdata_worker.adapters.base.SubscriptionSource`
+        :class:`~amazingdata.adapters.base.SubscriptionSource`
         (``register`` / ``run`` / ``stop``). Requires an active session.
         """
         client = self._get_client()

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pandas as pd
 
-from amazingdata_worker.adapters.amazingdata import AmazingDataAdapter
+from amazingdata.adapters.amazingdata import AmazingDataAdapter
 
 
 class FakeBaseData:

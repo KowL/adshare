@@ -1,9 +1,11 @@
 #!/bin/bash
-# adshare 双服务部署脚本
+# adshare 部署脚本
 #
 # 架构:
 #   - adshare-api        : FastAPI HTTP API (任意平台)
-#   - amazingdata-worker : AmazingData SDK 数据拉取 (必须 linux/amd64)
+#   - amazingdata batch  : 盘后模式 (APScheduler -> L3 warehouse), 必须 linux/amd64
+#   - amazingdata realtime : 盘中模式 (SubscribeData -> Redis), 必须 linux/amd64
+#   - 两个 worker 模式互斥 (TGW 单连接约束)，由外部调度切换容器
 #
 # 部署步骤:
 #   1. 在 amd64 服务器上执行此脚本
@@ -14,7 +16,7 @@ set -e
 
 PROJECT_DIR="/opt/adshare"
 
-echo "=== adshare 双服务部署脚本 ==="
+echo "=== adshare 部署脚本 ==="
 
 # Check Docker
 if ! command -v docker &> /dev/null; then
@@ -48,7 +50,7 @@ echo "✓ Project files found"
 ARCH=$(uname -m)
 if [ "$ARCH" != "x86_64" ]; then
     echo "⚠️  Warning: Current architecture is $ARCH"
-    echo "   amazingdata-worker requires linux/amd64."
+    echo "   amazingdata batch/realtime requires linux/amd64."
     echo "   Options:"
     echo "   1. Deploy on an x86_64 server"
     echo "   2. Enable QEMU binfmt emulation: docker run --privileged --rm tonistiigi/binfmt --install amd64"
@@ -80,10 +82,10 @@ else
     echo "⚠️  API may not be ready yet. Check logs: docker logs adshare-api"
 fi
 
-if docker ps | grep -q amazingdata-worker; then
-    echo "✅ amazingdata-worker is running"
+if docker ps | grep -q amazingdata-batch; then
+    echo "✅ amazingdata batch/realtime is running"
 else
-    echo "⚠️  Worker not running. Check logs: docker logs amazingdata-worker"
+    echo "⚠️  Worker not running. Check logs: docker logs amazingdata-batch"
 fi
 
 echo ""
@@ -94,7 +96,7 @@ echo "Metrics:   http://localhost:8000/metrics"
 echo ""
 echo "日志查看:"
 echo "  API:     docker logs -f adshare-api"
-echo "  Worker:  docker logs -f amazingdata-worker"
+echo "  Worker:  docker logs -f amazingdata-batch  # or amazingdata-realtime"
 echo ""
 echo "常用命令:"
 echo "  重启:    docker compose restart"

@@ -23,8 +23,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from adshare.core.config import Settings, get_settings
+from amazingdata.config import WorkerSettings, get_worker_settings
 from adshare.historical import models as hist_models
-from amazingdata_worker import sync as hist_sync
+from amazingdata import batch as hist_sync
 from adshare.historical import warehouse as hist_warehouse
 from adshare.historical.warehouse import HistoricalWarehouse
 from adshare.historical.models import (
@@ -39,7 +40,7 @@ from adshare.historical.models import (
     period_to_subdir,
     write_metadata,
 )
-from amazingdata_worker.sync import (
+from amazingdata.batch import (
     SyncResult,
     sync_kline_daily,
     sync_meta_codes,
@@ -61,8 +62,14 @@ def tmp_warehouse_root(tmp_path) -> Path:
 
 
 @pytest.fixture
-def isolated_settings(tmp_warehouse_root, monkeypatch, tmp_path) -> Settings:
-    """Return a fresh Settings instance pointed at temporary paths."""
+def isolated_settings(tmp_warehouse_root, monkeypatch, tmp_path) -> WorkerSettings:
+    """Return a fresh WorkerSettings instance pointed at temporary paths.
+
+    WorkerSettings is the right type for the batch sync functions because
+    they read both worker-only fields (sync_workers, sync_retry_attempts,
+    sync_schedule_enabled, ...) AND shared fields (historical_path, ...)
+    via ``settings.shared.<field>``.
+    """
     env_overrides = {
         "HISTORICAL_ENABLED": "true",
         "HISTORICAL_PATH": str(tmp_warehouse_root),
@@ -76,10 +83,11 @@ def isolated_settings(tmp_warehouse_root, monkeypatch, tmp_path) -> Settings:
     }
     for k, v in env_overrides.items():
         monkeypatch.setenv(k, v)
-    # Reset cached settings
+    # Reset both caches
     get_settings.cache_clear()
+    get_worker_settings.cache_clear()
     hist_warehouse.reset_warehouse()
-    settings = get_settings()
+    settings = get_worker_settings()
     return settings
 
 
@@ -152,8 +160,8 @@ def client(isolated_settings):
 
     _cache_mod._cache_manager = None
 
-    # Mock amazingdata_worker adapter for sync tests
-    import amazingdata_worker.adapters.amazingdata as _worker_ad_mod
+    # Mock amazingdata.adapter for sync tests
+    import amazingdata.adapters.amazingdata as _worker_ad_mod
     _orig_worker_get_adapter = _worker_ad_mod.get_adapter
     _worker_fake = MagicMock()
     _worker_fake.is_logged_in = True
@@ -737,7 +745,7 @@ class TestSync:
     def test_sync_kline_weekly(self, warehouse, isolated_settings):
         fake = self._fake_adapter()
         result = sync_kline_daily  # placeholder to keep linter happy
-        from amazingdata_worker.sync import sync_kline_weekly
+        from amazingdata.batch import sync_kline_weekly
         result = sync_kline_weekly(
             year=2024,
             codes=["000001.SZ"],
@@ -750,7 +758,7 @@ class TestSync:
 
     def test_sync_kline_monthly(self, warehouse, isolated_settings):
         fake = self._fake_adapter()
-        from amazingdata_worker.sync import sync_kline_monthly
+        from amazingdata.batch import sync_kline_monthly
         result = sync_kline_monthly(
             year=2024,
             codes=["000001.SZ"],
@@ -927,7 +935,7 @@ class TestHistoricalRouter:
 class TestScheduler:
     def test_init_scheduler_disabled(self, isolated_settings, warehouse):
         isolated_settings.sync_schedule_enabled = False
-        from amazingdata_worker.sync import init_scheduler, shutdown_scheduler
+        from amazingdata.batch import init_scheduler, shutdown_scheduler
         try:
             scheduler = init_scheduler(isolated_settings)
             jobs = scheduler.get_jobs()
@@ -938,7 +946,7 @@ class TestScheduler:
 
     def test_init_scheduler_enabled(self, isolated_settings, warehouse):
         isolated_settings.sync_schedule_enabled = True
-        from amazingdata_worker.sync import init_scheduler, shutdown_scheduler
+        from amazingdata.batch import init_scheduler, shutdown_scheduler
         try:
             scheduler = init_scheduler(isolated_settings)
             jobs = scheduler.get_jobs()
@@ -958,7 +966,7 @@ class TestScheduler:
             shutdown_scheduler()
 
     def test_shutdown_is_idempotent(self, isolated_settings, warehouse):
-        from amazingdata_worker.sync import shutdown_scheduler
+        from amazingdata.batch import shutdown_scheduler
         shutdown_scheduler()
         shutdown_scheduler()  # must not raise
 
@@ -986,7 +994,7 @@ def test_module_exports():
         normalize_period,
         get_warehouse,
     )
-    from amazingdata_worker.sync import (
+    from amazingdata.batch import (
         sync_kline_daily,
         sync_kline_weekly,
         sync_kline_monthly,

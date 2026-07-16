@@ -5,7 +5,7 @@ on top of DuckDB for in-process SQL queries.
 
 This package is read-only with respect to data sources: the sync jobs that
 populate the warehouse live in the worker package
-(:mod:`amazingdata_worker.sync`).
+(:mod:`amazingdata.batch`).
 """
 
 from adshare.historical.models import (

@@ -1,10 +1,10 @@
 """Run reference data sync inside the worker container."""
-from amazingdata_worker.sync import (
+from amazingdata.batch import (
     sync_financial,
     sync_shareholder,
     sync_index_component,
 )
-from amazingdata_worker.adapters.amazingdata import get_adapter
+from amazingdata.adapters.amazingdata import get_adapter
 from adshare.core.config import get_settings
 from adshare.historical.warehouse import get_warehouse
 

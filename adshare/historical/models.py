@@ -488,7 +488,7 @@ def summarize_kline_files(files: Iterable[Path]) -> Dict[str, Any]:
 # Financial-statement data-quality helpers
 # ----------------------------------------------------------------------
 # These helpers are shared by the worker-side sync jobs
-# (:mod:`amazingdata_worker.sync`) and the API-side maintenance routines
+# (:mod:`amazingdata.batch`) and the API-side maintenance routines
 # (:mod:`adshare.historical.maintenance`). They are pure functions over
 # DataFrames and carry no SDK dependency.
 

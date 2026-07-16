@@ -8,7 +8,7 @@ adshare is a standalone data service that wraps the AmazingData SDK (Linux/amd64
 
 ## Features
 
-- **Tushare Compatible**: Drop-in `tushare.py` adapter and `/tushare/*` endpoints for existing tushare-based projects
+- **Tushare Compatible**: `/tushare` protocol endpoint for existing tushare-based projects
 - **Market Data**: K-line, snapshot, code list, stock basic info, trading calendar
 - **Financial Data**: Balance sheet, income statement, cash flow, shareholder data
 - **Technical Analysis**: 56 indicators (MACD, KDJ, RSI, BOLL, DMI, etc.)
@@ -107,12 +107,13 @@ See `/docs` for full OpenAPI documentation.
 
 ## Tushare Compatibility
 
-adshare provides a tushare Pro protocol compatible layer. Existing projects using `import tushare as ts` can switch to adshare by copying the project-root `tushare.py` file and pointing `pro_api()` at the adshare server:
+adshare provides a tushare Pro protocol compatible layer. Existing projects can keep using the official `tushare` package and point its Pro client at the adshare server:
 
 ```python
 import tushare as ts
 
-pro = ts.pro_api("http://localhost:8000/tushare")
+pro = ts.pro_api("your-adshare-api-key")
+pro._DataApi__http_url = "http://localhost:8000/tushare"
 df = pro.daily(ts_code="000001.SZ", start_date="20240101", end_date="20240131")
 ```
 

@@ -1,12 +1,12 @@
 #!/bin/bash
 # Sync local L3 warehouse data to remote adshare-api server.
-# This script is meant to run after amazingdata-worker has finished its
+# This script is meant to run after amazingdata batch has finished its
 # daily/weekly/monthly sync jobs.
 
 set -euo pipefail
 
 LOCAL_DATA_DIR="/Volumes/mm/project/adshare/data"
-# When running inside the amazingdata-worker container, the data is mounted at /app/data.
+# When running inside the amazingdata-batch container, the data is mounted at /app/data.
 if [ -d "/app/data" ]; then
     LOCAL_DATA_DIR="/app/data"
 fi

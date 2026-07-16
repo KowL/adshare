@@ -1,6 +1,16 @@
-"""Configuration management for adshare."""
+"""Configuration management for adshare (API service).
 
-import os
+This module owns the **shared** configuration that both the API process
+(``adshare``) and the worker processes (``amazingdata.batch`` /
+``amazingdata.realtime``) need to read from — Redis, the L3 historical
+warehouse, app-level knobs, rate limiting, auth.
+
+The worker-only fields (AmazingData login, sync schedule, realtime
+subscription, idempotent repair schedule) live in
+:mod:`amazingdata.config` so the API image does not need to know about
+them.
+"""
+
 from functools import lru_cache
 from pathlib import Path
 from typing import List, Optional
@@ -13,12 +23,14 @@ class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=str(Path(__file__).resolve().parent.parent / ".env"),
         env_file_encoding="utf-8",
         extra="ignore",
     )
 
-    # App settings
+    # ------------------------------------------------------------------
+    # App
+    # ------------------------------------------------------------------
     app_name: str = Field(default="adshare", alias="ADSHARE_APP_NAME")
     app_version: str = Field(default="0.1.0", alias="ADSHARE_APP_VERSION")
     app_host: str = Field(default="0.0.0.0", alias="ADSHARE_HOST")
@@ -26,113 +38,60 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO", alias="ADSHARE_LOG_LEVEL")
     debug: bool = Field(default=False, alias="ADSHARE_DEBUG")
 
-    # AmazingData settings
-    ad_username: str = Field(default="", alias="AD_USERNAME")
-    ad_password: str = Field(default="", alias="AD_PASSWORD")
-    ad_host: str = Field(default="localhost", alias="AD_HOST")
-    ad_port: int = Field(default=8600, alias="AD_PORT")
-    ad_pool_size: int = Field(default=5, alias="AD_POOL_SIZE")
-    ad_max_retries: int = Field(default=3, alias="AD_MAX_RETRIES")
-    ad_retry_delay: float = Field(default=1.0, alias="AD_RETRY_DELAY")
-    ad_login_timeout: int = Field(default=30, alias="AD_LOGIN_TIMEOUT")
-
-    # Redis settings
+    # ------------------------------------------------------------------
+    # Redis (shared: API reads realtime, worker writes realtime)
+    # ------------------------------------------------------------------
     redis_host: str = Field(default="localhost", alias="REDIS_HOST")
     redis_port: int = Field(default=6379, alias="REDIS_PORT")
     redis_db: int = Field(default=0, alias="REDIS_DB")
     redis_password: Optional[str] = Field(default=None, alias="REDIS_PASSWORD")
     redis_max_connections: int = Field(default=50, alias="REDIS_MAX_CONNECTIONS")
 
-    # Redis cache settings. Redis is reserved for real-time/subscription market data.
+    # Redis is reserved for real-time/subscription market data.
     cache_ttl_realtime: int = Field(default=300, alias="CACHE_TTL_REALTIME")
     cache_key_prefix: str = Field(default="adshare", alias="CACHE_KEY_PREFIX")
 
-    # Rate limiting
+    # ------------------------------------------------------------------
+    # Rate limiting / auth / metrics
+    # ------------------------------------------------------------------
     rate_limit_enabled: bool = Field(default=True, alias="RATE_LIMIT_ENABLED")
     rate_limit_per_minute: int = Field(default=120, alias="RATE_LIMIT_PER_MINUTE")
     rate_limit_per_second: int = Field(default=10, alias="RATE_LIMIT_PER_SECOND")
 
-    # Auth
     auth_enabled: bool = Field(default=False, alias="AUTH_ENABLED")
     api_key: Optional[str] = Field(default=None, alias="ADSHARE_API_KEY")
 
-    # Metrics
     metrics_enabled: bool = Field(default=True, alias="METRICS_ENABLED")
     metrics_path: str = Field(default="/metrics", alias="METRICS_PATH")
 
-    # Data settings
+    # ------------------------------------------------------------------
+    # Data layer (shared: API reads L3, worker writes L3)
+    # ------------------------------------------------------------------
     kline_max_limit: int = Field(default=10000, alias="KLINE_MAX_LIMIT")
     max_codes_per_query: int = Field(default=50, alias="MAX_CODES_PER_QUERY")
     default_begin_date: int = Field(default=19900101, alias="DEFAULT_BEGIN_DATE")
 
-    # Realtime subscription settings (worker)
-    realtime_enabled: bool = Field(default=True, alias="REALTIME_ENABLED")
-    realtime_kline_periods: List[str] = Field(default=["min1"], alias="REALTIME_KLINE_PERIODS")
+    # Realtime kline periods (shared between API and worker:
+    # API subscribes to these Pub/Sub channels for SSE/WS broadcast).
+    realtime_kline_periods: List[str] = Field(
+        default=["min1"], alias="REALTIME_KLINE_PERIODS"
+    )
 
-    # Historical data warehouse (L3)
+    # Worker toggles exposed to operators via /admin endpoints.
+    # The actual values used at runtime live in amazingdata.config.WorkerSettings.
+    sync_schedule_enabled: bool = Field(default=True, alias="SYNC_SCHEDULE_ENABLED")
+    realtime_enabled: bool = Field(default=True, alias="REALTIME_ENABLED")
+
     historical_enabled: bool = Field(default=True, alias="HISTORICAL_ENABLED")
     historical_path: str = Field(default="./data", alias="HISTORICAL_PATH")
     historical_retention_years: int = Field(default=0, alias="HISTORICAL_RETENTION_YEARS")
 
-    # DuckDB
     duckdb_mode: str = Field(default="memory", alias="DUCKDB_MODE")
-    duckdb_file_path: str = Field(default="./data/duckdb/adshare.duckdb", alias="DUCKDB_FILE_PATH")
+    duckdb_file_path: str = Field(
+        default="./data/duckdb/adshare.duckdb", alias="DUCKDB_FILE_PATH"
+    )
     duckdb_max_rows: int = Field(default=100000, alias="DUCKDB_MAX_ROWS")
     duckdb_query_timeout: int = Field(default=30, alias="DUCKDB_QUERY_TIMEOUT")
-
-    # Sync scheduler
-    sync_schedule_enabled: bool = Field(default=True, alias="SYNC_SCHEDULE_ENABLED")
-    sync_on_start: bool = Field(default=False, alias="SYNC_ON_START")
-    sync_kline_daily_hour: int = Field(default=17, alias="SYNC_KLINE_DAILY_HOUR")
-    sync_kline_daily_minute: int = Field(default=10, alias="SYNC_KLINE_DAILY_MINUTE")
-    sync_kline_weekly_hour: int = Field(default=19, alias="SYNC_KLINE_WEEKLY_HOUR")
-    sync_kline_weekly_minute: int = Field(default=30, alias="SYNC_KLINE_WEEKLY_MINUTE")
-    sync_kline_monthly_hour: int = Field(default=20, alias="SYNC_KLINE_MONTHLY_HOUR")
-    sync_kline_monthly_minute: int = Field(default=0, alias="SYNC_KLINE_MONTHLY_MINUTE")
-    sync_meta_codes_hour: int = Field(default=8, alias="SYNC_META_CODES_HOUR")
-    sync_meta_codes_minute: int = Field(default=0, alias="SYNC_META_CODES_MINUTE")
-    sync_shareholder_day_of_week: str = Field(default="sat", alias="SYNC_SHAREHOLDER_DAY_OF_WEEK")
-    sync_shareholder_hour: int = Field(default=3, alias="SYNC_SHAREHOLDER_HOUR")
-    sync_shareholder_minute: int = Field(default=0, alias="SYNC_SHAREHOLDER_MINUTE")
-    sync_index_component_day_of_week: str = Field(default="sat", alias="SYNC_INDEX_COMPONENT_DAY_OF_WEEK")
-    sync_index_component_hour: int = Field(default=4, alias="SYNC_INDEX_COMPONENT_HOUR")
-    sync_index_component_minute: int = Field(default=0, alias="SYNC_INDEX_COMPONENT_MINUTE")
-    sync_workers: int = Field(default=4, alias="SYNC_WORKERS")
-    sync_retry_attempts: int = Field(default=3, alias="SYNC_RETRY_ATTEMPTS")
-
-    # Comma-separated index codes for the index-component sync;
-    # empty means "use the built-in default list".
-    index_codes: str = Field(default="", alias="INDEX_CODES")
-
-    # Maintenance (idempotent L3 warehouse repair) schedule.
-    # Disabled by default so operators opt in explicitly; the routines
-    # themselves are no-ops when the warehouse is clean.
-    maintenance_schedule_enabled: bool = Field(
-        default=False, alias="MAINTENANCE_SCHEDULE_ENABLED"
-    )
-    maintenance_kline_day_of_week: str = Field(
-        default="sun", alias="MAINTENANCE_KLINE_DAY_OF_WEEK"
-    )
-    maintenance_kline_hour: int = Field(
-        default=3, alias="MAINTENANCE_KLINE_HOUR"
-    )
-    maintenance_kline_minute: int = Field(
-        default=0, alias="MAINTENANCE_KLINE_MINUTE"
-    )
-    maintenance_financial_day_of_week: str = Field(
-        default="sun", alias="MAINTENANCE_FINANCIAL_DAY_OF_WEEK"
-    )
-    maintenance_financial_hour: int = Field(
-        default=4, alias="MAINTENANCE_FINANCIAL_HOUR"
-    )
-    maintenance_financial_minute: int = Field(
-        default=0, alias="MAINTENANCE_FINANCIAL_MINUTE"
-    )
-
-    @property
-    def amazingdata_connection_string(self) -> str:
-        """Return AmazingData connection info string (without password)."""
-        return f"{self.ad_username}@{self.ad_host}:{self.ad_port}"
 
     @property
     def redis_url(self) -> str:

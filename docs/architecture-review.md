@@ -25,7 +25,7 @@ Redis (实时状态)  /  Parquet + DuckDB (L3 历史仓)  /  AmazingData SDK
 
 Phase 3 已完成的核心架构优化：
 
-- **双服务架构**：API 服务 (`adshare/`) 与 Worker 服务 (`amazingdata_worker/`) 完全分离，API 包不再依赖 SDK
+- **双服务架构**：API 服务 (`adshare/`) 与 Worker 服务 (`amazingdata/`) 完全分离，API 包不再依赖 SDK
 - **市场数据收口**：`MarketDataService` 统一处理 K 线、快照、代码表、日历，Router 只负责 HTTP
 - **分析服务化**：`TechnicalAnalysisService`、`FundamentalAnalysisService`、`FactorAnalysisService` 全部建立，MCP 与 HTTP 可复用同一入口
 - **涨停榜服务化**：`LimitUpService` 基于本地 K 线计算，支持跌停榜/市场活跃度/强势股池，性能 47s→3s
@@ -66,7 +66,7 @@ Phase 3 已完全实现：
 
 **涉及文件**
 
-- `amazingdata_worker/adapters/amazingdata.py`
+- `amazingdata/adapters/amazingdata.py`
 - `adshare/core/cache.py`
 - `adshare/historical/sync.py`
 
@@ -74,7 +74,7 @@ Phase 3 已完全实现：
 
 Phase 3 已实现第一阶段拆分：
 
-- `AmazingDataAdapter` 已从 `adshare/` 包移至 `amazingdata_worker/` 目录
+- `AmazingDataAdapter` 已从 `adshare/` 包移至 `amazingdata/` 目录
 - `adshare` 包完全解耦 SDK，所有 SDK 调用通过 `MarketDataService` → warehouse 路径完成
 - Worker 服务独立运行，负责 SDK 登录、实时订阅、定时同步
 

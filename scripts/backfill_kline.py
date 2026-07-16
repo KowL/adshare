@@ -9,7 +9,7 @@ Usage::
 
 By default the script uses the cached ``AmazingData`` adapter to pull data,
 then writes the standard per-code Parquet files via
-:mod:`amazingdata_worker.sync` (one file per code, all years merged).
+:mod:`amazingdata.batch` (one file per code, all years merged).
 The script is intentionally simple — it does not do incremental backfill
 or resume: each invocation rewrites the per-stock Parquet files for the
 requested window.
@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from adshare.core.config import get_settings  # noqa: E402
 from adshare.core.logging import setup_logging, get_logger  # noqa: E402
-from amazingdata_worker.sync import (  # noqa: E402
+from amazingdata.batch import (  # noqa: E402
     SyncResult,
     sync_kline_daily,
     sync_kline_weekly,

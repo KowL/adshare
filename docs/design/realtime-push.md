@@ -14,7 +14,7 @@
 adshare 已形成双服务架构：
 
 - **API 服务** (`adshare/`): FastAPI，纯 Python，处理 HTTP/WebSocket 请求，读取 Redis/L3 仓库
-- **Worker 服务** (`amazingdata_worker/`): 依赖 AmazingData SDK，负责实时订阅和定时同步
+- **Worker 服务** (`amazingdata/`): 依赖 AmazingData SDK，负责实时订阅和定时同步
 
 实时数据链路：
 
@@ -97,7 +97,7 @@ Phase 3 的双服务拆分将两者物理隔离到了不同进程，但代码层
                                   │ Redis Pub/Sub
                                   │
 ┌─────────────────────────────────▼───────────────────────────────────────────┐
-│                         Worker 服务 (amazingdata_worker)                     │
+│                    Realtime 服务 (amazingdata.realtime)                      │
 │                                                                              │
 │  ┌─────────────────────────────────────────────────────────────────────┐    │
 │  │ RealtimePublisher (重构自 RealtimeSubscriber)                       │    │
@@ -180,7 +180,7 @@ Pub/Sub 是 Redis 原生能力，无需额外依赖，且天然支持多 API 实
 | `adshare/routers/realtime.py` | 修改 | 添加 SSE endpoint，调整 WebSocket 使用 broadcast service |
 | `adshare/main.py` | 修改 | lifespan 启动 broadcast 监听任务 |
 | `adshare/services/realtime.py` | 修改 | 标记为 deprecated，逐步迁移到 publisher/broadcast |
-| `amazingdata_worker/main.py` | 修改 | 使用 RealtimePublisher 替代 RealtimeSubscriber |
+| `amazingdata/main.py` | 修改 | 使用 RealtimePublisher 替代 RealtimeSubscriber |
 | `adshare/core/config.py` | 修改 | 添加 Pub/Sub 相关配置 |
 | `tests/test_realtime_broadcast.py` | 新增 | 广播服务单元测试 |
 | `tests/test_realtime_websocket.py` | 新增 | WebSocket 集成测试 |

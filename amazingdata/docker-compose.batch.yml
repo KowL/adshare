@@ -1,0 +1,45 @@
+# amazingdata/docker-compose.batch.yml
+# Batch sync service (APScheduler -> L3 warehouse).
+#
+# IMPORTANT (TGW single-connection constraint):
+#   - Only ONE of {realtime, batch} may run at a time on the same host.
+#
+# Build:
+#   docker compose -f amazingdata/docker-compose.batch.yml build
+# Run:
+#   docker compose -f amazingdata/docker-compose.batch.yml up -d
+
+services:
+  amazingdata-batch:
+    build:
+      context: ..
+      dockerfile: amazingdata/batch.Dockerfile
+    platform: linux/amd64
+    container_name: amazingdata-batch
+    # SDK (InfoData) hardcodes "D://AmazingData_local_data" — set working_dir
+    # to /app/data so the cache lands inside the mounted host data directory.
+    working_dir: /app/data
+    env_file:
+      - .env
+    environment:
+      - AD_USERNAME=${AD_USERNAME}
+      - AD_PASSWORD=${AD_PASSWORD}
+      - AD_HOST=${AD_HOST}
+      - AD_PORT=${AD_PORT}
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - REDIS_DB=${REDIS_DB:-0}
+      - HISTORICAL_ENABLED=true
+      - HISTORICAL_PATH=/app/data
+      - DUCKDB_MODE=${DUCKDB_MODE:-memory}
+      - AMAZINGDATA_LOCAL_PATH=${AMAZINGDATA_LOCAL_PATH:-/app/data/sdk_cache}
+      - ADSHARE_LOG_LEVEL=${ADSHARE_LOG_LEVEL:-INFO}
+      - ADSHARE_LOG_DIR=/app/logs
+      # Ensure amazingdata package stays importable when working_dir is /app/data
+      - PYTHONPATH=/app
+    volumes:
+      - ../data:/app/data
+      - ../cache:/app/cache
+      - ../logs:/app/logs
+    restart: unless-stopped

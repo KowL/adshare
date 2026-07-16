@@ -1,0 +1,49 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "amazingdata"
+version = "0.1.0"
+description = "AmazingData SDK subsystem for adshare — runs two services (realtime subscription, batch sync) that share one SDK session against the TGW backend."
+readme = "README.amazingdata-stub.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [
+    {name = "adshare", email = "adshare@example.com"},
+]
+keywords = ["finance", "a-share", "amazingdata", "tgw", "quant", "sync"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Financial and Insurance Industry",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+
+# NOTE: AmazingData + tgw C extensions are NOT listed here — they're shipped
+# as .whl files under amazingdata/wheels/ and installed into the Docker
+# base image (amazingdata/base.Dockerfile). Adding them to pip dependencies
+# would force a host-machine install that fails on macOS / Windows.
+
+dependencies = [
+    # adshare (core) for shared Settings/cache/realtime_keys
+    "adshare",
+    # Config + scheduler + cache
+    "pydantic>=2.9.0",
+    "pydantic-settings>=2.6.0",
+    "redis>=5.0",
+    "python-dotenv>=1.0.0",
+    "structlog>=24.4.0",
+    "apscheduler>=3.10.0",
+    # Data layer
+    "pandas==2.0.3",
+    "numpy==1.26.4",
+    "pyarrow==15.0.0",
+    "tables>=3.9.0",
+    "duckdb>=1.0.0,<2.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]

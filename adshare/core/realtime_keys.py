@@ -2,7 +2,7 @@
 
 Shared by both processes:
 
-* the **worker** publisher (:mod:`amazingdata_worker.realtime_publisher`)
+* the **worker** publisher (:mod:`amazingdata.realtime`)
   writes quote/kline/index payloads and publishes broadcast messages;
 * the **API** process reads the same keys for REST queries
   (:mod:`adshare.routers.realtime`) and subscribes to the same channels

@@ -1,7 +1,7 @@
 """Application service for market data access.
 
 Reads from the L3 historical warehouse (Parquet/DuckDB) only.
-SDK fallback has been removed — data is populated by amazingdata_worker.
+SDK fallback has been removed — data is populated by amazingdata.batch.
 """
 
 from __future__ import annotations
