@@ -27,7 +27,6 @@ from adshare.services.limit_up import (
     get_strong_stock_pool_service,
 )
 from adshare.services.market_data import MarketDataService, get_market_data_service
-from adshare.services.realtime import RealtimeSubscriber, get_realtime_subscriber
 from adshare.services.realtime_broadcast import (
     RealtimeBroadcastService,
     get_broadcast_service,
@@ -119,11 +118,6 @@ def get_factor_analysis_service_dep() -> FactorAnalysisService:
 # ---------------------------------------------------------------------------
 # Realtime
 # ---------------------------------------------------------------------------
-
-
-def get_realtime_subscriber_dep() -> RealtimeSubscriber:
-    """Provide the realtime subscriber."""
-    return get_realtime_subscriber()
 
 
 def get_broadcast_service_dep() -> RealtimeBroadcastService:

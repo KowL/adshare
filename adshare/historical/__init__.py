@@ -2,6 +2,10 @@
 
 Provides persistent Parquet storage of K-line, calendar, and code metadata
 on top of DuckDB for in-process SQL queries.
+
+This package is read-only with respect to data sources: the sync jobs that
+populate the warehouse live in the worker package
+(:mod:`amazingdata_worker.sync`).
 """
 
 from adshare.historical.models import (
@@ -20,17 +24,6 @@ from adshare.historical.models import (
     normalize_period,
 )
 from adshare.historical.warehouse import HistoricalWarehouse, get_warehouse
-from adshare.historical.sync import (
-    sync_kline_daily,
-    sync_kline_weekly,
-    sync_kline_monthly,
-    sync_meta_codes,
-    sync_meta_calendar,
-    SyncResult,
-    init_scheduler,
-    start_scheduler,
-    shutdown_scheduler,
-)
 from adshare.historical.maintenance import (
     MaintenanceResult,
     repair_kline_directory,
@@ -55,17 +48,6 @@ __all__ = [
     "normalize_period",
     "HistoricalWarehouse",
     "get_warehouse",
-    "sync_kline_daily",
-    "sync_kline_weekly",
-    "sync_kline_monthly",
-    "sync_meta_codes",
-    "sync_meta_calendar",
-    "SyncResult",
-    "init_scheduler",
-    "start_scheduler",
-    "shutdown_scheduler",
-]
-__all__ += [
     "MaintenanceResult",
     "repair_kline_directory",
     "repair_codes_table",

@@ -168,10 +168,16 @@ docker compose exec api ls /data/historical/A_share/daily/
 ```
 
 **解决**:
+
+同步任务需要数据源会话，只能在 worker 进程内执行（API 进程已不再提供
+`/historical/admin/sync` 端点）：
+
 ```bash
-# 手动触发同步
-curl -X POST "http://localhost:8000/historical/admin/sync?job=daily"
-curl -X POST "http://localhost:8000/historical/admin/sync?job=codes"
+# 方式一：重启 worker 并触发启动即同步
+SYNC_ON_START=true docker compose up -d worker
+
+# 方式二：在 worker 容器内手动跑同步脚本
+docker compose exec worker python scripts/backfill_kline.py --help
 ```
 
 ### Q3: `/market/snapshot` 返回空数据

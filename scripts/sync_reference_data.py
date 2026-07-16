@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from adshare.core.config import get_settings
 from adshare.core.logging import setup_logging, get_logger
 from adshare.historical.warehouse import get_warehouse
-from adshare.historical.sync import (
+from amazingdata_worker.sync import (
     sync_financial,
     sync_shareholder,
     sync_index_component,

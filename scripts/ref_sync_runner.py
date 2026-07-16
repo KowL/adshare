@@ -1,5 +1,5 @@
 """Run reference data sync inside the worker container."""
-from adshare.historical.sync import (
+from amazingdata_worker.sync import (
     sync_financial,
     sync_shareholder,
     sync_index_component,

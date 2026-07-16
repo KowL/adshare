@@ -31,7 +31,7 @@ os.environ.setdefault("SYNC_SCHEDULE_ENABLED", "false")
 from unittest.mock import MagicMock  # noqa: E402
 
 from adshare.core.config import get_settings  # noqa: E402
-from adshare.historical import sync as hist_sync  # noqa: E402
+from amazingdata_worker import sync as hist_sync  # noqa: E402
 from adshare.historical.warehouse import get_warehouse  # noqa: E402
 
 CODES = ["000001.SZ", "600000.SH", "300750.SZ", "688981.SH", "830799.BJ"]

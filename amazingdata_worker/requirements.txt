@@ -28,16 +28,13 @@ apscheduler>=3.10
 # Logging
 structlog>=24.4
 
-# WebSocket (adshare.services.realtime imports fastapi.WebSocket, 哪怕 worker 不跑 HTTP)
-fastapi>=0.115.0
-
 # HDF5 / pytables — AmazingData SDK 的 InfoData 在读取财务/股东数据时
 # 会把数据缓存为 HDF5 格式，需要 tables 才能解析。
 # base image 已安装 libhdf5-dev。
 tables>=3.9
 
 # ❌ 显式不装的（pyproject 列了但 worker 真的不 import）：
-# - uvicorn — worker 不跑 HTTP server
+# - fastapi / uvicorn — worker 不跑 HTTP server（realtime_publisher 已去 fastapi 依赖）
 # - httpx — worker 不发 HTTP 请求
 # - prometheus-client / slowapi / python-multipart — HTTP 框架中间件
 # - orjson — web JSON 序列化，adshare/ 入口不用

@@ -4,24 +4,20 @@ Routes:
 
 * ``GET  /historical/admin/health``  — warehouse health probe
 * ``GET  /historical/admin/stats``   — file/year/byte counts
-* ``POST /historical/admin/sync``    — trigger a sync job synchronously
+* ``POST /historical/admin/repair``  — run an idempotent repair routine
+
+Sync jobs are **not** exposed here: they require a data-source session and
+run only in the worker process (see :mod:`amazingdata_worker.sync`), on a
+schedule or via ``SYNC_ON_START``.
 """
 
 from __future__ import annotations
 
 import time
-from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
 
 from adshare.core.config import get_settings
-from adshare.historical.sync import (
-    sync_kline_daily,
-    sync_kline_monthly,
-    sync_kline_weekly,
-    sync_meta_calendar,
-    sync_meta_codes,
-)
 from adshare.historical.maintenance import (
     repair_all,
     repair_codes_table,
@@ -54,38 +50,6 @@ async def admin_stats() -> dict:
     settings = get_settings()
     warehouse = get_warehouse(settings)
     return warehouse.stats()
-
-
-@router.post("/sync")
-async def admin_sync(
-    job: str = Query(..., description="sync job: daily, weekly, monthly, codes, calendar"),
-    year: Optional[int] = Query(default=None, description="[deprecated] Year anchor; use from_date/to_date instead"),
-    from_date: Optional[int] = Query(default=None, description="Inclusive start date YYYYMMDD"),
-    to_date: Optional[int] = Query(default=None, description="Inclusive end date YYYYMMDD"),
-    market: str = Query(default="SH", description="Market for calendar job"),
-) -> dict:
-    """Trigger a sync job synchronously."""
-    settings = get_settings()
-    if not settings.historical_enabled:
-        raise HTTPException(status_code=400, detail="historical_enabled is false")
-
-    job_lc = (job or "").lower()
-    started = time.time()
-    if job_lc in {"daily", "kline_daily"}:
-        result = sync_kline_daily(year=year, from_date=from_date, to_date=to_date)
-    elif job_lc in {"weekly", "kline_weekly"}:
-        result = sync_kline_weekly(year=year, from_date=from_date, to_date=to_date)
-    elif job_lc in {"monthly", "kline_monthly"}:
-        result = sync_kline_monthly(year=year, from_date=from_date, to_date=to_date)
-    elif job_lc in {"codes", "meta_codes"}:
-        result = sync_meta_codes()
-    elif job_lc in {"calendar", "meta_calendar"}:
-        result = sync_meta_calendar(market=market)
-    else:
-        raise HTTPException(status_code=400, detail=f"unknown job: {job}")
-    payload = result.to_dict()
-    payload["wall_duration"] = time.time() - started
-    return payload
 
 
 @router.post("/repair")

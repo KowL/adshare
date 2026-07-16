@@ -1,21 +1,26 @@
-"""Sync jobs for the L3 historical data warehouse.
+"""Sync jobs for the L3 historical data warehouse (worker-side).
 
-The module implements:
+Runs inside the ``amazingdata_worker`` process — the only process that
+holds a data-source SDK session. The module implements:
 
 * ``sync_kline_daily`` / ``sync_kline_weekly`` / ``sync_kline_monthly`` — pull
-  K-line data from the SDK and overwrite the per-stock Parquet file
-  (one file per code with all years merged).
+  K-line data via the :class:`~amazingdata_worker.adapters.base.DataSourceAdapter`
+  and overwrite the per-stock Parquet file (one file per code with all
+  years merged).
 * ``sync_meta_codes`` / ``sync_meta_calendar`` — refresh the global meta
   Parquet files used by DuckDB views.
+* ``sync_financial`` / ``sync_shareholder`` / ``sync_index_component`` —
+  refresh the reference Parquet tables.
 * :class:`SyncResult` — small data class describing the outcome of a run.
 * :func:`init_scheduler` / :func:`start_scheduler` / :func:`shutdown_scheduler`
-  — APScheduler glue for the FastAPI lifespan.
+  — APScheduler glue for the worker main loop.
+
+All data-source access goes through the adapter protocol; the warehouse
+schema and persistence helpers come from :mod:`adshare.historical`.
 """
 
 from __future__ import annotations
 
-import json
-import os
 import subprocess
 import threading
 import time
@@ -31,6 +36,10 @@ from adshare.core.config import Settings, get_settings
 from adshare.core.logging import get_logger
 from adshare.historical.models import (
     KLINE_COLUMNS,
+    _filter_sh_sz_codes,
+    _financial_dedup_keys,
+    _is_sh_sz_code,
+    _normalize_financial_df,
     kline_file_path,
     normalize_period,
     standardize_calendar_df,
@@ -40,6 +49,8 @@ from adshare.historical.models import (
     write_metadata,
 )
 from adshare.historical.warehouse import HistoricalWarehouse, get_warehouse
+
+from amazingdata_worker.adapters.base import DataSourceAdapter
 
 logger = get_logger(__name__)
 
@@ -121,8 +132,8 @@ class SyncResult:
 # Internal helpers
 # ----------------------------------------------------------------------
 
-def _get_adapter_safe():
-    """Lazily import the SDK adapter from the worker package."""
+def _get_adapter_safe() -> DataSourceAdapter:
+    """Return the process-local data-source adapter."""
     from amazingdata_worker.adapters.amazingdata import get_adapter
 
     return get_adapter()
@@ -143,132 +154,6 @@ def _ensure_code_suffix(code: str) -> str:
     return c
 
 
-
-
-_VALID_REPORT_TYPES = {"1", "2", "3", "4"}
-
-
-def _normalize_report_type(value) -> str:
-    """Coerce ``report_type`` into a canonical one of {1, 2, 3, 4}.
-
-    The AmazingData SDK has occasionally returned a date string
-    (e.g. ``"20200430"``) in the ``report_type`` column instead of the
-    expected enum (``"1"``=Q1, ``"2"``=半年报, ``"3"``=Q3, ``"4"``=年报).
-    Map the common date-as-report_type rows to the most likely report
-    type by looking at the row's ``reporting_period`` month:
-
-    * 03-31 → 1 (Q1)
-    * 06-30 → 2 (semi-annual)
-    * 09-30 → 3 (Q3)
-    * 12-31 → 4 (annual)
-
-    Values that are already a valid enum are returned unchanged. Values
-    that cannot be resolved are returned as the string "0" so the row
-    is still persisted but the anomaly is preserved for inspection.
-    """
-    s = "" if value is None else str(value).strip()
-    if s in _VALID_REPORT_TYPES:
-        return s
-    # Try to map from a date-shaped value (YYYYMMDD or YYYY-MM-DD)
-    digits = "".join(ch for ch in s if ch.isdigit())
-    if len(digits) == 8:
-        # First try MMDD against the canonical period-end dates
-        month_day = digits[4:8]
-        mapped = {
-            "0331": "1",
-            "0630": "2",
-            "0930": "3",
-            "1231": "4",
-        }.get(month_day)
-        if mapped:
-            return mapped
-        # Fall back to inferring the report type from the *quarter*
-        # implied by the date. We only consider the month — anything
-        # that does not match a known period-end is reported as
-        # unrecoverable so the operator can investigate.
-        month = int(digits[4:6])
-        return {
-            3: "1",
-            6: "2",
-            9: "3",
-            12: "4",
-        }.get(month, "0")
-    return "0"
-
-
-def _normalize_financial_df(df: pd.DataFrame, statement_type: str) -> pd.DataFrame:
-    """Apply data-quality fixes to a freshly pulled financial DataFrame.
-
-    Currently:
-
-    * Coerces ``report_type`` to the canonical {1,2,3,4} enum.
-    * Filters out rows that look like a different statement type
-      (e.g. income rows in the balance sheet frame) — the SDK
-      sometimes returns mixed data when ``begin_date`` is in the
-      past.
-    """
-    if df is None or df.empty:
-        return df
-    df = df.copy()
-    if "report_type" in df.columns:
-        df["report_type"] = df["report_type"].apply(_normalize_report_type)
-        bad = int((df["report_type"] == "0").sum())
-        if bad:
-            logger.warning(
-                "financial(%s): %d rows have unrecoverable report_type; kept as '0'",
-                statement_type, bad,
-            )
-    return df
-
-
-def _financial_dedup_keys(df: pd.DataFrame) -> List[str]:
-    """Return the column subset that uniquely identifies a financial row.
-
-    The financial tables we store use ``market_code`` (not ``ts_code``)
-    as the security code column. We try ``ts_code`` first for forward
-    compatibility (in case a future SDK call names it that way), then
-    fall back to ``market_code``.
-
-    Preferred natural key (in order):
-    ``(code, reporting_period, report_type, statement_type, comp_type_code)``
-
-    Where ``code`` is whichever of ``ts_code``/``market_code`` exists.
-    """
-    code_col = "ts_code" if "ts_code" in df.columns else (
-        "market_code" if "market_code" in df.columns else None
-    )
-    preferred = [
-        code_col,
-        "reporting_period", "report_type",
-        "statement_type", "comp_type_code",
-    ]
-    return [c for c in preferred if c]
-
-def _is_sh_sz_code(code: str) -> bool:
-    """Return True if a code belongs to the SH/SZ main boards we keep.
-
-    We deliberately exclude ``.BJ`` (Beijing Stock Exchange) — those
-    files are not part of the supported product surface and the
-    warehouse no longer stores them.
-    """
-    if not code:
-        return False
-    c = code.strip()
-    if c.endswith(".BJ"):
-        return False
-    if "." in c:
-        return c.endswith(".SH") or c.endswith(".SZ")
-    # Bare 6-digit codes: 60x/68x/69x = SH, 00x/30x/39x = SZ.
-    if len(c) == 6 and c.isdigit():
-        return c.startswith(("60", "68", "69", "00", "30", "39"))
-    return False
-
-
-def _filter_sh_sz_codes(codes):
-    """Filter an iterable of codes to keep only SH/SZ main board entries."""
-    if codes is None:
-        return []
-    return [c for c in codes if _is_sh_sz_code(c)]
 
 
 def _existing_codes(period: str, root: Path) -> set[str]:
@@ -856,8 +741,8 @@ def init_scheduler(settings: Optional[Settings] = None) -> "BackgroundScheduler"
             scheduler.add_job(
                 _run_sync_kline_daily,
                 "cron",
-                hour=17,
-                minute=10,
+                hour=int(settings.sync_kline_daily_hour),
+                minute=int(settings.sync_kline_daily_minute),
                 id="sync_kline_daily",
                 replace_existing=True,
             )
@@ -903,18 +788,18 @@ def init_scheduler(settings: Optional[Settings] = None) -> "BackgroundScheduler"
             scheduler.add_job(
                 _run_sync_shareholder,
                 "cron",
-                day_of_week="sat",
-                hour=3,
-                minute=0,
+                day_of_week=settings.sync_shareholder_day_of_week,
+                hour=int(settings.sync_shareholder_hour),
+                minute=int(settings.sync_shareholder_minute),
                 id="sync_shareholder",
                 replace_existing=True,
             )
             scheduler.add_job(
                 _run_sync_index_component,
                 "cron",
-                day_of_week="sat",
-                hour=4,
-                minute=0,
+                day_of_week=settings.sync_index_component_day_of_week,
+                hour=int(settings.sync_index_component_hour),
+                minute=int(settings.sync_index_component_minute),
                 id="sync_index_component",
                 replace_existing=True,
             )
@@ -1047,9 +932,7 @@ def _sync_to_remote() -> None:
     Runs after a scheduled kline sync completes.  The companion script
     lives at ``scripts/sync_to_remote.sh`` and is shared with manual runs.
     """
-    import subprocess
-
-    project_root = Path(__file__).resolve().parents[2]
+    project_root = Path(__file__).resolve().parents[1]
     script = project_root / "scripts" / "sync_to_remote.sh"
     if not script.exists():
         logger.warning("sync_to_remote: script not found at %s", script)
@@ -1392,7 +1275,7 @@ def sync_index_component(
     result = SyncResult(job="sync_index_component", started_at=time.time())
 
     if index_codes is None:
-        env_codes = os.environ.get("INDEX_CODES", "")
+        env_codes = settings.index_codes
         index_codes = [c.strip() for c in env_codes.split(",") if c.strip()] or _DEFAULT_INDEX_CODES
 
     adapter_obj = adapter or _get_adapter_safe()

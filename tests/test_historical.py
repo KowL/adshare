@@ -24,7 +24,7 @@ from fastapi.testclient import TestClient
 
 from adshare.core.config import Settings, get_settings
 from adshare.historical import models as hist_models
-from adshare.historical import sync as hist_sync
+from amazingdata_worker import sync as hist_sync
 from adshare.historical import warehouse as hist_warehouse
 from adshare.historical.warehouse import HistoricalWarehouse
 from adshare.historical.models import (
@@ -39,7 +39,7 @@ from adshare.historical.models import (
     period_to_subdir,
     write_metadata,
 )
-from adshare.historical.sync import (
+from amazingdata_worker.sync import (
     SyncResult,
     sync_kline_daily,
     sync_meta_codes,
@@ -737,7 +737,7 @@ class TestSync:
     def test_sync_kline_weekly(self, warehouse, isolated_settings):
         fake = self._fake_adapter()
         result = sync_kline_daily  # placeholder to keep linter happy
-        from adshare.historical.sync import sync_kline_weekly
+        from amazingdata_worker.sync import sync_kline_weekly
         result = sync_kline_weekly(
             year=2024,
             codes=["000001.SZ"],
@@ -750,7 +750,7 @@ class TestSync:
 
     def test_sync_kline_monthly(self, warehouse, isolated_settings):
         fake = self._fake_adapter()
-        from adshare.historical.sync import sync_kline_monthly
+        from amazingdata_worker.sync import sync_kline_monthly
         result = sync_kline_monthly(
             year=2024,
             codes=["000001.SZ"],
@@ -781,22 +781,11 @@ class TestHistoricalRouter:
         assert "periods" in data
         assert "daily" in data["periods"]
 
-    def test_admin_sync_codes(self, client):
+    def test_admin_sync_endpoint_removed(self, client):
+        # Sync jobs require a data-source session and run only in the
+        # worker process; the API process no longer exposes them.
         response = client.post("/historical/admin/sync?job=codes")
-        assert response.status_code == 200
-        data = response.json()
-        assert data["job"] == "sync_meta_codes"
-        assert data["success"] is True
-
-    def test_admin_sync_calendar(self, client):
-        response = client.post("/historical/admin/sync?job=calendar&market=SH")
-        assert response.status_code == 200
-        data = response.json()
-        assert data["success"] is True
-
-    def test_admin_sync_unknown_job(self, client):
-        response = client.post("/historical/admin/sync?job=foo")
-        assert response.status_code == 400
+        assert response.status_code in (404, 405)
 
     def test_kline_empty_warehouse(self, client):
         # Warehouse is empty and SDK fallback is removed in API-only mode
@@ -938,7 +927,7 @@ class TestHistoricalRouter:
 class TestScheduler:
     def test_init_scheduler_disabled(self, isolated_settings, warehouse):
         isolated_settings.sync_schedule_enabled = False
-        from adshare.historical.sync import init_scheduler, shutdown_scheduler
+        from amazingdata_worker.sync import init_scheduler, shutdown_scheduler
         try:
             scheduler = init_scheduler(isolated_settings)
             jobs = scheduler.get_jobs()
@@ -949,7 +938,7 @@ class TestScheduler:
 
     def test_init_scheduler_enabled(self, isolated_settings, warehouse):
         isolated_settings.sync_schedule_enabled = True
-        from adshare.historical.sync import init_scheduler, shutdown_scheduler
+        from amazingdata_worker.sync import init_scheduler, shutdown_scheduler
         try:
             scheduler = init_scheduler(isolated_settings)
             jobs = scheduler.get_jobs()
@@ -969,7 +958,7 @@ class TestScheduler:
             shutdown_scheduler()
 
     def test_shutdown_is_idempotent(self, isolated_settings, warehouse):
-        from adshare.historical.sync import shutdown_scheduler
+        from amazingdata_worker.sync import shutdown_scheduler
         shutdown_scheduler()
         shutdown_scheduler()  # must not raise
 
@@ -996,6 +985,8 @@ def test_module_exports():
         period_to_subdir,
         normalize_period,
         get_warehouse,
+    )
+    from amazingdata_worker.sync import (
         sync_kline_daily,
         sync_kline_weekly,
         sync_kline_monthly,

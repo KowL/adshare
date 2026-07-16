@@ -56,11 +56,6 @@ class Settings(BaseSettings):
     auth_enabled: bool = Field(default=False, alias="AUTH_ENABLED")
     api_key: Optional[str] = Field(default=None, alias="ADSHARE_API_KEY")
 
-    # MCP
-    mcp_enabled: bool = Field(default=True, alias="MCP_ENABLED")
-    mcp_transport: str = Field(default="sse", alias="MCP_TRANSPORT")
-    mcp_path: str = Field(default="/mcp", alias="MCP_PATH")
-
     # Metrics
     metrics_enabled: bool = Field(default=True, alias="METRICS_ENABLED")
     metrics_path: str = Field(default="/metrics", alias="METRICS_PATH")
@@ -70,7 +65,8 @@ class Settings(BaseSettings):
     max_codes_per_query: int = Field(default=50, alias="MAX_CODES_PER_QUERY")
     default_begin_date: int = Field(default=19900101, alias="DEFAULT_BEGIN_DATE")
 
-    # Realtime subscription settings
+    # Realtime subscription settings (worker)
+    realtime_enabled: bool = Field(default=True, alias="REALTIME_ENABLED")
     realtime_kline_periods: List[str] = Field(default=["min1"], alias="REALTIME_KLINE_PERIODS")
 
     # Historical data warehouse (L3)
@@ -86,16 +82,27 @@ class Settings(BaseSettings):
 
     # Sync scheduler
     sync_schedule_enabled: bool = Field(default=True, alias="SYNC_SCHEDULE_ENABLED")
-    sync_kline_daily_hour: int = Field(default=19, alias="SYNC_KLINE_DAILY_HOUR")
-    sync_kline_daily_minute: int = Field(default=0, alias="SYNC_KLINE_DAILY_MINUTE")
+    sync_on_start: bool = Field(default=False, alias="SYNC_ON_START")
+    sync_kline_daily_hour: int = Field(default=17, alias="SYNC_KLINE_DAILY_HOUR")
+    sync_kline_daily_minute: int = Field(default=10, alias="SYNC_KLINE_DAILY_MINUTE")
     sync_kline_weekly_hour: int = Field(default=19, alias="SYNC_KLINE_WEEKLY_HOUR")
     sync_kline_weekly_minute: int = Field(default=30, alias="SYNC_KLINE_WEEKLY_MINUTE")
     sync_kline_monthly_hour: int = Field(default=20, alias="SYNC_KLINE_MONTHLY_HOUR")
     sync_kline_monthly_minute: int = Field(default=0, alias="SYNC_KLINE_MONTHLY_MINUTE")
     sync_meta_codes_hour: int = Field(default=8, alias="SYNC_META_CODES_HOUR")
     sync_meta_codes_minute: int = Field(default=0, alias="SYNC_META_CODES_MINUTE")
+    sync_shareholder_day_of_week: str = Field(default="sat", alias="SYNC_SHAREHOLDER_DAY_OF_WEEK")
+    sync_shareholder_hour: int = Field(default=3, alias="SYNC_SHAREHOLDER_HOUR")
+    sync_shareholder_minute: int = Field(default=0, alias="SYNC_SHAREHOLDER_MINUTE")
+    sync_index_component_day_of_week: str = Field(default="sat", alias="SYNC_INDEX_COMPONENT_DAY_OF_WEEK")
+    sync_index_component_hour: int = Field(default=4, alias="SYNC_INDEX_COMPONENT_HOUR")
+    sync_index_component_minute: int = Field(default=0, alias="SYNC_INDEX_COMPONENT_MINUTE")
     sync_workers: int = Field(default=4, alias="SYNC_WORKERS")
     sync_retry_attempts: int = Field(default=3, alias="SYNC_RETRY_ATTEMPTS")
+
+    # Comma-separated index codes for the index-component sync;
+    # empty means "use the built-in default list".
+    index_codes: str = Field(default="", alias="INDEX_CODES")
 
     # Maintenance (idempotent L3 warehouse repair) schedule.
     # Disabled by default so operators opt in explicitly; the routines

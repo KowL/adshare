@@ -11,7 +11,6 @@
 
 from __future__ import annotations
 
-import os
 import signal
 import sys
 import threading
@@ -23,8 +22,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from adshare.core.config import get_settings  # noqa: E402
 from adshare.core.logging import setup_logging, get_logger  # noqa: E402
-from adshare.historical import start_scheduler, shutdown_scheduler  # noqa: E402
 from adshare.historical.warehouse import get_warehouse  # noqa: E402
+
+from amazingdata_worker.sync import start_scheduler, shutdown_scheduler  # noqa: E402
 
 logger = get_logger("amazingdata_worker")
 
@@ -75,8 +75,7 @@ def _init_sdk_login(max_wait_seconds: float = 1800.0) -> bool:
 
 def _init_sync_scheduler() -> bool:
     """Start APScheduler for periodic sync to L3 warehouse."""
-    sync_enabled = os.environ.get("SYNC_SCHEDULE_ENABLED", "true").lower() in ("true", "1", "yes")
-    if not sync_enabled:
+    if not get_settings().sync_schedule_enabled:
         logger.info("Sync scheduler disabled by SYNC_SCHEDULE_ENABLED=false")
         return False
 
@@ -96,7 +95,7 @@ def _run_reference_sync(target: str) -> None:
     protection.  This matches the original amazingdata project architecture
     where SubscribeData and MarketData share a single connection.
     """
-    from adshare.historical.sync import (
+    from amazingdata_worker.sync import (
         _get_adapter_safe,
         sync_financial,
         sync_shareholder,
@@ -153,12 +152,12 @@ def _run_reference_sync(target: str) -> None:
 
 def _run_once_sync() -> None:
     """Run an immediate sync if SYNC_ON_START is set."""
-    if os.environ.get("SYNC_ON_START", "").lower() not in ("true", "1", "yes"):
+    if not get_settings().sync_on_start:
         return
 
     logger.info("Running immediate sync on start...")
     try:
-        from adshare.historical.sync import sync_meta_codes, sync_meta_calendar, sync_kline_daily
+        from amazingdata_worker.sync import sync_meta_codes, sync_meta_calendar, sync_kline_daily
 
         settings = get_settings()
         warehouse = get_warehouse(settings)
@@ -202,8 +201,8 @@ def main() -> int:
     setup_logging()
     settings = get_settings()
 
-    realtime_enabled = os.environ.get("REALTIME_ENABLED", "true").lower() in ("true", "1", "yes")
-    sync_enabled = os.environ.get("SYNC_SCHEDULE_ENABLED", "true").lower() in ("true", "1", "yes")
+    realtime_enabled = settings.realtime_enabled
+    sync_enabled = settings.sync_schedule_enabled
     mode_parts = []
     if sync_enabled:
         mode_parts.append("data pull")
@@ -238,10 +237,9 @@ def main() -> int:
 
     # 3. Realtime publisher (run in main thread to avoid GIL issues)
     publisher = None
-    realtime_enabled = os.environ.get("REALTIME_ENABLED", "true").lower() in ("true", "1", "yes")
     if realtime_enabled:
         try:
-            from adshare.services.realtime_publisher import get_realtime_publisher
+            from amazingdata_worker.realtime_publisher import get_realtime_publisher
 
             publisher = get_realtime_publisher()
             if publisher.initialize():

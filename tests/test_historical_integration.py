@@ -19,7 +19,7 @@ from unittest.mock import MagicMock
 import pandas as pd
 import pytest
 
-from adshare.historical import sync as hist_sync
+from amazingdata_worker import sync as hist_sync
 from adshare.historical import warehouse as hist_warehouse
 from adshare.historical.models import (
     KLINE_COLUMNS,

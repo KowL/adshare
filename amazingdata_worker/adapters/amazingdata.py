@@ -4,7 +4,6 @@ This module wraps the AmazingData SDK (Linux/amd64 only) and provides
 a unified interface for all data queries with connection pooling and retry logic.
 """
 
-import os
 import threading
 import time
 from datetime import datetime
@@ -17,10 +16,22 @@ from adshare.core.logging import get_logger
 
 logger = get_logger(__name__)
 
-# Default local data folder used by AmazingData's DownloadInfoData.
-# The SDK writes per-statement HDF5 caches under this path and the query
-# functions read from it. The folder must be writable by the SDK process.
-_DEFAULT_LOCAL_DATA = os.environ.get("AMAZINGDATA_LOCAL_PATH", "/amazingdata/data")
+# Period map: logical name -> AmazingData SDK constant value.
+# Shared by ``get_kline`` and the realtime ``period_value`` contract.
+_KLINE_PERIOD_MAP = {
+    "tick": 0,
+    "min1": 10000,
+    "min3": 10001,
+    "min5": 10002,
+    "min10": 10003,
+    "min15": 10004,
+    "min30": 10005,
+    "min60": 10006,
+    "min120": 10007,
+    "day": 10008,
+    "week": 10009,
+    "month": 10010,
+}
 
 
 class AmazingDataAdapter:
@@ -246,13 +257,7 @@ class AmazingDataAdapter:
         offset: int = 0,
     ) -> pd.DataFrame:
         """Get K-line data."""
-        period_map = {
-            "tick": 0, "min1": 10000, "min3": 10001, "min5": 10002,
-            "min10": 10003, "min15": 10004, "min30": 10005, "min60": 10006,
-            "min120": 10007, "day": 10008,
-            "week": 10009, "month": 10010,
-        }
-        period_code = period_map.get(period, 10000)
+        period_code = _KLINE_PERIOD_MAP.get(period, 10000)
 
         def _ensure_suffix(code: str) -> str:
             """Append .SH/.SZ/.BJ suffix if missing so TGW SDK can route the code."""
@@ -467,6 +472,34 @@ class AmazingDataAdapter:
             return client.get_industry_component(industry_code=industry_code)
 
         return self._with_retry(_fetch)
+
+    # ============================================================
+    # Realtime (push)
+    # ============================================================
+
+    def period_value(self, period: str) -> int:
+        """Map a logical period name to the SDK's integer constant.
+
+        Accepts ``"snapshot"`` plus the K-line periods in
+        ``_KLINE_PERIOD_MAP``. Raises ``ValueError`` for unknown names.
+        """
+        if period == "snapshot":
+            client = self._get_client()
+            return int(client.constant.Period.snapshot.value)
+        try:
+            return _KLINE_PERIOD_MAP[period]
+        except KeyError:
+            raise ValueError(f"Unknown period: {period!r}") from None
+
+    def create_subscription_source(self) -> Any:
+        """Create a ``SubscribeData`` realtime subscription handle.
+
+        The returned object satisfies
+        :class:`~amazingdata_worker.adapters.base.SubscriptionSource`
+        (``register`` / ``run`` / ``stop``). Requires an active session.
+        """
+        client = self._get_client()
+        return client.SubscribeData()
 
     # ============================================================
     # Health Check

@@ -12,15 +12,16 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket
 from adshare import dependencies as deps
 from adshare.core.cache import CacheManager
 from adshare.core.logging import get_logger
+from adshare.core.realtime_keys import (
+    REALTIME_INDEX_KEY,
+    REALTIME_KLINE_KEY,
+    REALTIME_QUOTE_KEY,
+)
 from adshare.models.schemas import RealtimeQuotesResponse, RealtimeStatsResponse
 from adshare.services.realtime_broadcast import RealtimeBroadcastService
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/realtime", tags=["realtime"])
-
-REALTIME_QUOTE_KEY = "realtime:quote"
-REALTIME_KLINE_KEY = "realtime:kline"
-REALTIME_INDEX_KEY = "realtime:index"
 
 # ============================================================
 # REST API — Snapshot Quotes

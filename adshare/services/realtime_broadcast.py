@@ -1,28 +1,100 @@
 """Real-time broadcast service for API server.
 
 Listens to Redis Pub/Sub channels and pushes messages to WebSocket/SSE clients.
-Runs in the API service process; has no dependency on AmazingData SDK.
+Runs in the API service process; has no dependency on any data-source SDK.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from fastapi import WebSocket
+
 from adshare.core.cache import get_cache_manager
 from adshare.core.config import get_settings
 from adshare.core.logging import get_logger
-from adshare.services.realtime import WSConnectionManager
+from adshare.core.realtime_keys import (
+    CHANNEL_INDEX,
+    CHANNEL_KLINE_PREFIX,
+    CHANNEL_QUOTE,
+)
 
 logger = get_logger(__name__)
 
-# Redis Pub/Sub channels
-CHANNEL_QUOTE = "adshare:realtime:quote"
-CHANNEL_INDEX = "adshare:realtime:index"
-CHANNEL_KLINE_PREFIX = "adshare:realtime:kline:"
+
+class WSConnectionManager:
+    """Manage WebSocket connections and per-client code subscriptions."""
+
+    def __init__(self) -> None:
+        self._connections: Dict[str, WebSocket] = {}
+        self._subscriptions: Dict[str, set] = {}
+        self._code_subscribers: Dict[str, set] = {}
+        self._lock = threading.Lock()
+
+    def connect(self, websocket: WebSocket) -> str:
+        """Accept a WebSocket connection and return a client_id."""
+        client_id = f"ws_{uuid.uuid4().hex[:8]}"
+        with self._lock:
+            self._connections[client_id] = websocket
+            self._subscriptions[client_id] = set()
+        logger.info("WebSocket connected: %s", client_id)
+        return client_id
+
+    def disconnect(self, client_id: str) -> None:
+        """Remove a client and clean up subscriptions."""
+        with self._lock:
+            codes = self._subscriptions.get(client_id, set())
+            for code in codes:
+                if code in self._code_subscribers:
+                    self._code_subscribers[code].discard(client_id)
+                    if not self._code_subscribers[code]:
+                        del self._code_subscribers[code]
+            self._connections.pop(client_id, None)
+            self._subscriptions.pop(client_id, None)
+        logger.info("WebSocket disconnected: %s", client_id)
+
+    def subscribe(self, client_id: str, codes: List[str]) -> None:
+        """Subscribe a client to a set of stock codes."""
+        with self._lock:
+            if client_id not in self._subscriptions:
+                return
+            old_codes = self._subscriptions.get(client_id, set())
+            for code in old_codes:
+                if code in self._code_subscribers:
+                    self._code_subscribers[code].discard(client_id)
+                    if not self._code_subscribers[code]:
+                        del self._code_subscribers[code]
+
+            new_codes = set(codes)
+            self._subscriptions[client_id] = new_codes
+            for code in new_codes:
+                if code not in self._code_subscribers:
+                    self._code_subscribers[code] = set()
+                self._code_subscribers[code].add(client_id)
+        logger.info("Client %s subscribed to %s codes", client_id, len(codes))
+
+    def get_subscribers_for_code(self, code: str) -> List[str]:
+        """Return all client_ids subscribed to a given code."""
+        with self._lock:
+            return list(self._code_subscribers.get(code, set()))
+
+    def get_websocket(self, client_id: str) -> Optional[WebSocket]:
+        """Get the WebSocket instance for a client_id."""
+        return self._connections.get(client_id)
+
+    def get_stats(self) -> Dict[str, Any]:
+        """Return connection statistics."""
+        with self._lock:
+            return {
+                "active_connections": len(self._connections),
+                "subscribed_codes": len(self._code_subscribers),
+                "total_subscriptions": sum(len(s) for s in self._subscriptions.values()),
+            }
 
 
 class SSEClientQueue(asyncio.Queue):

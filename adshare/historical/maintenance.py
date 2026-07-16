@@ -33,11 +33,12 @@ import pandas as pd
 import pyarrow.parquet as pq
 
 from adshare.core.logging import get_logger
-from adshare.historical.models import KLINE_COLUMNS, validate_kline_df
-from adshare.historical.sync import (
+from adshare.historical.models import (
+    KLINE_COLUMNS,
     _financial_dedup_keys,
     _is_sh_sz_code,
     _normalize_financial_df,
+    validate_kline_df,
 )
 from adshare.historical.warehouse import HistoricalWarehouse, get_warehouse
 

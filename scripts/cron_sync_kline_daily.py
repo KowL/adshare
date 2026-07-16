@@ -1,4 +1,4 @@
-from adshare.historical.sync import sync_kline_daily
+from amazingdata_worker.sync import sync_kline_daily
 from adshare.historical.warehouse import get_warehouse
 from adshare.core.config import get_settings
 from datetime import datetime

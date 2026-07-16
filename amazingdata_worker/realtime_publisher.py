@@ -1,8 +1,9 @@
-"""Real-time publisher service for Worker server.
+"""Real-time publisher service for the Worker process.
 
-Connects to AmazingData SDK, receives tick data, writes to Redis,
-and publishes to Redis Pub/Sub for broadcast consumption.
-Runs in the Worker service process.
+Subscribes to realtime ticks via the data-source adapter, writes them to
+Redis, and publishes to Redis Pub/Sub for API-side broadcast consumption.
+Runs in the Worker service process — the only process holding a
+data-source session.
 """
 
 from __future__ import annotations
@@ -18,46 +19,32 @@ from typing import Any, Dict, List, Optional, Tuple
 from adshare.core.cache import get_cache_manager
 from adshare.core.config import get_settings
 from adshare.core.logging import get_logger
+from adshare.core.realtime_keys import (
+    CHANNEL_INDEX,
+    CHANNEL_KLINE_PREFIX,
+    CHANNEL_QUOTE,
+    REALTIME_INDEX_KEY,
+    REALTIME_KLINE_KEY,
+    REALTIME_QUOTE_KEY,
+)
+
+from amazingdata_worker.adapters.base import DataSourceAdapter, SubscriptionSource
 
 logger = get_logger(__name__)
-
-# Redis keys (for REST API query)
-REALTIME_QUOTE_KEY = "realtime:quote"
-REALTIME_KLINE_KEY = "realtime:kline"
-REALTIME_INDEX_KEY = "realtime:index"
-
-# Redis Pub/Sub channels (for broadcast)
-CHANNEL_QUOTE = "adshare:realtime:quote"
-CHANNEL_INDEX = "adshare:realtime:index"
-CHANNEL_KLINE_PREFIX = "adshare:realtime:kline:"
-
-# Period map: string -> AmazingData constant value
-KLINE_PERIOD_MAP = {
-    "min1": 10000,
-    "min3": 10001,
-    "min5": 10002,
-    "min10": 10003,
-    "min15": 10004,
-    "min30": 10005,
-    "min60": 10006,
-    "day": 10008,
-    "week": 10009,
-    "month": 10010,
-}
 
 
 class RealtimePublisher:
     """Worker-side real-time data publisher.
 
-    - Subscribes to AmazingData SDK tick data
+    - Subscribes to realtime ticks via the data-source adapter
     - Writes to Redis (for REST API queries)
     - Publishes to Redis Pub/Sub (for broadcast consumption)
     - Runs in the Worker service process
     """
 
     def __init__(self) -> None:
-        self._subscribe_data: Optional[Any] = None
-        self._base_data: Optional[Any] = None
+        self._adapter: Optional[DataSourceAdapter] = None
+        self._subscribe_data: Optional[SubscriptionSource] = None
         self._code_list: List[str] = []
         self._index_code_list: List[str] = []
         self._running = False
@@ -118,7 +105,7 @@ class RealtimePublisher:
             adapter = get_adapter()
             if not adapter.ensure_login():
                 logger.error(
-                    "AmazingData not logged in, cannot start realtime publisher"
+                    "Data source not logged in, cannot start realtime publisher"
                 )
                 return False
 
@@ -154,9 +141,8 @@ class RealtimePublisher:
                     "000688.SH",  # 科创50
                 ]
 
-            import AmazingData as ad
-
-            self._subscribe_data = ad.SubscribeData()
+            self._adapter = adapter
+            self._subscribe_data = adapter.create_subscription_source()
             self._setup_callbacks()
 
             self.stats["start_time"] = datetime.now().isoformat()
@@ -198,12 +184,13 @@ class RealtimePublisher:
     # ============================================================
 
     def _setup_callbacks(self) -> None:
-        """Register SDK callbacks for snapshot, index snapshot and kline data."""
-        import AmazingData as ad
+        """Register subscription callbacks for snapshot, index snapshot and kline."""
+        assert self._adapter is not None and self._subscribe_data is not None
+        snapshot_period = self._adapter.period_value("snapshot")
 
         # Stock snapshot callback
         @self._subscribe_data.register(
-            code_list=self._code_list, period=ad.constant.Period.snapshot.value
+            code_list=self._code_list, period=snapshot_period
         )
         def on_snapshot(data, period_val):  # noqa: N806
             self._handle_snapshot(data, period_val)
@@ -213,7 +200,7 @@ class RealtimePublisher:
 
             @self._subscribe_data.register(
                 code_list=self._index_code_list,
-                period=ad.constant.Period.snapshot.value,
+                period=snapshot_period,
             )
             def on_index_snapshot(data, period_val):  # noqa: N806
                 self._handle_index_snapshot(data, period_val)
@@ -222,8 +209,9 @@ class RealtimePublisher:
         settings = get_settings()
         kline_periods = getattr(settings, "realtime_kline_periods", ["min1"])
         for period_str in kline_periods:
-            period_val = KLINE_PERIOD_MAP.get(period_str)
-            if period_val is None:
+            try:
+                period_val = self._adapter.period_value(period_str)
+            except ValueError:
                 logger.warning("Unknown kline period: %s, skipping", period_str)
                 continue
             self._register_kline_callback(period_str, period_val)

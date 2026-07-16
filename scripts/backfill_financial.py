@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from adshare.core.config import get_settings
 from adshare.core.logging import setup_logging, get_logger
-from adshare.historical.sync import sync_financial
+from amazingdata_worker.sync import sync_financial
 from adshare.historical.warehouse import get_warehouse
 from amazingdata_worker.adapters.amazingdata import get_adapter
 
@@ -85,7 +85,7 @@ def _run_batch(statement_type: str, batch_size: int, offset: int, codes: List[st
 # ---------------------------------------------------------------------------
 
 def _all_codes() -> List[str]:
-    from adshare.historical.sync import sync_meta_codes
+    from amazingdata_worker.sync import sync_meta_codes
     from adshare.core.config import get_settings
     from adshare.historical.warehouse import get_warehouse
     settings = get_settings()
