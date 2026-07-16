@@ -140,15 +140,6 @@ def create_app() -> FastAPI:
         app.include_router(historical.router)
         app.include_router(historical_admin_router)
 
-    # Deprecated /dataapi compatibility: return 410 Gone to inform clients
-    @app.api_route("/dataapi/{path:path}", methods=["GET", "POST"], include_in_schema=False)
-    async def dataapi_gone(path: str):
-        return {
-            "code": -1,
-            "msg": f"/dataapi/{path} is deprecated, use /tushare/{path} instead",
-            "data": None,
-        }
-
     # Metrics endpoint
     if settings.metrics_enabled:
         @app.get(settings.metrics_path, response_class=PlainTextResponse)

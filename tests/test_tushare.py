@@ -148,7 +148,4 @@ class TestTushareIndexReserved:
 class TestTushareDeprecatedDataapi:
     def test_dataapi_gone(self, client):
         response = client.post("/dataapi/daily", json={"ts_code": "000001.SZ"})
-        assert response.status_code == 200
-        data = response.json()
-        assert data["code"] == -1
-        assert "/tushare" in data["msg"]
+        assert response.status_code == 404
