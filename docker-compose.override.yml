@@ -1,0 +1,19 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: adshare-redis
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+  adshare-api:
+    environment:
+      - REDIS_HOST=redis
+      - AUTH_ENABLED=false
+      - HISTORICAL_ENABLED=true
+      - DUCKDB_MODE=memory
+      - SYNC_SCHEDULE_ENABLED=false
+      - REALTIME_ENABLED=false
+    depends_on:
+      redis:
+        condition: service_started
