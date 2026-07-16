@@ -8,19 +8,15 @@ from __future__ import annotations
 
 from typing import List, Optional
 
+from adshare.core.exceptions import ServiceError
 from adshare.core.logging import get_logger
 from adshare.models.schemas import FactorAnalysisResponse
 
 logger = get_logger(__name__)
 
 
-class FactorAnalysisError(Exception):
+class FactorAnalysisError(ServiceError):
     """Domain error raised by factor analysis service."""
-
-    def __init__(self, status_code: int, message: str) -> None:
-        self.status_code = status_code
-        self.message = message
-        super().__init__(message)
 
 
 class FactorAnalysisService:

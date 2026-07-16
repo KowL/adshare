@@ -11,12 +11,11 @@ from starlette.responses import JSONResponse
 
 from adshare.core.config import get_settings
 from adshare.core.exceptions import (
+    AdshareException,
     AuthenticationError,
     AuthorizationError,
-    DataNotFoundError,
     InvalidParameterError,
-    NotImplementedApiError,
-    WarehouseNotAvailableError,
+    map_exception_to_http_status,
 )
 from adshare.core.logging import get_logger
 
@@ -230,18 +229,12 @@ def extract_tushare_params(body: dict[str, Any]) -> tuple[str, dict[str, Any], O
 # ---------------------------------------------------------------------------
 
 
-_EXCEPTION_STATUS_MAP = {
-    InvalidParameterError: 400,
-    AuthenticationError: 401,
-    AuthorizationError: 403,
-    DataNotFoundError: 404,
-    WarehouseNotAvailableError: 404,
-    NotImplementedApiError: 501,
-}
-
-
 def handle_tushare_exception(exc: Exception) -> JSONResponse:
     """Map a domain exception to a tushare Pro error response and HTTP status."""
-    status = _EXCEPTION_STATUS_MAP.get(type(exc), 500)
+    status = (
+        map_exception_to_http_status(exc)
+        if isinstance(exc, AdshareException)
+        else 500
+    )
     msg = str(exc) or type(exc).__name__
     return JSONResponse(status_code=status, content=tushare_error(msg))

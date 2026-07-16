@@ -54,9 +54,6 @@ dev = [
     "pre-commit>=4.0.0",
 ]
 
-[project.scripts]
-adshare = "adshare.cli:main"
-
 [tool.hatch.build.targets.wheel]
 packages = ["adshare"]
 

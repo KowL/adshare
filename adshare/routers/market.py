@@ -45,7 +45,11 @@ def _handle_exception(exc: Exception) -> HTTPException:
 
 @router.get("/codes", response_model=CodeListResponse)
 async def get_code_list(
-    security_type: str = Query(default="EXTRA_STOCK_A", description="Security type"),
+    security_type: str = Query(
+        default="stock_a",
+        description="Security type: stock_a, index_a, etf, ... "
+        "(legacy EXTRA_* values are still accepted)",
+    ),
     service: MarketDataService = Depends(deps.get_market_data_service_dep),
 ):
     """Get security code list."""

@@ -21,7 +21,6 @@ RUN pip install --no-cache-dir -e "." tables
 
 # 复制项目代码
 COPY adshare/ ./adshare/
-COPY config/ ./config/
 COPY scripts/ ./scripts/
 
 # 创建缓存和日志目录

@@ -43,7 +43,11 @@ class ErrorResponse(BaseResponse):
 class CodeListRequest(BaseModel):
     """Request for security code list."""
 
-    security_type: str = Field(default="EXTRA_STOCK_A", description="Security type")
+    security_type: str = Field(
+        default="stock_a",
+        description="Security type: stock_a, index_a, etf, ... "
+        "(legacy EXTRA_* values are still accepted)",
+    )
 
 
 class CodeListResponse(DataResponse):
@@ -507,7 +511,7 @@ class HealthResponse(BaseModel):
     status: str = "ok"
     version: str
     timestamp: datetime
-    amazingdata_connected: bool
+    datasource_connected: bool
     redis_connected: bool
     auth_enabled: bool = False
     rate_limit_enabled: bool = False
@@ -515,7 +519,7 @@ class HealthResponse(BaseModel):
 
 
 class LoginStatusResponse(BaseModel):
-    """AmazingData login status."""
+    """Data-source login status."""
 
     is_logged_in: bool
     login_info: Optional[Dict[str, Any]] = None

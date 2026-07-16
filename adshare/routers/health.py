@@ -24,7 +24,7 @@ async def health_check():
         status="ok",
         version=settings.app_version,
         timestamp=datetime.now(),
-        amazingdata_connected=False,
+        datasource_connected=False,
         redis_connected=cache_health["redis_connected"],
         auth_enabled=settings.auth_enabled,
         rate_limit_enabled=settings.rate_limit_enabled,
@@ -48,26 +48,29 @@ async def get_skill():
 
 @router.get("/login/status")
 async def login_status():
-    """AmazingData login status — not available in API-only mode."""
+    """Data-source login status — not available in API-only mode."""
     raise HTTPException(
         status_code=503,
-        detail="AmazingData SDK is not available in the API service. Use the worker service.",
+        detail="The data-source session is held by the worker service; "
+        "login status is not available in the API service.",
     )
 
 
 @router.post("/login")
 async def do_login():
-    """Login to AmazingData — not available in API-only mode."""
+    """Login to the data source — not available in API-only mode."""
     raise HTTPException(
         status_code=503,
-        detail="AmazingData SDK is not available in the API service. Use the worker service.",
+        detail="The data-source session is held by the worker service; "
+        "login is not available in the API service.",
     )
 
 
 @router.post("/logout")
 async def do_logout():
-    """Logout from AmazingData — not available in API-only mode."""
+    """Logout from the data source — not available in API-only mode."""
     raise HTTPException(
         status_code=503,
-        detail="AmazingData SDK is not available in the API service. Use the worker service.",
+        detail="The data-source session is held by the worker service; "
+        "logout is not available in the API service.",
     )

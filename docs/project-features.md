@@ -302,7 +302,7 @@
 
 **Health 响应字段**:
 - `status`: `ok` / `degraded`
-- `amazingdata_connected`: SDK 是否在线
+- `datasource_connected`: 数据源会话是否在线（API-only 模式下恒为 `false`，会话由 worker 持有）
 - `redis_connected`: Redis 是否可达
 - `auth_enabled`: 认证是否开启
 - `rate_limit_enabled`: 限流是否开启

@@ -134,9 +134,9 @@ skills/                  # AI Agent Skill 定义（供外部 Agent 读取）
 └── adshare-factor/
 
 docs/                    # 项目文档（本文档所在目录）
-config/                  # 运行时配置
-├── settings.yaml        # 非敏感配置（缓存 TTL、限流阈值等）
 ```
+
+所有配置均通过环境变量 / `.env` 注入（见 `.env.example`），无独立配置文件。
 
 **分层约束**:
 - `routers` 只能调用 `adapters`、`engines`、`core`
@@ -226,8 +226,8 @@ config/                  # 运行时配置
 ### 7.1 配置来源优先级
 
 1. 环境变量（最高优先级，生产环境唯一来源）
-2. `.env` 文件（本地开发）
-3. `config/settings.yaml`（默认值、非敏感配置）
+2. `.env` 文件（本地开发，参考 `.env.example`）
+3. `adshare.core.config.Settings` 中的字段默认值
 
 ### 7.2 敏感信息清单
 
@@ -301,7 +301,7 @@ class TestMarket:
 - 版本号遵循 [SemVer](https://semver.org/lang/zh-CN/): `MAJOR.MINOR.PATCH`
 - 当前版本定义于:
   - `pyproject.toml` `[project] version`
-  - `config/settings.yaml` `app.version`
+  - `ADSHARE_APP_VERSION` 环境变量（部署时覆盖）
   - Docker 镜像 tag（建议）
 - 变更日志: 在 `docs/CHANGELOG.md` 中维护（待创建）
 

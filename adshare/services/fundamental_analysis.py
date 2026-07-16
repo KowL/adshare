@@ -12,6 +12,7 @@ from typing import Optional
 import pandas as pd
 
 from adshare.core.config import get_settings
+from adshare.core.exceptions import ServiceError
 from adshare.core.logging import get_logger
 from adshare.engines.fundamental.factors import (
     CATEGORY_MAP,
@@ -40,13 +41,8 @@ CATEGORY_CALCULATORS = {
 }
 
 
-class FundamentalAnalysisError(Exception):
+class FundamentalAnalysisError(ServiceError):
     """Domain error raised by fundamental analysis service."""
-
-    def __init__(self, status_code: int, message: str) -> None:
-        self.status_code = status_code
-        self.message = message
-        super().__init__(message)
 
 
 class FundamentalAnalysisService:

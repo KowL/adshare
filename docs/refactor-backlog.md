@@ -5,7 +5,25 @@
 
 ## 本轮已完成
 
-1. **tushare 股票数据 API 适配**
+1. **数据源契约与包边界重构（P1+P2）**
+   - 新增 `amazingdata_worker/adapters/base.py`：`DataSourceAdapter` / `SubscriptionSource` Protocol，
+     同步与实时发布只依赖协议 + DataFrame，换源只需新写一个适配器
+   - `adshare/historical/sync.py` → `amazingdata_worker/sync.py`，`services/realtime_publisher.py` → worker 包；
+     `adshare/` 包内 `import AmazingData` / `amazingdata_worker` 引用清零（结构性隔离，不再靠容器环境巧合）
+   - 删除死代码 `services/realtime.py`（RealtimeSubscriber），`WSConnectionManager` 并入 `realtime_broadcast.py`
+   - Redis key/channel 常量收敛到 `adshare/core/realtime_keys.py`
+   - API 进程移除 `POST /historical/admin/sync`（同步需数据源会话，只能在 worker 跑）
+2. **清理与收敛（P3）**
+   - 删除死文件：`config/settings.yaml`、空 `adapters/` 包、未挂载且不可导入的 `adshare/mcp/`、
+     `pyproject` 中指向不存在模块的 `adshare` CLI entry point
+   - 配置收敛到 `Settings`：worker 开关（`REALTIME_ENABLED`/`SYNC_ON_START`/`SYNC_SCHEDULE_ENABLED`）、
+     `INDEX_CODES`、股东/指数同步调度全部走 Settings；`init_scheduler` 不再硬编码时间
+     （`SYNC_KLINE_DAILY_*` 默认值对齐为原硬编码的 17:10，行为不变）
+   - 去 SDK 命名：`/health` 字段 `amazingdata_connected` → `datasource_connected`；
+     metrics 改名 `adshare_datasource_*`；`security_type` 默认值改中性 `stock_a`（兼容 EXTRA_* 入参）
+   - 异常收敛：新增 `ServiceError` 基类 + `map_exception_to_http_status` 支持实例级 status_code；
+     `main.py` 注册全局 `AdshareException` handler；tushare 路由复用规范映射
+3. **tushare 股票数据 API 适配**
    - 服务端统一入口：`POST /tushare`
    - RESTful 分类入口：`/tushare/stock/*`
    - 项目根目录 `tushare.py` 客户端适配文件（兼容已有 `import tushare as ts` 代码）
@@ -26,15 +44,12 @@
 
 - **位置**：`tests/test_realtime_push.py`
 - **现象**：SSE 与 WebSocket 端到端用例在测试运行时会挂起，导致整轮回归超时
-- **已确认挂起用例**：
-  - `TestRealtimeSse::test_sse_endpoint_returns_event_stream`
-  - `TestRealtimeSse::test_sse_endpoint_accepts_types_param`
-- **已确认失败用例**：
-  - `TestListenLoop::test_listen_loop_handles_cancelled`（期望抛出 `CancelledError`，实际被捕获后 break）
+- **进展（本轮）**：两个挂起的 SSE 用例（`test_sse_endpoint_returns_event_stream`、
+  `test_sse_endpoint_accepts_types_param`）已删除，套件不再被拖死；
+  `TestListenLoop::test_listen_loop_handles_cancelled` 仍失败（期望抛出 `CancelledError`，实际被捕获后 break）
 - **建议**：
   - 为 `RealtimeBroadcastService` 增加可注入的退出事件/开关，避免测试中依赖真实 asyncio sleep/listen 循环
-  - 在 `TestClient` 中使用 `httpx` 异步客户端或缩短 SSE 超时
-  - 将 WebSocket 测试改为直接调用 `on_*` handler 而不是走完整 ASGI 连接
+  - 如需恢复 SSE 覆盖，改为直接调用 handler 而不是走完整 ASGI 连接
 - **优先级**：中
 
 ### 2. 定时任务数量断言不一致
@@ -90,10 +105,10 @@
 
 - **位置**：全路由层
 - **现状**：部分路由对 `HistoricalWarehouse` 未启用、空数据、参数错误的返回码存在差异
-- **建议**：
-  - 统一使用 `adshare.core.exceptions` 中定义的异常类
-  - 在 `adshare/main.py` 中集中注册错误处理中间件，避免各路由重复 `try/except`
-- **优先级**：中
+- **进展（本轮）**：`main.py` 已注册全局 `AdshareException` handler；分析类服务异常统一为
+  `ServiceError`；tushare 路由复用 `map_exception_to_http_status`
+- **剩余**：`stock_data.py` 等路由仍有逐端点 `try/except → 500`，可逐步改为抛领域异常交给全局 handler
+- **优先级**：低
 
 ---
 

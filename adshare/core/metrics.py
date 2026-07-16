@@ -20,15 +20,15 @@ REQUEST_DURATION = Histogram(
 )
 
 # Data source metrics
-AD_REQUEST_COUNT = Counter(
-    "adshare_amazingdata_requests_total",
-    "AmazingData requests",
+DATASOURCE_REQUEST_COUNT = Counter(
+    "adshare_datasource_requests_total",
+    "Data source requests",
     ["method", "status"],
 )
 
-AD_REQUEST_DURATION = Histogram(
-    "adshare_amazingdata_request_duration_seconds",
-    "AmazingData request duration",
+DATASOURCE_REQUEST_DURATION = Histogram(
+    "adshare_datasource_request_duration_seconds",
+    "Data source request duration",
     buckets=[0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0],
 )
 

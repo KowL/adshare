@@ -10,6 +10,19 @@ class AdshareException(Exception):
     """Base exception for all adshare domain errors."""
 
 
+class ServiceError(AdshareException):
+    """Domain error carrying an explicit HTTP status code.
+
+    Base class for service-layer errors (e.g. analysis services) that know
+    which HTTP status they should map to. ``message`` mirrors ``str(exc)``.
+    """
+
+    def __init__(self, status_code: int, message: str) -> None:
+        self.status_code = status_code
+        self.message = message
+        super().__init__(message)
+
+
 class InvalidParameterError(AdshareException):
     """Raised when request parameters fail validation."""
 
@@ -48,7 +61,14 @@ class CacheError(AdshareException):
 
 
 def map_exception_to_http_status(exc: AdshareException) -> int:
-    """Map a domain exception to an HTTP status code."""
+    """Map a domain exception to an HTTP status code.
+
+    An explicit ``status_code`` attribute on the instance (see
+    :class:`ServiceError`) wins over the type-based mapping.
+    """
+    explicit = getattr(exc, "status_code", None)
+    if isinstance(explicit, int):
+        return explicit
     mapping = {
         InvalidParameterError: 400,
         AuthenticationError: 401,

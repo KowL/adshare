@@ -39,6 +39,8 @@ ADSHARE_API_KEY=your-api-key
 
 ```bash
 curl http://localhost:8000/health
+# Data-source session status is held by the worker service; the API
+# returns 503 for /login* endpoints in API-only mode.
 curl http://localhost:8000/login/status
 ```
 
@@ -128,9 +130,5 @@ console.log(`Trading days: ${cal.calendar.slice(0, 5).join(", ")}...`);
 |--------|---------|--------|
 | 401 | API Key missing | Check X-API-Key header |
 | 403 | Invalid API Key | Verify key in .env |
-| 500 | AmazingData not connected | Check /login/status, call /login |
-| 503 | Redis disconnected | Check docker compose status |
-
-## MCP Integration
-
-adshare also exposes an MCP server at `/mcp` for AI Agent integration.
+| 500 | Internal error | Check API service logs |
+| 503 | Data source session held by worker / Redis disconnected | Check docker compose status |

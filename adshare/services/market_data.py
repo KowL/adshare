@@ -82,8 +82,12 @@ class MarketDataService:
             synced=synced,
         )
 
-    def get_code_list(self, security_type: str = "EXTRA_STOCK_A") -> list[str]:
-        """Return the market code list from the L3 warehouse."""
+    def get_code_list(self, security_type: str = "stock_a") -> list[str]:
+        """Return the market code list from the L3 warehouse.
+
+        ``security_type`` is accepted for API compatibility but currently
+        does not filter — the warehouse stores the SH/SZ A-share universe.
+        """
         warehouse = self._get_warehouse()
         if warehouse is not None:
             try:

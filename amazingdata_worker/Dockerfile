@@ -30,7 +30,6 @@ RUN pip install --no-cache-dir --no-deps .
 # 复制项目代码
 COPY adshare/ ./adshare/
 COPY scripts/ ./scripts/
-COPY config/ ./config/
 COPY amazingdata_worker/ ./amazingdata_worker/
 
 # 创建运行时目录

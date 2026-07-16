@@ -8,9 +8,17 @@ class TestMarketCodes:
         response = client.get("/market/codes")
         assert response.status_code == 200
         data = response.json()
-        assert data["security_type"] == "EXTRA_STOCK_A"
+        assert data["security_type"] == "stock_a"
         assert len(data["code_list"]) == 3
         assert "000001.SZ" in data["code_list"]
+
+    def test_get_code_list_legacy_security_type_accepted(self, client):
+        # Legacy AmazingData-style values are still accepted for compatibility.
+        response = client.get("/market/codes?security_type=EXTRA_STOCK_A")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["security_type"] == "EXTRA_STOCK_A"
+        assert len(data["code_list"]) == 3
 
 
 class TestMarketCalendar:

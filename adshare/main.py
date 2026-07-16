@@ -13,9 +13,10 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 
 from adshare.core.config import get_settings
+from adshare.core.exceptions import AdshareException, map_exception_to_http_status
 from adshare.core.logging import setup_logging
 from adshare.core.metrics import REQUEST_COUNT, REQUEST_DURATION, SERVICE_INFO, get_metrics
 from adshare.core.ratelimit import get_limiter
@@ -91,7 +92,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title=settings.app_name,
         version=settings.app_version,
-        description="AmazingData shared data service - Financial data middleware (API only)",
+        description="A-share shared data service - Financial data middleware (API only)",
         docs_url="/docs",
         redoc_url="/redoc",
         lifespan=lifespan,
@@ -100,6 +101,15 @@ def create_app() -> FastAPI:
     # Rate limiter
     limiter = get_limiter()
     app.state.limiter = limiter
+
+    # Safety net: any domain exception that escapes a router is mapped to
+    # its canonical HTTP status (same shape as HTTPException responses).
+    @app.exception_handler(AdshareException)
+    async def adshare_exception_handler(request: Request, exc: AdshareException):
+        return JSONResponse(
+            status_code=map_exception_to_http_status(exc),
+            content={"detail": str(exc) or type(exc).__name__},
+        )
 
     # CORS
     app.add_middleware(

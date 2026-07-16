@@ -9,6 +9,7 @@ from typing import Optional
 import pandas as pd
 
 from adshare.core.logging import get_logger
+from adshare.core.exceptions import ServiceError
 from adshare.engines.technical.indicators import CATEGORY_MAP, get_indicator
 from adshare.models.schemas import TechnicalResponse
 from adshare.services.market_data import MarketDataService, get_market_data_service
@@ -16,13 +17,8 @@ from adshare.services.market_data import MarketDataService, get_market_data_serv
 logger = get_logger(__name__)
 
 
-class TechnicalAnalysisError(Exception):
+class TechnicalAnalysisError(ServiceError):
     """Domain error raised by technical analysis service."""
-
-    def __init__(self, status_code: int, message: str) -> None:
-        self.status_code = status_code
-        self.message = message
-        super().__init__(message)
 
 
 class TechnicalAnalysisService:
