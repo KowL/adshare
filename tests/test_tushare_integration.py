@@ -58,21 +58,25 @@ class TestTushareAdapterIntegration:
     """End-to-end tests using the real ``tushare`` package through the adapter."""
 
     def test_daily_returns_dataframe_with_expected_columns(self, pro):
-        df = pro.daily(ts_code="000001.SZ", start_date="20240101", end_date="20240131")
+        df = pro.daily(ts_code="000001.SZ", start_date="20260713", end_date="20260716")
+        print(f"\n--- daily ---\nshape: {df.shape}\ncolumns: {list(df.columns)}\n{df.to_string()}")
         assert isinstance(df, pd.DataFrame)
         expected = {"ts_code", "trade_date", "open", "high", "low", "close"}
         assert expected.issubset(set(df.columns)), f"got columns: {list(df.columns)}"
 
     def test_stock_basic_returns_dataframe(self, pro):
         df = pro.stock_basic()
+        print(f"\n--- stock_basic ---\nshape: {df.shape}\ncolumns: {list(df.columns)}\n{df.head(10).to_string()}")
         assert isinstance(df, pd.DataFrame)
         assert "ts_code" in df.columns
 
     def test_trade_cal_returns_dataframe(self, pro):
         df = pro.trade_cal(exchange="SSE", start_date="20240101", end_date="20240131")
+        print(f"\n--- trade_cal ---\nshape: {df.shape}\ncolumns: {list(df.columns)}\n{df.head(10).to_string()}")
         assert isinstance(df, pd.DataFrame)
         assert "cal_date" in df.columns
 
     def test_unsupported_api_raises_tushare_api_error(self, pro):
-        with pytest.raises(ts.TushareApiError):
+        with pytest.raises(ts.TushareApiError) as exc_info:
             pro.query("not_a_real_api")
+        print(f"\n--- unsupported api error ---\n{exc_info.value}")
