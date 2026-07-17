@@ -2,7 +2,7 @@
 
 > 版本: 0.1.0
 > 日期: 2026-06-11
-> 状态: 设计评审中
+> 状态: 已实现（对应实现：`adshare/services/realtime_broadcast.py`、`/realtime/ws`、`/realtime/sse`）
 > 关联: Phase 4 P1 — WebSocket/SSE 实时行情推送
 
 ---
@@ -176,11 +176,11 @@ Pub/Sub 是 Redis 原生能力，无需额外依赖，且天然支持多 API 实
 | 文件 | 类型 | 说明 |
 |------|------|------|
 | `adshare/services/realtime_broadcast.py` | 新增 | API 端广播服务（WebSocket + SSE） |
-| `adshare/services/realtime_publisher.py` | 新增 | Worker 端发布服务（SDK → Redis Pub/Sub） |
+| `amazingdata/realtime.py` | 新增 | Worker 端发布服务（`RealtimePublisher`：SDK → Redis Pub/Sub） |
 | `adshare/routers/realtime.py` | 修改 | 添加 SSE endpoint，调整 WebSocket 使用 broadcast service |
 | `adshare/main.py` | 修改 | lifespan 启动 broadcast 监听任务 |
-| `adshare/services/realtime.py` | 修改 | 标记为 deprecated，逐步迁移到 publisher/broadcast |
-| `amazingdata/main.py` | 修改 | 使用 RealtimePublisher 替代 RealtimeSubscriber |
+| `adshare/services/realtime.py` | 删除 | 已删除；广播职责由 `realtime_broadcast.py` 承担 |
+| `amazingdata/main.py` | 删除 | 入口已拆分为 `amazingdata/realtime.py` + `amazingdata/batch.py`；realtime 入口使用 RealtimePublisher 替代 RealtimeSubscriber |
 | `adshare/core/config.py` | 修改 | 添加 Pub/Sub 相关配置 |
 | `tests/test_realtime_broadcast.py` | 新增 | 广播服务单元测试 |
 | `tests/test_realtime_websocket.py` | 新增 | WebSocket 集成测试 |
@@ -303,7 +303,7 @@ class RealtimeBroadcastService:
 ### 4.3 Worker 端: RealtimePublisher
 
 ```python
-# adshare/services/realtime_publisher.py
+# amazingdata/realtime.py
 
 class RealtimePublisher:
     """Worker 端实时数据发布服务。
@@ -615,7 +615,7 @@ python scripts/loadtest_sse.py --connections 500 --codes 000001.SZ,600000.SH
 
 ### Phase 1: 新增模块（不破坏现有功能）
 
-1. 创建 `realtime_broadcast.py` + `realtime_publisher.py`
+1. 创建 `realtime_broadcast.py` + `amazingdata/realtime.py`（RealtimePublisher）
 2. Worker 使用 RealtimePublisher（替换 RealtimeSubscriber）
 3. API lifespan 启动 RealtimeBroadcastService
 4. 保留 `realtime.py` 作为兼容层（deprecated）
@@ -628,7 +628,7 @@ python scripts/loadtest_sse.py --connections 500 --codes 000001.SZ,600000.SH
 
 ### Phase 3: 清理
 
-1. 删除 `realtime.py` 中的旧 broadcast_loop 逻辑
+1. 删除 `adshare/services/realtime.py`（RealtimeSubscriber 已整体移除），广播由 `realtime_broadcast.py` 承担
 2. 将 RealtimeSubscriber 完全迁移到 RealtimePublisher
 3. 更新文档和测试
 
@@ -651,7 +651,7 @@ python scripts/loadtest_sse.py --connections 500 --codes 000001.SZ,600000.SH
 - [ ] WebSocket 客户端 subscribe 后能实时收到行情推送（延迟 < 100ms）
 - [ ] SSE 客户端能实时收到行情推送
 - [ ] REST API (`/realtime/quote/*`) 继续正常工作
-- [ ] 221 现有测试全部通过
+- [ ] 325 现有测试全部通过
 - [ ] 新增测试覆盖率 > 80%（broadcast + websocket + sse）
 - [ ] 支持 500 并发 WebSocket/SSE 连接
 - [ ] Worker 和 API 服务可独立启停，不影响对方

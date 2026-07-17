@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+### Added (2026-07-17)
+
+- **Realtime code list now pulled directly from the SDK.** `amazingdata/realtime.py` fetches the full A-share list via `get_code_list("EXTRA_STOCK_A_SH_SZ")` (~5,200 codes, daily-fresh) at startup; the cached `meta/codes.parquet` file is only a fallback. The realtime worker no longer depends on batch's `sync_meta_codes` having run first.
+
+### Changed (2026-07-17)
+
+- **Worker env split per service: `amazingdata/.env` → `realtime.env` + `batch.env`.** Each service now has its own TGW account, so `amazingdata-realtime` and `amazingdata-batch` can run simultaneously (the single-connection constraint is per-account). Templates: `realtime.env.example` / `batch.env.example`; both env files are gitignored. `amazingdata/.env(.example)` removed. The dead `REALTIME_ENABLED` toggle is no longer referenced anywhere.
+- **Compose projects separated.** `docker-compose.realtime.yml` / `docker-compose.batch.yml` now declare their own project names (`amazingdata-realtime` / `amazingdata-batch`) so lifecycle commands no longer report each other's containers as orphans.
+- **Production API deployment is systemd-based (no Docker).** `scripts/adshare-api.service` runs `/opt/adshare/venv/bin/python -m adshare.main` with `PYTHONPATH=/opt/adshare`; the app reads config from `<repo>/adshare/.env` via pydantic-settings (the unit's `EnvironmentFile` line was removed). Production serves port **8888** with `AUTH_ENABLED=true` + X-API-Key.
+
+### Fixed (2026-07-17)
+
+- `amazingdata/base.Dockerfile` + `bin/build-base.sh`: reference the `AmazingData-1.1.8` wheel (1.0.30 no longer ships in `wheels/`).
+- `realtime.Dockerfile` / `batch.Dockerfile`: drop `pip install --no-deps .` — the workspace-root `pyproject.toml` is a hatch workspace and intentionally not installable; packages import from `/app` via `PYTHONPATH`. Also quote pip version specs containing `<` in `batch.Dockerfile` (shell redirection bug: `duckdb>=1.0.0,<2.0` failed the build).
+- `amazingdata/realtime.py`: fix `get_settings` NameError → `get_worker_settings()` (crashed on startup).
+- `adshare/Dockerfile`: copy the README stub under its real filename (`README.adshare-stub.md`) so hatch's readme validation passes; switch pip index to the Tsinghua mirror.
+
+### Removed (2026-07-17)
+
+- **11 stale one-off scripts deleted from `scripts/`**: `cron_sync_kline_daily.py`, `cron_verify_max_date.py`, `run_sync_kline_daily.sh`, `run_verify_max_date.sh` (superseded by the APScheduler inside `amazingdata/batch.py`), `verify_kline_dates.py`, `verify_kline_quality.py` (one-off debug), `migrate_to_flat_layout.py` (migration done), `ref_sync_runner.py` (included the disabled financial sync), `simulate_backfill_5y.py` (mock-SDK demo), `deploy.sh` (pre-monorepo single-compose deploy), `sync_to_remote.sh` (stale paths; workers no longer need rsync to the server). Kept: `backfill_kline.py`, `backfill_financial.py`, `repair_kline_quality.py`, `sync_reference_data.py`, `adshare-api.service`.
+
+## 2026-06 monorepo split
+
 ### Changed
 
 - **Monorepo split: `adshare/` and `amazingdata/` are now independent Python packages.** Each has its own `pyproject.toml` declaring its own runtime dependencies; the repository root `pyproject.toml` is a [hatch workspace](https://hatch.pypa.io/latest/config/workspace/) entry that lists both members and shared dev tools (`pytest`, `ruff`, `mypy`). `pip install -e .` at the workspace root installs both; `pip install -e ./adshare` or `pip install -e ./amazingdata` installs one. Each member owns its Dockerfile + docker-compose.yml.

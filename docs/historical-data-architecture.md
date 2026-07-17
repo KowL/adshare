@@ -1,8 +1,8 @@
 # adshare 历史数据存储架构设计
 
-> 版本: 0.2.0-draft  
-> 更新日期: 2026-06-08  
-> 状态: 设计评审中（待开发）
+> 版本: 1.0  
+> 更新日期: 2026-07-17  
+> 状态: 已落地（已实现，Phase A–E 全部完成）
 
 ---
 
@@ -18,7 +18,7 @@
 | 科创板（688x）| ✅ 包含 |
 | 北交所（8x/4x/9x）| ❌ **不包含**（已从仓库移除）|
 
-理由：北交所日 K 同步曾长期停留在 2024-06-07，且产品范围不要求覆盖。如需恢复，需在 `adshare/historical/sync.py` 中重新启用北交所 code 列表并补齐历史数据。
+理由：北交所日 K 同步曾长期停留在 2024-06-07，且产品范围不要求覆盖。如需恢复，需在 worker 进程 `amazingdata/batch.py` 的同步任务（`sync_kline_daily` 等）中重新启用北交所 code 列表并补齐历史数据。
 
 **复权因子**：`adj_factor` 字段当前以 **1.0** 作为占位值（AmazingData SDK 暂未提供该字段）。下游若做复权计算需先确认上游已支持。
 
@@ -63,7 +63,7 @@
 ┌─────────────────────────────────────┐    ┌──────────────────────────────┐
 │  DuckDB In-Process Query Engine      │    │  Parquet Files               │
 │  - 视图映射到文件目录                  │    │  - 1 股票 1 文件              │
-│  - 谓词下推 + 并行扫描                 │    │  - 按年分目录                  │
+│  - 谓词下推 + 并行扫描                 │    │  - 按周期分目录（扁平布局）     │
 │  - 可选 .duckdb 索引文件              │    │  - zstd 压缩                  │
 └─────────────────────────────────────┘    └──────────────────────────────┘
                                     │
@@ -315,7 +315,7 @@ Body: { "sql": "SELECT ..." }
 ```sql
 -- 1. 单只股票一年的日 K（极快：只读 1 个 10KB 文件）
 SELECT date, open, high, low, close, volume
-FROM read_parquet('data/A_share/daily/2024/000001.SZ.parquet')
+FROM read_parquet('data/A_share/daily/000001.SZ.parquet')
 ORDER BY date;
 
 -- 2. 某一天的全市场截面数据（DuckDB 并行扫描 5000 个小文件）
@@ -328,7 +328,7 @@ LIMIT 100;
 -- 3. 均线计算（DuckDB 窗口函数）
 SELECT date, close,
        AVG(close) OVER (ORDER BY date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) AS ma20
-FROM read_parquet('data/A_share/daily/2024/000001.SZ.parquet')
+FROM read_parquet('data/A_share/daily/000001.SZ.parquet')
 ORDER BY date;
 
 -- 4. 多只股票多年数据
@@ -355,17 +355,16 @@ ORDER BY code, date;
 
 ### 5.1 调度器选型
 
-使用 **APScheduler**（`BackgroundScheduler`），在 FastAPI `lifespan` 中启动：
+使用 **APScheduler**（`BackgroundScheduler`）。实际调度在 worker 进程 `amazingdata/batch.py` 中启动（`init_scheduler()`），API 进程不再内嵌调度：
 
 ```python
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
+from apscheduler.schedulers.background import BackgroundScheduler
 
-scheduler = AsyncIOScheduler()
-scheduler.add_job(sync_kline_daily, CronTrigger(hour=19, minute=0))
-scheduler.add_job(sync_kline_weekly, CronTrigger(day_of_week="fri", hour=19, minute=30))
-scheduler.add_job(sync_kline_monthly, CronTrigger(day=1, hour=20, minute=0))
-scheduler.add_job(sync_meta_daily, CronTrigger(hour=8, minute=0))
+scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
+scheduler.add_job(sync_kline_daily, "cron", hour=19, minute=0)
+scheduler.add_job(sync_kline_weekly, "cron", day_of_week="fri", hour=19, minute=30)
+scheduler.add_job(sync_kline_monthly, "cron", day=1, hour=20, minute=0)
+scheduler.add_job(sync_meta_codes, "cron", hour=8, minute=0)
 scheduler.start()
 ```
 
@@ -373,9 +372,9 @@ scheduler.start()
 
 | 任务名 | 触发时间 | 数据源 | 写入目标 | 预期耗时 |
 |--------|----------|--------|----------|----------|
-| `sync_kline_daily` | 每天 19:00 | `query_kline(period=day)` | `A_share/daily/YYYY/{code}.parquet` | 5~10 min |
-| `sync_kline_weekly` | 每周五 19:30 | `query_kline(period=week)` | `A_share/weekly/YYYY/{code}.parquet` | 2~3 min |
-| `sync_kline_monthly` | 每月 1 日 20:00 | `query_kline(period=month)` | `A_share/monthly/YYYY/{code}.parquet` | 1~2 min |
+| `sync_kline_daily` | 每天 19:00 | `query_kline(period=day)` | `A_share/daily/{code}.parquet` | 5~10 min |
+| `sync_kline_weekly` | 每周五 19:30 | `query_kline(period=week)` | `A_share/weekly/{code}.parquet` | 2~3 min |
+| `sync_kline_monthly` | 每月 1 日 20:00 | `query_kline(period=month)` | `A_share/monthly/{code}.parquet` | 1~2 min |
 | `sync_meta_codes` | 每天 08:00 | `get_code_list` + `get_code_info` | `meta/codes.parquet` | < 10 s |
 | `sync_meta_calendar` | 每年 1 月 2 日 06:00 | `get_calendar` | `meta/calendar.parquet` | < 5 s |
 
@@ -513,10 +512,11 @@ adshare/
 ├── historical/              # 新增：历史数据仓库模块
 │   ├── __init__.py
 │   ├── warehouse.py         # HistoricalWarehouse：DuckDB 连接、视图管理、查询接口
-│   ├── sync.py              # 同步任务实现（sync_kline_daily 等）
 │   ├── models.py            # Parquet Schema 定义、DataFrame 标准化
 │   └── admin.py             # /admin/jobs 路由（可选）
 ```
+
+注：同步任务（`sync_kline_daily` 等 + APScheduler 调度）不在本模块，由 worker 进程 `amazingdata/batch.py` 承担（设计稿中的 `adshare/historical/sync.py` 未随双服务拆分保留）。
 
 ---
 
@@ -650,7 +650,7 @@ def validate_kline_df(df: pd.DataFrame) -> pd.DataFrame:
 - `kline_file_path()` 和 `warehouse.kline_dir()` 不再需要 `year` 参数（向后兼容忽略）
 - `sync_kline_daily/weekly/monthly` 改用 `from_date`/`to_date`，一次拉全期
 - `_metadata.json` 从 per-year 改为 per-period 汇总
-- 一次性迁移脚本 `scripts/migrate_to_flat_layout.py`（支持 `--dry-run`/`--keep-old`/`--backup-root`）
+- 一次性迁移脚本 `scripts/migrate_to_flat_layout.py`（支持 `--dry-run`/`--keep-old`/`--backup-root`；该脚本已在一次性迁移完成后删除，见 git 历史）
 - 文件数从 ~109K 降至 ~16K，磁盘占用从 ~1.1 GB 降至 ~500 MB
 
 ---

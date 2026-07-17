@@ -2,7 +2,7 @@
 
 > 版本: 0.1.0  
 > 更新日期: 2026-06-11  
-> 状态: Phase 3 进行中（P0+P1 核心优化已完成，涨停榜服务化+双服务架构+L3 扁平化已落地）
+> 状态: Phase 3 已完成（P0+P1 核心优化、涨停榜服务化、双服务架构、L3 扁平化均已落地）
 
 ---
 
@@ -74,7 +74,7 @@ Phase 4: 生态与扩展       [进行中]  2026.Q3
 
 ---
 
-## 5. Phase 3: 质量与性能优化 [进行中]
+## 5. Phase 3: 质量与性能优化 [已完成]
 
 **目标**: 修复核心缺陷，提升稳定性与吞吐量，完善测试与文档。
 
@@ -105,7 +105,7 @@ Phase 4: 生态与扩展       [进行中]  2026.Q3
 | [x] 修复 `TechnicalResponse` 验证错误 | - | category/all 模式已由端到端测试覆盖，`indicators` 为 List | `routers/technical.py`, `tests/test_technical_e2e.py` |
 | [x] 统一 SDK 调用方式 | - | `get_code_list` / `get_code_info` / `get_calendar` 已统一走 `BaseData` 实例调用；`get_calendar` 兼容有/无 `market` 参数的 SDK 版本 | `adapters/amazingdata.py`, `tests/test_amazingdata_adapter.py` |
 | [x] 修复 `limit-up` name_map 不完整 | - | 已支持 code/name、索引/symbol 等常见返回布局，并抽入 `LimitUpService` | `services/limit_up.py`, `tests/test_limit_up_service.py` |
-| [x] 补充 `tables` 依赖声明 | - | `tables>=3.9.0` 已声明于运行时依赖；后续只需评估 Dockerfile 是否保留重复安装 | `pyproject.toml`, `Dockerfile` |
+| [x] 补充 `tables` 依赖声明 | - | `tables>=3.9.0` 已声明于运行时依赖；后续只需评估 Dockerfile 是否保留重复安装 | `pyproject.toml`, `adshare/Dockerfile`, `amazingdata/{base,realtime,batch}.Dockerfile` |
 
 ### 5.1.1 🔴 P0 — 架构收口（2 周）
 
@@ -123,7 +123,7 @@ Phase 4: 生态与扩展       [进行中]  2026.Q3
 | 任务 | 目标 | 说明 |
 |------|------|------|
 | [x] 涨停榜服务化 | 路由瘦身 | 已由 `LimitUpService` 基于日线 K 线计算；优先读取本地历史仓，缺失时回源 AmazingData 并落盘；性能优化 47s→3s |
-| [x] K 线历史仓扁平化 | 减少文件碎片 | 一股票一文件（所有年份合并），`_metadata.json` 移至 per-period 级别；新增迁移脚本 `scripts/migrate_to_flat_layout.py` |
+| [x] K 线历史仓扁平化 | 减少文件碎片 | 一股票一文件（所有年份合并），`_metadata.json` 移至 per-period 级别；一次性迁移脚本 `scripts/migrate_to_flat_layout.py` 已完成迁移并删除（见 git 历史） |
 | [x] 双服务架构拆分 | 解耦 API 与 SDK | API 服务（adshare）与 Worker 服务（amazingdata.batch/realtime）分离；adshare 包不再依赖 AmazingData SDK |
 | [x] 实时行情订阅迁移 | 统一数据入口 | 实时 K 线订阅（§3.5.3.9）+ 实时指数快照订阅（§3.5.3.1）已迁移到 adshare |
 | [x] K 线历史仓局部命中优化 | SDK 回源更少 | 已移除 `is_synced` 全有或全无阻塞，`query_kline` 直接查询存在的文件，缺失代码自动跳过 |
@@ -258,6 +258,12 @@ Phase 4: 生态与扩展       [进行中]  2026.Q3
 - [ ] 新增代码有对应测试
 - [ ] 手动测试 `docker compose up` 能正常启动
 - [ ] 如需，同步更新 `docs/` 与 `skills/`
+
+---
+
+## 封存说明
+
+本文档记录 Phase 1–3（截至 2026-06），此后不再更新。后续工作（tushare 协议、monorepo 拆分、realtime/batch 双入口、env 拆分）见 `docs/CHANGELOG.md` 与 `docs/refactor-backlog.md`。
 
 ---
 

@@ -27,6 +27,8 @@
 4. **提升吞吐**: 异步 SDK 调用、任务队列
 5. **多协议支持**: gRPC、WebSocket、MQ
 
+> 编者按（2026-07-17）：realtime/batch 已拆分为两个独立 TGW 账号并行运行，「单账号瓶颈」已部分缓解。在双账号格局下，本文 connection pool 设计的取舍需重新评估。
+
 ---
 
 ## 2. 整体架构
@@ -38,8 +40,7 @@ Client / Agent / AI
     │
     ├── HTTP (FastAPI Routers)
     ├── WebSocket/SSE (Realtime)
-    ├── gRPC (Internal microservices)
-    └── MCP (Model Context Protocol)
+    └── gRPC (Internal microservices)
     │
     ▼
 Application Services  (MarketDataService / AnalysisServices / TaskService)
@@ -89,7 +90,7 @@ class AmazingDataAdapter:
 2. **单点故障**: 一个 session 断开或限流，整个 Worker 服务不可用
 3. **职责混杂**: Adapter 同时管理 SDK 生命周期（login/logout）、连接池、数据规整、重试逻辑
 4. **无法水平扩展**: 单进程内只能有一个 SDK client，不能利用多账号
-5. **阻塞式调用**: SDK C 扩展阻塞主线程，已出现 GIL 问题（参考 `_run_reference_sync_subprocess`）
+5. **阻塞式调用**: SDK C 扩展阻塞主线程，已出现 GIL 问题（曾以 `_run_reference_sync_subprocess` 子进程规避；该方法已从代码中移除）
 
 ### 3.2 设计目标
 
@@ -115,7 +116,7 @@ amazingdata/
 │   └── session_pool.py         # 多 session 管理与负载均衡
 ├── services/
 │   └── sdk_router.py           # 请求级路由（可选）
-└── main.py                     # 初始化 pool，替代单 adapter
+└── realtime.py / batch.py      # 双入口（原 main.py 已拆分）；worker 进程初始化 pool，替代单 adapter
 
 adshare/
 ├── core/config.py              # 新增多账号配置
@@ -130,7 +131,7 @@ import threading
 import time
 from typing import Any, Dict, Optional
 
-from adshare.core.config import Settings
+from amazingdata.config import WorkerSettings
 from adshare.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -144,7 +145,7 @@ class AmazingDataSession:
     - 提供健康检查和故障恢复
     """
 
-    def __init__(self, session_id: str, settings: Settings) -> None:
+    def __init__(self, session_id: str, settings: WorkerSettings) -> None:
         self.session_id = session_id
         self.settings = settings
 
@@ -382,7 +383,7 @@ import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, TypeVar
 
-from adshare.core.config import get_settings
+from amazingdata.config import get_worker_settings
 from adshare.core.logging import get_logger
 from amazingdata.adapters.amazingdata_session import AmazingDataSession
 
@@ -405,7 +406,7 @@ class SessionPool:
         self._lock = threading.Lock()
         self._round_robin_index = 0
 
-        settings = get_settings()
+        settings = get_worker_settings()
         for i in range(self.size):
             session_id = f"sdk_{i + 1}"
             self._sessions[session_id] = AmazingDataSession(session_id, settings)
@@ -523,7 +524,7 @@ def get_session_pool(size: Optional[int] = None) -> SessionPool:
     if _pool is None:
         with _pool_lock:
             if _pool is None:
-                settings = get_settings()
+                settings = get_worker_settings()
                 _pool = SessionPool(size=size or settings.ad_pool_size)
     return _pool
 ```
@@ -537,7 +538,7 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
-from adshare.core.config import Settings, get_settings
+from amazingdata.config import WorkerSettings, get_worker_settings
 from adshare.core.logging import get_logger
 from amazingdata.adapters.amazingdata_client import AmazingDataClient
 from amazingdata.adapters.session_pool import SessionPool, get_session_pool
@@ -552,8 +553,8 @@ class AmazingDataAdapter:
     Existing code using get_adapter() continues to work.
     """
 
-    def __init__(self, settings: Optional[Settings] = None) -> None:
-        self.settings = settings or get_settings()
+    def __init__(self, settings: Optional[WorkerSettings] = None) -> None:
+        self.settings = settings or get_worker_settings()
         self._pool = get_session_pool(self.settings.ad_pool_size)
 
     def login(self) -> bool:
@@ -634,6 +635,8 @@ def get_adapter() -> AmazingDataAdapter:
 
 ### 5.1 多账号配置
 
+> 注（2026-07-17）：worker 侧配置类为 `amazingdata/config.py` 的 `WorkerSettings`（经 `get_worker_settings()` 获取），共享字段（Redis/L3/app）由 `__getattr__` 转发自 `adshare.core.config.Settings`。本节新增的多账号字段应加在 `WorkerSettings` 上。
+
 当前配置只有一个账号：
 
 ```python
@@ -688,7 +691,7 @@ ad_lb_strategy: str = Field(default="round_robin", alias="AD_LB_STRATEGY")
 ## 6. Worker 启动流程
 
 ```python
-# amazingdata/main.py
+# amazingdata/batch.py（原 amazingdata/main.py，入口已拆分为 realtime.py + batch.py）
 
 def main() -> int:
     # ...
@@ -799,7 +802,7 @@ def test_worker_initializes_pool_on_start(monkeypatch):
 | 3 | 创建 `session_pool.py` | 多 session 管理与负载均衡 | 1 天 |
 | 4 | 重构 `amazingdata.py` | 兼容 facade，委托给 pool | 0.5 天 |
 | 5 | 扩展 `config.py` | 多账号配置 | 0.5 天 |
-| 6 | 更新 `worker/main.py` | 使用 pool 初始化 | 0.5 天 |
+| 6 | 更新 `amazingdata/batch.py`（原 `worker/main.py`，入口已拆分） | 使用 pool 初始化 | 0.5 天 |
 | 7 | 编写测试 | Session/Pool/Adapter/Worker 测试 | 1 天 |
 | 8 | 文档更新 | 部署指南、CHANGELOG | 0.5 天 |
 

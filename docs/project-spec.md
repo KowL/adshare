@@ -8,7 +8,7 @@
 
 ## 1. 项目概述与目标
 
-**adshare** 是 AmazingData 金融数据服务的统一中间件层，目标是将银河证券星耀数智的底层 SDK 能力封装为标准化、可共享、可观测的 HTTP API 与 MCP 服务，供多项目、多 Agent 协同调用。
+**adshare** 是 AmazingData 金融数据服务的统一中间件层，目标是将银河证券星耀数智的底层 SDK 能力封装为标准化、可共享、可观测的 HTTP API（含 WebSocket / SSE 实时推送），供多项目、多 Agent 协同调用。
 
 核心设计原则：
 
@@ -35,7 +35,7 @@
 **禁止引入的依赖**（除非经过架构评审）：
 - `SQLAlchemy` / 任何 ORM（项目无关系型数据库）
 - `flask` / `django`（与 FastAPI 冲突）
-- `pytables` / `h5py`（已在 Dockerfile 中引入但评估后若未使用应移除）
+- `pytables` / `h5py`（HDF5 系统库已由 `adshare/Dockerfile`（API 镜像）与 `amazingdata/base.Dockerfile`（worker 基础镜像）安装，评估后若未使用应移除）
 
 ---
 
@@ -91,41 +91,65 @@
 ## 4. 目录结构规范
 
 ```
-adshare/
+adshare/                 # FastAPI 包（API 进程，不直接依赖 AmazingData SDK）
 ├── main.py              # FastAPI 入口，仅做组装，不写业务逻辑
+├── dependencies.py      # FastAPI 依赖注入（service / warehouse 单例）
 ├── core/                # 基础设施层（配置、缓存、日志、限流、认证、指标）
 │   ├── config.py        # Pydantic Settings，环境变量统一管理
 │   ├── cache.py         # CacheManager: Redis real-time market state only
 │   ├── logging.py       # structlog 配置
 │   ├── ratelimit.py     # SlowAPI / 自定义限流
 │   ├── auth.py          # API Key 认证中间件
+│   ├── exceptions.py    # 领域异常与 HTTP 状态映射
+│   ├── realtime_keys.py # 实时数据 Redis key 规范
 │   └── metrics.py       # Prometheus 指标定义
-├── adapters/            # 外部依赖适配层
-│   └── amazingdata.py   # AmazingData SDK 单例封装，连接池与重试逻辑
+├── adapters/            # 空壳保留目录（SDK 适配已迁至 amazingdata 包）
+├── clients/             # 出站客户端封装（tushare_client 等）
 ├── engines/             # 纯计算引擎（无外部 I/O）
 │   ├── technical/       # 57 个技术指标（纯 pandas/numpy）
 │   ├── fundamental/     # 90 个基本面因子（纯 pandas/numpy）
 │   └── factor/          # 因子分析（IC、分层、复合）
+├── historical/          # L3 历史数仓（Parquet + DuckDB）
+│   ├── warehouse.py     # 仓库读写与 DuckDB 视图
+│   └── admin.py         # /historical/admin 运维路由
 ├── routers/             # API 路由层
 │   ├── health.py        # 健康检查、登录状态、手动登入/登出
 │   ├── market.py        # 行情数据: codes, kline, snapshot, stock/basic, limit-up
-│   ├── financial.py     # 财务数据: statement, shareholder
+│   ├── stock_data.py    # Pro 风格股票数据: /daily, /stock_basic, /pro_bar 等
+│   ├── realtime.py      # 实时行情: REST + WebSocket(/realtime/ws) + SSE(/realtime/sse)
+│   ├── historical.py    # 历史数仓查询: kline, calendar, codes, sql
+│   ├── tushare/         # Tushare Pro 协议兼容（统一入口 + stock/index 分类路由）
+│   ├── financial.py     # 财务数据（已禁用，直接返回 503）
 │   ├── technical.py     # 技术分析: analyze, indicators 列表
 │   ├── fundamental.py   # 基本面分析: analyze, factors 列表
 │   └── factor.py        # 因子分析: capabilities, analyze, composite
 ├── models/              # Pydantic Schema
 │   └── schemas.py       # 所有 Request/Response Model 集中定义
-├── mcp/                 # Model Context Protocol 服务端
-│   └── server.py        # SSE/stdio 传输适配
-├── services/            # 业务服务层（可选，复杂业务流程编排）
+├── services/            # 业务服务层（market_data、realtime_broadcast、limit_up 等）
 └── __init__.py
 
+amazingdata/             # SDK worker 包（唯一依赖 AmazingData SDK，linux/amd64）
+├── adapters/            # DataSourceAdapter: SDK 单例封装、登录与重试
+├── realtime.py          # 盘中实时订阅入口（写 Redis + Pub/Sub）
+├── batch.py             # 盘后同步入口（APScheduler → L3 warehouse）
+├── config.py            # WorkerSettings（worker 侧环境变量）
+├── wheels/              # SDK wheel 包（构建 worker 镜像用）
+├── base.Dockerfile      # worker 基础镜像（SDK + 系统依赖）
+├── realtime.Dockerfile  # 盘中实时订阅镜像
+├── batch.Dockerfile     # 盘后同步镜像
+├── docker-compose.realtime.yml
+├── docker-compose.batch.yml
+├── realtime.env.example # 实时 worker 配置模板（独立 TGW 账号）
+└── batch.env.example    # 盘后 worker 配置模板（独立 TGW 账号）
+
 tests/                   # 测试目录，目录结构与 adshare/ 镜像
+├── conftest.py
 ├── test_api.py
 ├── test_market.py
-├── test_technical.py
-├── test_fundamental.py
-└── test_factor.py
+├── test_tushare.py
+├── test_realtime_push.py
+├── test_historical.py
+└── ...
 
 skills/                  # AI Agent Skill 定义（供外部 Agent 读取）
 ├── adshare-api/
@@ -138,12 +162,15 @@ docs/                    # 项目文档（本文档所在目录）
 
 所有配置均通过环境变量注入（无独立配置文件）。API 与 worker 配置已拆分:
 - `adshare/.env.example` — API 服务（Redis / L3 / auth / rate limit）
-- `amazingdata/.env.example` — Worker 服务（SDK 登录 / 同步调度 / 实时订阅 / 维护任务）
+- `amazingdata/realtime.env.example` — 盘中实时订阅 worker（SDK 登录 / Redis 写入）
+- `amazingdata/batch.env.example` — 盘后同步 worker（SDK 登录 / 同步调度 / 维护任务）
+
+两个 worker 使用各自独立的 TGW 账号，可同时运行。
 
 **分层约束**:
-- `routers` 只能调用 `adapters`、`engines`、`core`
+- `routers` 通过 `dependencies` 注入并调用 `services`、`engines`、`core`
 - `engines` 只能依赖 `pandas/numpy/scipy`，**严禁**导入 `AmazingData`、Redis、FastAPI
-- `adapters` 负责所有外部 I/O（SDK、Redis、文件系统）
+- AmazingData SDK 访问隔离在 `amazingdata` 包（worker 进程），API 进程不直接依赖 SDK
 - `models` 可被任何层导入
 
 ---
@@ -228,7 +255,7 @@ docs/                    # 项目文档（本文档所在目录）
 ### 7.1 配置来源优先级
 
 1. 环境变量（最高优先级，生产环境唯一来源）
-2. `.env` 文件（本地开发，参考 `adshare/.env.example` + `amazingdata/.env.example`）
+2. `.env` 文件（本地开发，参考 `adshare/.env.example` 与 `amazingdata/realtime.env.example` / `amazingdata/batch.env.example`）
 3. `adshare.core.config.Settings` 中的字段默认值
 
 ### 7.2 敏感信息清单
@@ -292,7 +319,7 @@ class TestMarket:
 ### 9.3 部署检查清单
 
 - [ ] 目标服务器架构为 x86_64（`uname -m`）
-- [ ] `adshare/.env` 和 `amazingdata/.env` 已配置，权限为 `600`
+- [ ] `adshare/.env`、`amazingdata/realtime.env`、`amazingdata/batch.env` 已配置，权限为 `600`
 - [ ] Docker Compose 版本 >= 2.x
 - [ ] 防火墙开放 8000（API）与 6379（Redis，如外部访问）
 
@@ -305,7 +332,7 @@ class TestMarket:
   - `pyproject.toml` `[project] version`
   - `ADSHARE_APP_VERSION` 环境变量（部署时覆盖）
   - Docker 镜像 tag（建议）
-- 变更日志: 在 `docs/CHANGELOG.md` 中维护（待创建）
+- 变更日志: 在 `docs/CHANGELOG.md` 中维护
 
 ---
 
