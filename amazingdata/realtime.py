@@ -159,15 +159,36 @@ class RealtimePublisher:
                 logger.error("Data source not logged in, cannot start realtime publisher")
                 return False
 
-            # For TGW accounts with a single concurrent connection,
-            # SubscribeData holds the only connection and adapter.get_code_list
-            # (which uses BaseData) may fail.  Load the code list from the
-            # cached meta/codes.parquet file maintained by batch.sync_meta_codes.
-            self._code_list = self._load_cached_codes(
-                suffixes=(".SH", ".SZ"),
-                fallback=["000001.SZ", "600000.SH", "600519.SH"],
-            )
-            logger.info("Realtime publisher: loaded %s A-share codes", len(self._code_list))
+            # Load the full A-share code list directly from the SDK's
+            # daily-fresh code table. ``EXTRA_STOCK_A_SH_SZ`` = SH/SZ
+            # A-shares only (BJ excluded, per project data scope).
+            # Fall back to the cached meta/codes.parquet (maintained by
+            # batch.sync_meta_codes) if the SDK call fails.
+            try:
+                sdk_codes = adapter.get_code_list("EXTRA_STOCK_A_SH_SZ")
+                self._code_list = [
+                    c for c in sdk_codes
+                    if any(c.endswith(s) for s in (".SH", ".SZ"))
+                ]
+                if not self._code_list:
+                    raise RuntimeError("SDK returned empty A-share code list")
+                logger.info(
+                    "Realtime publisher: loaded %s A-share codes from SDK",
+                    len(self._code_list),
+                )
+            except Exception as e:
+                logger.warning(
+                    "Failed to fetch A-share codes from SDK (%s); "
+                    "falling back to cached meta/codes.parquet", e,
+                )
+                self._code_list = self._load_cached_codes(
+                    suffixes=(".SH", ".SZ"),
+                    fallback=["000001.SZ", "600000.SH", "600519.SH"],
+                )
+                logger.info(
+                    "Realtime publisher: loaded %s A-share codes from cache",
+                    len(self._code_list),
+                )
 
             try:
                 self._index_code_list = adapter.get_code_list("EXTRA_INDEX_A")
@@ -242,7 +263,7 @@ class RealtimePublisher:
             def on_index_snapshot(data, period_val):  # noqa: N806
                 self._handle_index_snapshot(data, period_val)
 
-        settings = get_settings()
+        settings = get_worker_settings()
         kline_periods = getattr(settings, "realtime_kline_periods", ["min1"])
         for period_str in kline_periods:
             try:
@@ -398,7 +419,7 @@ def get_realtime_publisher() -> RealtimePublisher:
 
 def main() -> int:
     setup_logging()
-    settings = get_settings()
+    settings = get_worker_settings()
     logger.info("=" * 50)
     logger.info("AmazingData Realtime starting...")
     logger.info("SDK: %s", settings.amazingdata_connection_string)

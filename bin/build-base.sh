@@ -44,7 +44,7 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 DOCKERFILE="$PROJECT_ROOT/amazingdata/base.Dockerfile"
 
 # 检查 whl 文件（位于 amazingdata/wheels/）
-for f in AmazingData-1.0.30-cp311-none-any.whl tgw-1.0.8.7-py3-none-any.whl; do
+for f in AmazingData-1.1.8-cp311-none-any.whl tgw-1.0.8.7-py3-none-any.whl; do
   if [[ ! -f "$PROJECT_ROOT/amazingdata/wheels/$f" ]]; then
     echo "❌ Missing $PROJECT_ROOT/amazingdata/wheels/$f"
     echo "   Run from project root with whl files present."

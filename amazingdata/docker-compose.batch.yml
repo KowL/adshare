@@ -1,13 +1,17 @@
 # amazingdata/docker-compose.batch.yml
-# Batch sync service (APScheduler -> L3 warehouse).
+# Batch sync service (盘后): APScheduler -> L3 warehouse.
 #
-# IMPORTANT (TGW single-connection constraint):
-#   - Only ONE of {realtime, batch} may run at a time on the same host.
+# Config: amazingdata/batch.env (gitignored) — batch-dedicated TGW account
+# + Redis credentials. realtime and batch use SEPARATE TGW accounts, so
+# both services may run simultaneously. Never run two containers with the
+# SAME account — TGW force-logouts the earlier session.
 #
 # Build:
 #   docker compose -f amazingdata/docker-compose.batch.yml build
 # Run:
 #   docker compose -f amazingdata/docker-compose.batch.yml up -d
+
+name: amazingdata-batch
 
 services:
   amazingdata-batch:
@@ -20,20 +24,11 @@ services:
     # to /app/data so the cache lands inside the mounted host data directory.
     working_dir: /app/data
     env_file:
-      - .env
+      - batch.env
     environment:
-      - AD_USERNAME=${AD_USERNAME}
-      - AD_PASSWORD=${AD_PASSWORD}
-      - AD_HOST=${AD_HOST}
-      - AD_PORT=${AD_PORT}
-      - REDIS_HOST=${REDIS_HOST:-redis}
-      - REDIS_PORT=${REDIS_PORT:-6379}
-      - REDIS_PASSWORD=${REDIS_PASSWORD}
-      - REDIS_DB=${REDIS_DB:-0}
       - HISTORICAL_ENABLED=true
       - HISTORICAL_PATH=/app/data
       - DUCKDB_MODE=${DUCKDB_MODE:-memory}
-      - AMAZINGDATA_LOCAL_PATH=${AMAZINGDATA_LOCAL_PATH:-/app/data/sdk_cache}
       - ADSHARE_LOG_LEVEL=${ADSHARE_LOG_LEVEL:-INFO}
       - ADSHARE_LOG_DIR=/app/logs
       # Ensure amazingdata package stays importable when working_dir is /app/data

@@ -11,9 +11,9 @@
 # all runtime dependencies. No external build-context needed.
 #
 # Notes:
-#   - The README referenced by pyproject.toml (../README.md) is only needed
-#     by hatch when building the wheel; at runtime the package doesn't read
-#     it, so we don't COPY it into the image.
+#   - pyproject.toml references `readme = "README.adshare-stub.md"`, which
+#     hatch validates when building the wheel; at runtime the package
+#     doesn't read it. Keep the filename intact when COPYing.
 
 ARG BASE_IMAGE=python:3.11-slim
 
@@ -21,8 +21,8 @@ FROM ${BASE_IMAGE}
 
 WORKDIR /app
 
-# Use Alibaba Cloud pip mirror for faster downloads in CN
-RUN pip config set global.index-url https://mirrors.aliyun.com/pypi/simple/
+# Use Tsinghua pip mirror for faster downloads in CN
+RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
 
 # System deps (gcc for any C-extension deps, curl for healthcheck, libhdf5 for tables)
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -35,10 +35,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # pyproject.toml is self-contained under adshare/.
 COPY pyproject.toml ./
 
-# Place a minimal README so pyproject.toml's `readme = "../README.md"`
-# reference doesn't fail when hatch builds the wheel inside the image.
-# (We don't actually need it at runtime; hatch only validates the path.)
-COPY README.adshare-stub.md ./README.md
+# pyproject.toml declares `readme = "README.adshare-stub.md"` — hatch
+# validates that path when building the wheel, so copy it under its real
+# name. (Not read at runtime.)
+COPY README.adshare-stub.md ./
 
 RUN pip install --no-cache-dir .
 

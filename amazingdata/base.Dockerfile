@@ -43,13 +43,13 @@ COPY amazingdata/wheels/ ./wheels/
 # This layer takes 1-3 min (llvmlite compile), so it belongs in base.
 RUN pip install --no-cache-dir \
     ./wheels/tgw-1.0.8.7-py3-none-any.whl \
-    ./wheels/AmazingData-1.0.30-cp311-none-any.whl \
+    ./wheels/AmazingData-1.1.8-cp311-none-any.whl \
     pydantic>=2.6.4 \
     numba \
     scipy \
     statsmodels
 
-LABEL org.adshare.base="adshare-base:1.0"
+LABEL org.adshare.base="adshare-base:1.1"
 LABEL org.adshare.base.python="3.11-slim"
-LABEL org.adshare.base.amazingdata="1.0.30"
+LABEL org.adshare.base.amazingdata="1.1.8"
 LABEL org.adshare.base.tgw="1.0.8.7"

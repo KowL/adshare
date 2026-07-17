@@ -12,28 +12,25 @@ FROM adshare-base:latest
 
 WORKDIR /app
 
-# Project-level files
-COPY pyproject.toml README.md ./
-
 # Install worker-level Python deps (warehouse + scheduler)
 # Note: numba/scipy/statsmodels/pydantic are inherited from base image.
 RUN pip install --no-cache-dir \
-    duckdb>=1.0.0,<2.0 \
-    pandas==2.0.3 \
-    numpy==1.26.4 \
-    pyarrow==15.0.0 \
-    redis>=5.0 \
-    pydantic>=2.9 \
-    pydantic-settings>=2.6 \
-    python-dotenv>=1.0 \
-    apscheduler>=3.10 \
-    structlog>=24.4 \
-    tables>=3.9
+    "duckdb>=1.0.0,<2.0" \
+    "pandas==2.0.3" \
+    "numpy==1.26.4" \
+    "pyarrow==15.0.0" \
+    "redis>=5.0" \
+    "pydantic>=2.9" \
+    "pydantic-settings>=2.6" \
+    "python-dotenv>=1.0" \
+    "apscheduler>=3.10" \
+    "structlog>=24.4" \
+    "tables>=3.9"
 
-# Install adshare package itself (no deps)
-RUN pip install --no-cache-dir --no-deps .
-
-# Copy application code
+# Copy application code. Packages are imported straight from /app
+# (PYTHONPATH=/app, and batch.py also prepends the project root to
+# sys.path), so no `pip install .` is needed — the workspace root
+# pyproject is a hatch workspace and intentionally not installable.
 COPY adshare/ ./adshare/
 COPY amazingdata/ ./amazingdata/
 COPY scripts/ ./scripts/

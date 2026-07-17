@@ -4,14 +4,14 @@
 
 ## 为什么拆成两个独立入口
 
-TGW 单连接账户约束：AmazingData SDK 在同一进程内只能持有一个 session。原来的 `amazingdata_worker` 进程里用 `REALTIME_ENABLED` + `SYNC_SCHEDULE_ENABLED` 两个开关在同进程混跑实时订阅和定时同步，容易人为切换错。新结构：
+TGW 单连接账户约束：同一账号在同一时刻只能持有一个 SDK session。原来的 `amazingdata_worker` 进程里用 `REALTIME_ENABLED` + `SYNC_SCHEDULE_ENABLED` 两个开关在同进程混跑实时订阅和定时同步，容易人为切换错。新结构：
 
 | 入口 | 镜像 | 进程职责 |
 |------|------|---------|
 | `amazingdata.realtime` | `amazingdata-realtime` | 盘中：订阅 snapshot / index / kline → Redis + Pub/Sub |
 | `amazingdata.batch` | `amazingdata-batch` | 盘后：APScheduler 驱动 K线/meta/参考数据 → L3 warehouse (Parquet + DuckDB) |
 
-两个进程物理隔离，外部调度切换容器即可天然互斥。
+两个进程物理隔离。单账号时代需要外部调度切换容器来互斥；现在 realtime / batch 各用各的 TGW 账号（见下文「配置」），可同时运行。
 
 ## 目录结构
 
@@ -24,7 +24,6 @@ amazingdata/
 │   └── amazingdata.py        ← AmazingDataAdapter（534 行，封装 SDK 调用）
 ├── wheels/                   ← vendor whl（git 不追踪，按需放置）
 │   ├── AmazingData-1.1.8-cp311-none-any.whl   ← 当前使用版本
-│   ├── AmazingData-1.0.30-cp311-none-any.whl  ← 旧版（base.Dockerfile 默认引用）
 │   └── tgw-1.0.8.7-py3-none-any.whl
 ├── realtime.py               ← 盘中模式入口（458 行，单文件）
 ├── batch.py                  ← 盘后模式入口（1250 行，单文件，含全部 sync 任务 + scheduler）
@@ -32,10 +31,23 @@ amazingdata/
 ├── realtime.Dockerfile       ← FROM adshare-base，CMD python -m amazingdata.realtime
 ├── batch.Dockerfile          ← FROM adshare-base，CMD python -m amazingdata.batch
 ├── docker-compose.realtime.yml  ← 服务 amazingdata-realtime
-└── docker-compose.batch.yml     ← 服务 amazingdata-batch
+├── docker-compose.batch.yml     ← 服务 amazingdata-batch
+├── realtime.env.example      ← realtime 配置模板（拷成 realtime.env 填账号）
+└── batch.env.example         ← batch 配置模板（拷成 batch.env 填账号）
 ```
 
 ## 构建与启动
+
+### 配置（一次性）
+
+每个服务一份 env 文件，gitignored，各自填自己的 TGW 账号：
+
+```bash
+cp amazingdata/realtime.env.example amazingdata/realtime.env   # 填 realtime 专用账号 + Redis
+cp amazingdata/batch.env.example amazingdata/batch.env         # 填 batch 专用账号 + Redis
+```
+
+非敏感的容器内路径（`HISTORICAL_PATH=/app/data`、`PYTHONPATH=/app` 等）直接写在 compose 的 `environment:` 里；`WorkerSettings` 仍保留读 `amazingdata/.env` 作为本地开发兜底，进程环境变量优先级更高。
 
 ### 一次性：构建 base 镜像（3-5 分钟）
 
@@ -62,9 +74,11 @@ docker compose -f amazingdata/docker-compose.realtime.yml up -d
 
 镜像内执行 `python -m amazingdata.realtime`：登录 SDK → 加载代码表 → 启动 `RealtimePublisher.run_blocking()` → 阻塞等信号。
 
-### 切换互斥
+### 双账号并行 / 单账号互斥
 
-TGW 单连接约束下，同一时刻只能跑一个。常见做法：
+两个服务使用**不同** TGW 账号（realtime.env / batch.env 分别配置），可同时运行，无需切换。约束只剩一条：**同一账号不能被两个进程同时登录**（TGW 会踢掉先登录的会话）。
+
+如果只有单账号，则恢复互斥切换：
 
 ```bash
 # 收盘后切到 batch
@@ -79,9 +93,8 @@ docker compose -f amazingdata/docker-compose.realtime.yml up -d
 ## 本地开发
 
 ```bash
-# 设置环境变量（需要 .env）
-export AD_USERNAME=... AD_PASSWORD=... AD_HOST=... AD_PORT=...
-export REDIS_HOST=localhost REDIS_PORT=6379
+# 加载对应服务的 env 文件到进程环境（pydantic-settings 优先读进程环境变量）
+set -a; source amazingdata/realtime.env; set +a   # 或 batch.env
 
 # 盘中模式
 python -m amazingdata.realtime

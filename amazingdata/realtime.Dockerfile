@@ -13,9 +13,6 @@ FROM adshare-base:latest
 
 WORKDIR /app
 
-# Project-level files (pyproject + README needed for `pip install .`)
-COPY pyproject.toml README.md ./
-
 # Install worker-level Python deps (Redis client + adapter libs)
 # NOTE: no pyarrow/duckdb here — realtime doesn't touch the warehouse.
 RUN pip install --no-cache-dir \
@@ -25,10 +22,10 @@ RUN pip install --no-cache-dir \
     python-dotenv>=1.0 \
     structlog>=24.4
 
-# Install adshare package itself (no deps — already covered above)
-RUN pip install --no-cache-dir --no-deps .
-
-# Copy application code
+# Copy application code. Packages are imported straight from /app
+# (PYTHONPATH=/app, and realtime.py also prepends the project root to
+# sys.path), so no `pip install .` is needed — the workspace root
+# pyproject is a hatch workspace and intentionally not installable.
 COPY adshare/ ./adshare/
 COPY amazingdata/ ./amazingdata/
 

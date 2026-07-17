@@ -61,6 +61,8 @@ PY
 # Ignored by the root ".env" rule above, but listed explicitly for clarity.
 /adshare/.env
 /amazingdata/.env
+/amazingdata/realtime.env
+/amazingdata/batch.env
 
 # Local data
 cache/

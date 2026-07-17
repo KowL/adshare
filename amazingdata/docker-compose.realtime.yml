@@ -1,14 +1,17 @@
 # amazingdata/docker-compose.realtime.yml
-# Realtime subscription service.
+# Realtime subscription service (盘中).
 #
-# IMPORTANT (TGW single-connection constraint):
-#   - Only ONE of {realtime, batch} may run at a time on the same host.
-#   - Schedule them externally (cron / k8s / manual).
+# Config: amazingdata/realtime.env (gitignored) — realtime-dedicated TGW
+# account + Redis credentials. realtime and batch use SEPARATE TGW accounts,
+# so both services may run simultaneously. Never run two containers with the
+# SAME account — TGW force-logouts the earlier session.
 #
 # Build:
 #   docker compose -f amazingdata/docker-compose.realtime.yml build
 # Run:
 #   docker compose -f amazingdata/docker-compose.realtime.yml up -d
+
+name: amazingdata-realtime
 
 services:
   amazingdata-realtime:
@@ -22,18 +25,9 @@ services:
     # so the cache lands inside the mounted host data directory.
     working_dir: /app/data
     env_file:
-      - .env
+      - realtime.env
     environment:
-      - AD_USERNAME=${AD_USERNAME}
-      - AD_PASSWORD=${AD_PASSWORD}
-      - AD_HOST=${AD_HOST}
-      - AD_PORT=${AD_PORT}
-      - REDIS_HOST=${REDIS_HOST:-redis}
-      - REDIS_PORT=${REDIS_PORT:-6379}
-      - REDIS_PASSWORD=${REDIS_PASSWORD}
-      - REDIS_DB=${REDIS_DB:-0}
       - HISTORICAL_PATH=/app/data
-      - AMAZINGDATA_LOCAL_PATH=${AMAZINGDATA_LOCAL_PATH:-/app/data/sdk_cache}
       - ADSHARE_LOG_LEVEL=${ADSHARE_LOG_LEVEL:-INFO}
       - ADSHARE_LOG_DIR=/app/logs
       # Ensure amazingdata package stays importable when working_dir is /app/data

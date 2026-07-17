@@ -53,7 +53,7 @@ python -m amazingdata.batch
 
 ### 1. 环境变量配置
 
-创建两份 `.env` 文件（API 和 worker 配置已分离）：
+API 一份 `.env`，worker 按服务拆成两份 env 文件（各用各的 TGW 账号）：
 
 `adshare/.env`（API 服务）：
 ```env
@@ -71,16 +71,25 @@ AUTH_ENABLED=false
 ADSHARE_API_KEY=your-secret-key
 ```
 
-`amazingdata/.env`（worker 服务）：
+`amazingdata/realtime.env`（盘中服务，从 `realtime.env.example` 拷贝）：
 ```env
-AD_USERNAME=your-username
-AD_PASSWORD=your-password
+AD_USERNAME=your-realtime-username   # realtime 专用 TGW 账号
+AD_PASSWORD=your-realtime-password
+AD_HOST=your-sdk-server
+AD_PORT=8600
+```
+
+`amazingdata/batch.env`（盘后服务，从 `batch.env.example` 拷贝）：
+```env
+AD_USERNAME=your-batch-username      # batch 专用 TGW 账号（与 realtime 不同）
+AD_PASSWORD=your-batch-password
 AD_HOST=your-sdk-server
 AD_PORT=8600
 
 SYNC_SCHEDULE_ENABLED=true
-REALTIME_ENABLED=false   # 与 SYNC_SCHEDULE_ENABLED 互斥（TGW 单连接）
 ```
+
+两个 env 文件均已 gitignore；完整字段见 `amazingdata/*.env.example`。
 
 ### 2. 启动服务
 
@@ -88,7 +97,7 @@ REALTIME_ENABLED=false   # 与 SYNC_SCHEDULE_ENABLED 互斥（TGW 单连接）
 # API 服务（cd 到 adshare/ 后启动）
 cd adshare && docker compose up -d
 
-# Worker 服务（盘后模式，TGW 单连接约束下与 realtime 二选一）
+# Worker 服务（盘后模式；与 realtime 使用不同 TGW 账号时可同时运行）
 docker compose -f amazingdata/docker-compose.batch.yml up -d
 
 # 实时行情订阅
