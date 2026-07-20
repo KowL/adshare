@@ -43,6 +43,7 @@ from adshare.core.realtime_keys import (  # noqa: E402
     CHANNEL_KLINE_PREFIX,
     CHANNEL_QUOTE,
     REALTIME_INDEX_KEY,
+    REALTIME_KLINE_HIST_KEY,
     REALTIME_KLINE_KEY,
     REALTIME_QUOTE_KEY,
 )
@@ -344,6 +345,7 @@ class RealtimePublisher:
                 serialized, REALTIME_KLINE_KEY, period_str, code
             ):
                 self.stats["saved_to_redis"] += 1
+            self._append_kline_stream(cache, code, period_str, serialized)
             msg = json.dumps(
                 {
                     "type": "kline",
@@ -358,6 +360,48 @@ class RealtimePublisher:
         except Exception as e:
             logger.error("Handle kline error: %s", e)
             self.stats["failed"] += 1
+
+    def _append_kline_stream(
+        self,
+        cache: Any,
+        code: str,
+        period_str: str,
+        serialized: Dict[str, Any],
+    ) -> None:
+        """Accumulate the bar into the per-code+freq Redis Stream.
+
+        The Stream backs the tushare ``rt_min`` endpoint (recent N bars);
+        the single-key SETEX above is kept unchanged for
+        ``/realtime/kline/{code}``.
+        """
+        try:
+            settings = get_worker_settings()
+            stream_key = cache._make_key(
+                "realtime", f"{REALTIME_KLINE_HIST_KEY}:{period_str}", code
+            )
+            cache.redis.xadd(
+                stream_key,
+                {
+                    "trade_time": self._kline_time_ms(serialized),
+                    "data": json.dumps(serialized),
+                },
+                maxlen=settings.realtime_kline_max_bars,
+                approximate=True,
+            )
+            cache.redis.expire(stream_key, settings.realtime_kline_history_ttl)
+        except Exception as e:
+            logger.error("Append kline stream error (%s %s): %s", code, period_str, e)
+
+    @staticmethod
+    def _kline_time_ms(serialized: Dict[str, Any]) -> int:
+        """Extract the bar time as epoch milliseconds from a serialized kline."""
+        raw = serialized.get("kline_time") or serialized.get("trade_time")
+        if raw:
+            try:
+                return int(datetime.fromisoformat(str(raw)).timestamp() * 1000)
+            except (ValueError, TypeError, OverflowError):
+                pass
+        return int(time.time() * 1000)
 
     # ------------------------------------------------------------------
     # Helpers

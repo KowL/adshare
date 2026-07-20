@@ -74,7 +74,20 @@ class Settings(BaseSettings):
     # Realtime kline periods (shared between API and worker:
     # API subscribes to these Pub/Sub channels for SSE/WS broadcast).
     realtime_kline_periods: List[str] = Field(
-        default=["min1"], alias="REALTIME_KLINE_PERIODS"
+        default=["min1", "min5", "min15", "min30", "min60"],
+        alias="REALTIME_KLINE_PERIODS",
+    )
+
+    # Realtime kline history Stream (consumed by tushare rt_min).
+    realtime_kline_history_ttl: int = Field(
+        default=86400,
+        alias="REALTIME_KLINE_HISTORY_TTL",
+        description="K 线 Stream 在 Redis 中的 TTL（秒），盘后自然过期",
+    )
+    realtime_kline_max_bars: int = Field(
+        default=240,
+        alias="REALTIME_KLINE_MAX_BARS",
+        description="单只股票单个 freq Stream 最多保留的根数（XADD MAXLEN）",
     )
 
     # Worker toggles exposed to operators via /admin endpoints.

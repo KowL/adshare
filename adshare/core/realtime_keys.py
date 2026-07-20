@@ -14,6 +14,11 @@ REALTIME_QUOTE_KEY = "realtime:quote"
 REALTIME_KLINE_KEY = "realtime:kline"
 REALTIME_INDEX_KEY = "realtime:index"
 
+# Redis Stream holding accumulated kline bars per code+freq
+# (written by the worker alongside the single-key SETEX, read by the
+# tushare ``rt_min`` handler via XREVRANGE).
+REALTIME_KLINE_HIST_KEY = "realtime:kline:hist"
+
 # Redis Pub/Sub channels consumed by the API-side broadcast service.
 CHANNEL_QUOTE = "adshare:realtime:quote"
 CHANNEL_INDEX = "adshare:realtime:index"

@@ -32,7 +32,7 @@ from adshare.routers.tushare.common import (
     parse_request_body,
     tushare_auth,
 )
-from adshare.routers.tushare import index, stock
+from adshare.routers.tushare import index, realtime, stock
 from adshare.services.limit_up import LimitDownService, LimitUpService
 from adshare.services.market_data import MarketDataService
 
@@ -43,6 +43,7 @@ router = APIRouter(prefix="/tushare", tags=["tushare"], dependencies=[Depends(tu
 # Register category routers
 router.include_router(stock.router)
 router.include_router(index.router)
+router.include_router(realtime.router)
 
 
 # ---------------------------------------------------------------------------
@@ -83,4 +84,8 @@ async def tushare_unified_entry(
 
 def _resolve_handler(api_name: str) -> Any:
     """Return the handler for a tushare api_name, or None if unsupported."""
-    return stock.HANDLERS.get(api_name) or index.HANDLERS.get(api_name)
+    return (
+        stock.HANDLERS.get(api_name)
+        or index.HANDLERS.get(api_name)
+        or realtime.HANDLERS.get(api_name)
+    )

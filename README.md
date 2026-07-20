@@ -102,6 +102,8 @@ curl http://localhost:8000/fundamental/factors
 | `/tushare/stock/adj_factor` | GET/POST | Tushare Pro compatible adjustment factor |
 | `/tushare/stock/suspend_d` | GET/POST | Tushare Pro compatible suspension info |
 | `/tushare/stock/limit_list` | GET/POST | Tushare Pro compatible limit-up/down list |
+| `/tushare/realtime/rt_k` | GET/POST | Tushare Pro compatible realtime Level-1 snapshot |
+| `/tushare/realtime/rt_min` | GET/POST | Tushare Pro compatible realtime minute K-line |
 
 See `/docs` for full OpenAPI documentation.
 

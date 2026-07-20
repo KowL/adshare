@@ -215,7 +215,8 @@ def extract_tushare_params(body: dict[str, Any]) -> tuple[str, dict[str, Any], O
     params = body.get("params") or {}
     # Also allow top-level parameters for RESTful calls
     for key in ("ts_code", "start_date", "end_date", "trade_date", "cal_date",
-                "exchange", "limit", "offset", "fields"):
+                "exchange", "limit", "offset", "fields",
+                "freq", "start_time", "end_time"):
         if key in body and key not in params:
             params[key] = body[key]
 
