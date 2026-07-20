@@ -32,6 +32,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libhdf5-dev \
     rsync \
     openssh-client \
+    tzdata \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 WORKDIR /base

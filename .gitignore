@@ -64,6 +64,11 @@ PY
 /amazingdata/realtime.env
 /amazingdata/batch.env
 
+# SSH keypair directory used by amazingdata-batch container to rsync
+# warehouse data to root@8.148.216.30 (sync_to_remote.sh). Mounted into
+# the container as /root/.ssh (read-only).
+/.batch-ssh/
+
 # Local data
 cache/
 data/

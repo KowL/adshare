@@ -31,10 +31,17 @@ services:
       - DUCKDB_MODE=${DUCKDB_MODE:-memory}
       - ADSHARE_LOG_LEVEL=${ADSHARE_LOG_LEVEL:-INFO}
       - ADSHARE_LOG_DIR=/app/logs
+      # Pin timezone to Asia/Shanghai so APScheduler cron (configured in CST)
+      # fires at the intended local hour instead of UTC.
+      - TZ=Asia/Shanghai
       # Ensure amazingdata package stays importable when working_dir is /app/data
       - PYTHONPATH=/app
     volumes:
       - ../data:/app/data
       - ../cache:/app/cache
       - ../logs:/app/logs
+      # Mount host-managed SSH key + known_hosts so sync_to_remote.sh can
+      # rsync warehouse data to root@8.148.216.30. Key files are gitignored
+      # (`.batch-ssh/` is excluded by .gitignore). Source: ~/.batch-ssh/.
+      - ../.batch-ssh:/root/.ssh:ro
     restart: unless-stopped
