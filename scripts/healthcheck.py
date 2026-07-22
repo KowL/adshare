@@ -75,13 +75,13 @@ def main():
         elapsed_ms = (time.perf_counter() - start) * 1000
         reason = str(e.reason)
         if "refused" in reason.lower() or "connection refused" in reason.lower():
-            msg = "Connection refused"
+            msg = "Connection error: Connection refused"
         else:
             msg = f"Connection error: {reason}"
         result = {
             "status": "error",
             "url": args.url,
-            "status_code": None,
+            "status_code": 0,
             "response_time_ms": round(elapsed_ms, 2),
             "message": msg
         }
