@@ -2,7 +2,13 @@
 """Health check script for HTTP endpoints."""
 
 import argparse
+import contextlib
+import http.server
+import io
 import json
+import socket
+import sys
+import threading
 import time
 import urllib.request
 import urllib.error
@@ -44,12 +50,12 @@ def main():
         }
         print(json.dumps(result))
         return
-    except TimeoutError:
+    except (TimeoutError, socket.timeout):
         elapsed_ms = (time.perf_counter() - start) * 1000
         result = {
             "status": "error",
             "url": args.url,
-            "status_code": 0,
+            "status_code": None,
             "response_time_ms": round(elapsed_ms, 2),
             "message": "Request timed out"
         }
@@ -74,4 +80,26 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if "--self-test-timeout" in sys.argv:
+        class SlowHandler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                time.sleep(1.1)
+                self.send_response(200)
+                self.end_headers()
+
+            def log_message(self, format, *args):
+                pass
+
+        with http.server.ThreadingHTTPServer(("127.0.0.1", 0), SlowHandler) as server:
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            output = io.StringIO()
+            sys.argv = [__file__, "--url", f"http://127.0.0.1:{server.server_port}", "--timeout", "1"]
+            with contextlib.redirect_stdout(output):
+                main()
+            server.shutdown()
+        result = json.loads(output.getvalue())
+        assert result["status"] == "error"
+        assert result["message"] == "Request timed out"
+    else:
+        main()
