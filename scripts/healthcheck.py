@@ -38,7 +38,7 @@ def main():
             "message": f"HTTP error: {e.reason}"
         }
         print(json.dumps(result))
-        return
+        sys.exit(1)
     except urllib.error.URLError as e:
         elapsed_ms = (time.perf_counter() - start) * 1000
         result = {
@@ -49,7 +49,7 @@ def main():
             "message": f"Connection error: {e.reason}"
         }
         print(json.dumps(result))
-        return
+        sys.exit(1)
     except (TimeoutError, socket.timeout):
         elapsed_ms = (time.perf_counter() - start) * 1000
         result = {
@@ -60,7 +60,7 @@ def main():
             "message": "Request timed out"
         }
         print(json.dumps(result))
-        return
+        sys.exit(1)
 
     if status_code == 200:
         status = "ok"
