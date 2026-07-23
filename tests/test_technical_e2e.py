@@ -12,6 +12,7 @@ class TestTechnicalAnalyze:
         assert response.status_code == 200
         data = response.json()
         assert data["code"] == "000001.SZ"
+        assert data["date"] == "20240111"
         assert "price" in data
         assert "categories" in data
         # Single-indicator mode wraps under key "indicator"

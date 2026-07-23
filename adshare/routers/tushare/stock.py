@@ -25,6 +25,7 @@ from adshare.routers.tushare.common import (
     parse_request_body,
 )
 from adshare.services.derived_metrics import (
+    aggregate_kline_period,
     build_limit_list,
     compute_price_changes,
     convert_volume_to_lots,
@@ -34,6 +35,7 @@ from adshare.services.derived_metrics import (
     map_stock_basic_fields,
     map_suspend_fields,
     map_trade_cal_fields,
+    kline_lookback_date,
 )
 from adshare.services.limit_up import LimitDownService, LimitUpService
 from adshare.services.market_data import MarketDataService
@@ -75,20 +77,27 @@ def _fetch_kline(
     if not codes:
         raise InvalidParameterError("ts_code is required")
 
+    query_period = "day" if period in {"week", "month"} else period
     result = service.get_kline(
         codes=codes,
-        begin_date=start_date,
+        begin_date=kline_lookback_date(start_date),
         end_date=end_date,
-        period=period,
-        limit=limit,
-        offset=offset,
+        period=query_period,
     )
     df = result.df
     if df is None or df.empty:
         return pd.DataFrame()
 
     df = _normalize_kline_date(df)
+    df = aggregate_kline_period(df, period)
     df = compute_price_changes(df)
+    if "date" in df.columns:
+        dates = pd.to_numeric(df["date"], errors="coerce")
+        df = df[(dates >= start_date) & (dates <= end_date)]
+    if offset:
+        df = df.iloc[offset:]
+    if limit is not None:
+        df = df.iloc[:limit]
     df = convert_volume_to_lots(df)
     df = map_kline_fields(df)
     return df

@@ -11,11 +11,12 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, Response
+from fastapi import Depends, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from adshare.core.config import get_settings
+from adshare.core.auth import require_connection_auth
 from adshare.core.exceptions import AdshareException, map_exception_to_http_status
 from adshare.core.logging import setup_logging
 from adshare.core.metrics import REQUEST_COUNT, REQUEST_DURATION, SERVICE_INFO, get_metrics
@@ -137,18 +138,20 @@ def create_app() -> FastAPI:
         return response
 
     # Register routers
+    protected = [Depends(require_connection_auth)]
+
     app.include_router(health.router)
-    app.include_router(market.router)
-    app.include_router(financial.router)
-    app.include_router(technical.router)
-    app.include_router(fundamental.router)
-    app.include_router(factor.router)
-    app.include_router(realtime.router)
-    app.include_router(stock_data.router)
+    app.include_router(market.router, dependencies=protected)
+    app.include_router(financial.router, dependencies=protected)
+    app.include_router(technical.router, dependencies=protected)
+    app.include_router(fundamental.router, dependencies=protected)
+    app.include_router(factor.router, dependencies=protected)
+    app.include_router(realtime.router, dependencies=protected)
+    app.include_router(stock_data.router, dependencies=protected)
     app.include_router(tushare.router)
     if settings.historical_enabled:
-        app.include_router(historical.router)
-        app.include_router(historical_admin_router)
+        app.include_router(historical.router, dependencies=protected)
+        app.include_router(historical_admin_router, dependencies=protected)
 
     # Metrics endpoint
     if settings.metrics_enabled:

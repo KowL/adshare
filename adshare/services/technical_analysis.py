@@ -175,9 +175,17 @@ def _resolve_date_range(begin_date: Optional[int], end_date: Optional[int]) -> t
 
 
 def _latest_date(df: pd.DataFrame) -> str:
-    if "kline_time" in df.columns:
-        return str(df["kline_time"].iloc[-1])
-    return str(df.index[-1]) if hasattr(df, "index") else "N/A"
+    for column in ("date", "kline_time"):
+        if column not in df.columns:
+            continue
+        value = df[column].iloc[-1]
+        if isinstance(value, (int, float)) and not pd.isna(value):
+            return str(int(value))
+        try:
+            return pd.Timestamp(value).strftime("%Y%m%d")
+        except (TypeError, ValueError):
+            return str(value)
+    return "N/A"
 
 
 def _format_value(value):

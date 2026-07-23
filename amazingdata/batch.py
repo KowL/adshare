@@ -560,6 +560,133 @@ def sync_kline_monthly(
     )
 
 
+def sync_adjustment_factors(
+    *,
+    from_date: Optional[int] = None,
+    to_date: Optional[int] = None,
+    codes: Optional[Sequence[str]] = None,
+    periods: Sequence[str] = ("daily", "weekly", "monthly"),
+    refresh: bool = True,
+    settings: Optional[WorkerSettings] = None,
+    warehouse: Optional[HistoricalWarehouse] = None,
+    adapter=None,
+) -> SyncResult:
+    """Fetch real cumulative factors and patch existing K-line files."""
+    settings = settings or get_worker_settings()
+    warehouse = warehouse or get_warehouse(settings)
+    adapter_obj = adapter or _get_adapter_safe()
+    begin_date, end_date = _date_bounds(from_date, to_date)
+
+    if codes is None:
+        codes = _load_codes_from_meta(warehouse=warehouse, settings=settings)
+    code_list = [_ensure_code_suffix(code) for code in (codes or [])]
+    result = SyncResult(
+        job="sync_adjustment_factors",
+        started_at=time.time(),
+        total=len(code_list) * len(periods),
+    )
+    if not code_list:
+        result.success = True
+        result.finished_at = time.time()
+        return result
+
+    local_path = Path(settings.amazingdata_local_path)
+    local_path.mkdir(parents=True, exist_ok=True)
+    try:
+        with _SDK_CALL_LOCK:
+            factors = adapter_obj.get_adjustment_factors(
+                codes=",".join(code_list),
+                begin_date=begin_date,
+                end_date=end_date,
+                local_path=str(local_path),
+                refresh=refresh,
+            )
+    except Exception as exc:  # noqa: BLE001
+        result.failed = result.total
+        result.errors.append(str(exc))
+        result.finished_at = time.time()
+        return result
+
+    required = {"code", "date", "adj_factor"}
+    if not isinstance(factors, pd.DataFrame) or not required <= set(factors.columns):
+        result.failed = result.total
+        result.errors.append(
+            "adjustment factor source returned no canonical factor data"
+        )
+        result.finished_at = time.time()
+        return result
+
+    factors = factors.copy()
+    factors["code"] = factors["code"].astype(str)
+    factors["date"] = pd.to_numeric(factors["date"], errors="coerce")
+    factors["adj_factor"] = pd.to_numeric(
+        factors["adj_factor"], errors="coerce"
+    )
+    factors = factors.dropna(subset=["date", "adj_factor"])
+    factors["date"] = factors["date"].astype(int)
+
+    for period in periods:
+        subdir = normalize_period(period)
+        for code in code_list:
+            path = kline_file_path(warehouse.root, subdir, code)
+            if not path.exists():
+                result.skipped += 1
+                continue
+            try:
+                frame = pd.read_parquet(path)
+                code_factors = (
+                    factors[factors["code"] == code][["date", "adj_factor"]]
+                    .drop_duplicates("date", keep="last")
+                    .sort_values("date")
+                )
+                if frame.empty or code_factors.empty:
+                    result.skipped += 1
+                    continue
+
+                factor_series = code_factors.set_index("date")["adj_factor"]
+                target_dates = pd.Index(
+                    pd.to_numeric(frame["date"], errors="coerce")
+                    .dropna()
+                    .astype(int)
+                    .unique()
+                )
+                replacement = (
+                    factor_series.reindex(
+                        factor_series.index.union(target_dates)
+                    )
+                    .sort_index()
+                    .ffill()
+                    .reindex(target_dates)
+                )
+                factor_by_date = replacement.to_dict()
+                factor_values = pd.to_numeric(
+                    frame["date"], errors="coerce"
+                ).map(factor_by_date)
+                mask = factor_values.notna()
+                if not mask.any():
+                    result.skipped += 1
+                    continue
+
+                frame = frame.copy()
+                frame.loc[mask, "adj_factor"] = factor_values[mask].astype(float)
+                frame.to_parquet(
+                    path,
+                    engine="pyarrow",
+                    compression="zstd",
+                    index=False,
+                )
+                result.succeeded += 1
+                result.rows += int(mask.sum())
+            except Exception as exc:  # noqa: BLE001
+                result.failed += 1
+                result.errors.append(f"{subdir}/{code}: {exc}")
+
+    warehouse.refresh_views()
+    result.success = result.failed == 0
+    result.finished_at = time.time()
+    return result
+
+
 # ============================================================
 # Meta sync
 # ============================================================
@@ -1064,6 +1191,18 @@ def _run_sync_kline_daily() -> None:
         result = sync_kline_daily(from_date=begin_date, to_date=end_date)
         logger.info("sync_kline_daily: succeeded=%s failed=%s rows=%s duration=%.2fs",
                     result.succeeded, result.failed, result.rows, result.duration)
+        factor_result = sync_adjustment_factors(
+            from_date=_DEFAULT_BEGIN_DATE,
+            to_date=end_date,
+            periods=("daily",),
+            settings=settings,
+            warehouse=warehouse,
+        )
+        if not factor_result.success:
+            logger.error(
+                "sync_adjustment_factors(daily) failed: %s",
+                factor_result.errors,
+            )
         _sync_to_remote()
     except Exception as e:  # noqa: BLE001
         logger.exception("scheduled sync_kline_daily failed: %s", e)
@@ -1084,6 +1223,14 @@ def _run_sync_kline_weekly() -> None:
         except Exception:
             logger.warning("scheduled sync_kline_weekly: failed to probe last date, using 20200101")
         sync_kline_weekly(from_date=begin_date, to_date=end_date)
+        sync_adjustment_factors(
+            from_date=_DEFAULT_BEGIN_DATE,
+            to_date=end_date,
+            periods=("weekly",),
+            refresh=False,
+            settings=settings,
+            warehouse=warehouse,
+        )
         _sync_to_remote()
     except Exception as e:  # noqa: BLE001
         logger.exception("scheduled sync_kline_weekly failed: %s", e)
@@ -1104,6 +1251,14 @@ def _run_sync_kline_monthly() -> None:
         except Exception:
             logger.warning("scheduled sync_kline_monthly: failed to probe last date, using 20200101")
         sync_kline_monthly(from_date=begin_date, to_date=end_date)
+        sync_adjustment_factors(
+            from_date=_DEFAULT_BEGIN_DATE,
+            to_date=end_date,
+            periods=("monthly",),
+            refresh=False,
+            settings=settings,
+            warehouse=warehouse,
+        )
         _sync_to_remote()
     except Exception as e:  # noqa: BLE001
         logger.exception("scheduled sync_kline_monthly failed: %s", e)

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Fixed (2026-07-23)
+
+- **API authentication now covers business and administrative routes.** When `AUTH_ENABLED=true`, market, financial, technical, fundamental, factor, realtime, stock-data, historical, and historical-admin endpoints require a valid `X-API-Key` header or `api_key` query parameter. Health, root, and metrics endpoints remain public for monitoring.
+- **K-line adjustment factors now come from AmazingData.** Batch synchronization pulls backward-adjustment factors, aligns sparse factor dates to daily/weekly/monthly bars, and repairs existing Parquet files. Missing factors are no longer silently fabricated as `1.0`; `scripts/backfill_kline.py --adj-factor` can be used for an explicit backfill.
+- **Daily/weekly/monthly price fields now follow Tushare semantics.** `pre_close`, `change`, and `pct_chg` use each security's prior trading bar; weekly and monthly bars are aggregated from daily data and use the last actual trading date of the period.
+- **Technical-analysis responses now return the source bar date.** The response date is read from `date`/`kline_time` and formatted as `YYYYMMDD`, instead of leaking a DataFrame row index such as `131`.
+
 ### Added (2026-07-17)
 
 - **Realtime code list now pulled directly from the SDK.** `amazingdata/realtime.py` fetches the full A-share list via `get_code_list("EXTRA_STOCK_A_SH_SZ")` (~5,200 codes, daily-fresh) at startup; the cached `meta/codes.parquet` file is only a fallback. The realtime worker no longer depends on batch's `sync_meta_codes` having run first.
@@ -36,7 +43,7 @@
 - **`tests/test_historical*.py` fixtures** now return `WorkerSettings` (which exposes both worker fields and shared L3 fields via the `__getattr__` proxy), so batch sync tests work unchanged. Test count unchanged: **326 passed, 2 pre-existing failures** (documented in `docs/refactor-backlog.md`).
 
 - **L3 historical warehouse: scope narrowed to SH/SZ A-share.** The warehouse no longer serves Beijing Stock Exchange codes. `.BJ` rows are filtered at sync time (`_filter_sh_sz_codes`) and on-disk legacy `.BJ.parquet` files are removed by `repair_kline_directory`. `sync_index_component` default index list drops `899050.BJ` (北证50).
-- **L3 historical warehouse: adj_factor placeholder.** Missing `adj_factor` values are filled with `1.0` (AmazingData SDK does not currently expose an adjustment factor); `standardize_kline_df` enforces the fill, `repair_kline_directory` retroactively backfills existing files. Downstream ratio math can run; real复权 needs SDK support.
+- **L3 historical warehouse: adjustment-factor support.** Missing `adj_factor` values are preserved until the AmazingData backward-factor feed is synchronized; scheduled K-line jobs and `scripts/backfill_kline.py --adj-factor` can align real factors to stored daily/weekly/monthly bars.
 - **L3 historical warehouse: OHLCV-zero rows auto-marked suspended.** `validate_kline_df` flips `is_suspended=True` and nulls prices for rows where `open=high=low=close=0 && volume=0` to defend against upstream sync failures (e.g. 2026-06-12 weekly batch returned 0 for every stock).
 - **L3 financial tables: composite natural key dedup.** `sync_financial` and `repair_financial_table` deduplicate on `(market_code|ts_code, reporting_period, report_type, statement_type, comp_type_code)` to preserve the legitimate multi-version reports (合并/母公司) while removing exact duplicates from re-pulls. `report_type` enum is normalised to `{1, 2, 3, 4}` (SDK has occasionally returned a date string).
 - **L3 historical warehouse: flat layout migration.** Per-(period, year, code) files replaced by a single Parquet per (period, code) with all years merged (`A_share/{daily|weekly|monthly}/{code}.parquet`). Sync jobs now pull `[20200101, today]` per code and overwrite the single file. `_metadata.json` moved from per-year to per-period. `kline_file_path()` and `warehouse.kline_dir()` no longer require a `year` argument; the parameter is accepted but ignored for backward compatibility. `sync_kline_daily/weekly/monthly` now accept `from_date`/`to_date` (the legacy `year=` keyword still works). `warehouse.stats()` drops `year_count`, adds `first_date`/`last_date`. New migration script: `python -m scripts.migrate_to_flat_layout [--dry-run] [--keep-old] [--backup-root PATH]`.

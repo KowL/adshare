@@ -30,6 +30,7 @@ from adshare.core.config import get_settings  # noqa: E402
 from adshare.core.logging import setup_logging, get_logger  # noqa: E402
 from amazingdata.batch import (  # noqa: E402
     SyncResult,
+    sync_adjustment_factors,
     sync_kline_daily,
     sync_kline_weekly,
     sync_kline_monthly,
@@ -95,6 +96,11 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         help="Number of codes per SDK K-line request. Default: 1, or settings.MAX_CODES_PER_QUERY when all codes.",
+    )
+    parser.add_argument(
+        "--adj-factor",
+        action="store_true",
+        help="Fetch real cumulative adjustment factors and patch the selected K-line files.",
     )
     return parser.parse_args()
 
@@ -198,6 +204,24 @@ def main() -> int:
             if len(result.errors) > 3:
                 print(f"     ... and {len(result.errors) - 3} more")
         results.append(result)
+
+    if args.adj_factor:
+        print("\n--- adjustment factors ---")
+        factor_result = sync_adjustment_factors(
+            from_date=from_date,
+            to_date=to_date,
+            codes=code_list,
+            periods=tuple(periods),
+        )
+        print(
+            f"   succeeded={factor_result.succeeded} "
+            f"skipped={factor_result.skipped} failed={factor_result.failed} "
+            f"rows={factor_result.rows} duration={factor_result.duration:.2f}s"
+        )
+        if factor_result.errors:
+            for err in factor_result.errors[:3]:
+                print(f"     • {err}")
+        results.append(factor_result)
 
     total_duration = time.time() - started
     kline_results = [r for r in results if r.job.startswith("sync_kline")]

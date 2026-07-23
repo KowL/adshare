@@ -6,9 +6,19 @@ and suspension derivation from raw K-line DataFrames.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from typing import List, Optional
 
 import pandas as pd
+
+
+def kline_lookback_date(begin_date: int, days: int = 40) -> int:
+    """Return a safe earlier query date for previous-close calculations."""
+    try:
+        value = datetime.strptime(str(int(begin_date)), "%Y%m%d")
+    except (TypeError, ValueError):
+        return int(begin_date)
+    return int((value - timedelta(days=days)).strftime("%Y%m%d"))
 
 
 def compute_price_changes(df: pd.DataFrame) -> pd.DataFrame:
@@ -30,11 +40,18 @@ def compute_price_changes(df: pd.DataFrame) -> pd.DataFrame:
 
     df = df.copy()
 
-    # Ensure ascending order for shift calculation
-    df = df.sort_values("date", ascending=True).reset_index(drop=True)
+    # Ensure ascending order for shift calculation.  Multi-code queries must
+    # never use another security's close as their previous close.
+    sort_columns = ["date"]
+    if "code" in df.columns:
+        sort_columns = ["code", "date"]
+    df = df.sort_values(sort_columns, ascending=True).reset_index(drop=True)
 
     # pre_close is the close from the previous row (previous trading day)
-    df["pre_close"] = df["close"].shift(1)
+    if "code" in df.columns:
+        df["pre_close"] = df.groupby("code", sort=False)["close"].shift(1)
+    else:
+        df["pre_close"] = df["close"].shift(1)
 
     # change and pct_chg
     df["change"] = df["close"] - df["pre_close"]
@@ -44,6 +61,88 @@ def compute_price_changes(df: pd.DataFrame) -> pd.DataFrame:
     df = df.sort_values("date", ascending=False).reset_index(drop=True)
 
     return df
+
+
+def aggregate_kline_period(
+    df: pd.DataFrame,
+    period: str,
+) -> pd.DataFrame:
+    """Aggregate daily bars to Tushare-style weekly or monthly bars.
+
+    ``date`` is the last actual trading day in the period, rather than the
+    calendar period's first day.
+    """
+    if df is None or df.empty or period == "day":
+        return df
+    if period not in {"week", "month"}:
+        raise ValueError(f"unsupported aggregate period: {period}")
+
+    frame = df.copy()
+    frame["date"] = pd.to_numeric(frame["date"], errors="coerce")
+    frame = frame.dropna(subset=["date"]).copy()
+    frame["date"] = frame["date"].astype(int)
+    frame["_trade_dt"] = pd.to_datetime(
+        frame["date"].astype(str),
+        format="%Y%m%d",
+        errors="coerce",
+    )
+    frame = frame.dropna(subset=["_trade_dt"])
+    frame["_period"] = (
+        frame["_trade_dt"].dt.to_period("W-FRI")
+        if period == "week"
+        else frame["_trade_dt"].dt.to_period("M")
+    )
+
+    group_columns = ["_period"]
+    if "code" in frame.columns:
+        group_columns.insert(0, "code")
+
+    rows = []
+    for _, group in frame.sort_values("_trade_dt").groupby(
+        group_columns,
+        sort=True,
+        observed=True,
+    ):
+        row = {}
+        if "code" in group.columns:
+            row["code"] = str(group["code"].iloc[0])
+        row["date"] = int(group["date"].iloc[-1])
+        for column, reducer in (
+            ("open", "first"),
+            ("high", "max"),
+            ("low", "min"),
+            ("close", "last"),
+            ("volume", "sum"),
+            ("amount", "sum"),
+        ):
+            if column not in group.columns:
+                continue
+            values = pd.to_numeric(group[column], errors="coerce")
+            if reducer == "first":
+                row[column] = values.iloc[0]
+            elif reducer == "last":
+                row[column] = values.iloc[-1]
+            elif reducer == "max":
+                row[column] = values.max()
+            elif reducer == "min":
+                row[column] = values.min()
+            else:
+                row[column] = values.sum(min_count=1)
+
+        if "adj_factor" in group.columns:
+            factors = pd.to_numeric(
+                group["adj_factor"], errors="coerce"
+            ).dropna()
+            row["adj_factor"] = factors.iloc[-1] if not factors.empty else pd.NA
+        if "is_suspended" in group.columns:
+            row["is_suspended"] = bool(group["is_suspended"].fillna(False).all())
+        if "sync_at" in group.columns:
+            row["sync_at"] = pd.to_numeric(
+                group["sync_at"], errors="coerce"
+            ).max()
+        rows.append(row)
+
+    return pd.DataFrame(rows)
 
 
 def apply_adjustment(

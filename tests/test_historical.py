@@ -42,6 +42,7 @@ from adshare.historical.models import (
 )
 from amazingdata.batch import (
     SyncResult,
+    sync_adjustment_factors,
     sync_kline_daily,
     sync_meta_codes,
     sync_meta_calendar,
@@ -73,11 +74,13 @@ def isolated_settings(tmp_warehouse_root, monkeypatch, tmp_path) -> WorkerSettin
     env_overrides = {
         "HISTORICAL_ENABLED": "true",
         "HISTORICAL_PATH": str(tmp_warehouse_root),
+        "AUTH_ENABLED": "false",
         "DUCKDB_MODE": "memory",
         "DUCKDB_FILE_PATH": str(tmp_path / "duckdb" / "adshare.duckdb"),
         "SYNC_SCHEDULE_ENABLED": "false",
         "SYNC_WORKERS": "2",
         "SYNC_RETRY_ATTEMPTS": "2",
+        "AMAZINGDATA_LOCAL_PATH": str(tmp_path / "sdk_cache"),
         "REDIS_HOST": "127.0.0.1",
         "REDIS_PORT": "16379",
     }
@@ -276,6 +279,23 @@ class TestStandardizeKlineDf:
         df = standardize_kline_df(pd.DataFrame())
         assert list(df.columns) == list(KLINE_COLUMNS)
         assert len(df) == 0
+
+    def test_standardize_does_not_fabricate_adjustment_factor(self):
+        raw = pd.DataFrame(
+            {
+                "kline_time": pd.to_datetime(["2024-01-02"]),
+                "open": [10.0],
+                "high": [10.5],
+                "low": [9.8],
+                "close": [10.2],
+                "volume": [100000],
+                "amount": [1000000.0],
+            }
+        )
+
+        result = standardize_kline_df(raw)
+
+        assert result["adj_factor"].isna().all()
 
     def test_validate_drops_invalid_rows(self):
         raw = pd.DataFrame({
@@ -593,6 +613,42 @@ class TestSync:
         assert result.failed == 0
         assert (warehouse.root / "A_share" / "daily" / "000001.SZ.parquet").exists()
         assert (warehouse.root / "A_share" / "daily" / "600000.SH.parquet").exists()
+
+    def test_sync_adjustment_factors_repairs_existing_kline_files(
+        self, warehouse, isolated_settings
+    ):
+        fake = self._fake_adapter()
+        sync_kline_daily(
+            year=2024,
+            codes=["000001.SZ"],
+            settings=isolated_settings,
+            warehouse=warehouse,
+            adapter=fake,
+        )
+        fake.get_adjustment_factors.return_value = pd.DataFrame(
+            {
+                "code": ["000001.SZ"],
+                "date": [20240101],
+                "adj_factor": [1.25],
+            }
+        )
+
+        result = sync_adjustment_factors(
+            from_date=20240101,
+            to_date=20241231,
+            codes=["000001.SZ"],
+            periods=("daily",),
+            settings=isolated_settings,
+            warehouse=warehouse,
+            adapter=fake,
+        )
+
+        repaired = warehouse.query_kline(
+            ["000001.SZ"], 20240101, 20241231, "day"
+        )
+        assert result.success
+        assert result.rows == 1
+        assert repaired["adj_factor"].tolist() == [1.25]
 
     def test_sync_kline_daily_partial_failure(self, warehouse, isolated_settings):
         fake = MagicMock()

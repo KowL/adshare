@@ -201,14 +201,9 @@ def standardize_kline_df(df: pd.DataFrame, code: Optional[str] = None) -> pd.Dat
         else:
             df[col] = pd.Series([np.nan] * n, index=df.index, dtype="float64")
 
-    # The AmazingData SDK does not currently surface an adjustment
-    # factor column. Treat absence as "no adjustment" (factor 1.0)
-    # so the column is non-null and downstream ratio math
-    # (e.g. ``pre_close * adj_factor / prev_adj_factor``) can still
-    # run. Once the SDK exposes a real adj_factor column this
-    # default becomes a no-op because the column will be present.
-    if "adj_factor" in df.columns and df["adj_factor"].isna().all():
-        df["adj_factor"] = 1.0
+    # Missing factors stay unknown until ``sync_adjustment_factors`` patches
+    # them from BaseData.get_backward_factor.  Filling with 1.0 would silently
+    # turn qfq/hfq into unadjusted prices.
 
     if "volume" in df.columns:
         df["volume"] = pd.to_numeric(df["volume"], errors="coerce").fillna(0).astype("int64")

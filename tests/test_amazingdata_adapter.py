@@ -25,6 +25,13 @@ class FakeBaseData:
         self.calendar_markets.append(market)
         return [20240102, 20240103]
 
+    def get_backward_factor(self, code_list, local_path, is_local=True):
+        self.backward_factor_args = (code_list, local_path, is_local)
+        return pd.DataFrame(
+            {"000001.SZ": [1.0, 1.25]},
+            index=pd.to_datetime(["2024-01-02", "2024-06-14"]),
+        )
+
 
 class NoMarketCalendarBaseData(FakeBaseData):
     def get_calendar(self, market: str = "SH"):
@@ -83,3 +90,26 @@ def test_get_calendar_falls_back_for_sdk_without_market_argument():
     result = adapter.get_calendar(market="SZ")
 
     assert result["date"].tolist() == [20240102, 20240103]
+
+
+def test_get_adjustment_factors_normalizes_sdk_wide_frame():
+    base_data = FakeBaseData()
+    adapter = make_adapter(base_data)
+
+    result = adapter.get_adjustment_factors(
+        codes="000001.SZ",
+        begin_date=20240101,
+        end_date=20241231,
+        local_path="/tmp/amazingdata-factor-cache",
+        refresh=True,
+    )
+
+    assert result.to_dict("records") == [
+        {"code": "000001.SZ", "date": 20240102, "adj_factor": 1.0},
+        {"code": "000001.SZ", "date": 20240614, "adj_factor": 1.25},
+    ]
+    assert base_data.backward_factor_args == (
+        ["000001.SZ"],
+        "/tmp/amazingdata-factor-cache",
+        False,
+    )

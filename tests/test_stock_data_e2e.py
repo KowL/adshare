@@ -263,6 +263,11 @@ class TestKlineE2E:
         data = _assert_pro_response(response)
         assert len(data["data"]["items"]) == 1
         assert data["data"]["items"][0][1] == 20260610
+        fields = data["data"]["fields"]
+        row = dict(zip(fields, data["data"]["items"][0]))
+        assert row["pre_close"] == 10.2
+        assert row["change"] == pytest.approx(0.1)
+        assert row["pct_chg"] == pytest.approx(0.98)
 
     def test_daily_filter_by_date_range(self, stock_client):
         """Date range filter should restrict results."""
@@ -283,12 +288,22 @@ class TestKlineE2E:
         response = stock_client.get("/weekly?ts_code=000001.SZ")
         data = _assert_pro_response(response)
         assert "ts_code" in data["data"]["fields"]
+        assert len(data["data"]["items"]) == 1
+        row = dict(zip(data["data"]["fields"], data["data"]["items"][0]))
+        assert row["trade_date"] == 20260612
+        assert row["open"] == 10.0
+        assert row["close"] == 10.5
 
     def test_monthly_endpoint(self, stock_client):
         """Monthly endpoint should work with period=month."""
         response = stock_client.get("/monthly?ts_code=000001.SZ")
         data = _assert_pro_response(response)
         assert "ts_code" in data["data"]["fields"]
+        assert len(data["data"]["items"]) == 1
+        row = dict(zip(data["data"]["fields"], data["data"]["items"][0]))
+        assert row["trade_date"] == 20260612
+        assert row["open"] == 10.0
+        assert row["close"] == 10.5
 
 
 # ============================================================

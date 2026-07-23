@@ -31,6 +31,7 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+.venv-test-pandas/
 
 # IDEs
 .idea/
@@ -39,6 +40,7 @@ venv.bak/
 *.swo
 *~
 .DS_Store
+.worktrees/
 
 # pytest
 .pytest_cache/

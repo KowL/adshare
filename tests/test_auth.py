@@ -4,6 +4,7 @@ import asyncio
 
 import pytest
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 
 from adshare.core.auth import APIKeyAuth, get_api_key, verify_api_key
 
@@ -64,7 +65,7 @@ class TestAPIKeyAuth:
 
     def test_no_server_key_raises_500(self, monkeypatch):
         monkeypatch.setenv("AUTH_ENABLED", "true")
-        monkeypatch.delenv("ADSHARE_API_KEY", raising=False)
+        monkeypatch.setenv("ADSHARE_API_KEY", "")
         from adshare.core.config import get_settings
         get_settings.cache_clear()
 
@@ -101,3 +102,53 @@ class TestVerifyApiKey:
         with pytest.raises(HTTPException) as exc_info:
             _run(verify_api_key(api_key="wrong"))
         assert exc_info.value.status_code == 403
+
+
+class TestProtectedBusinessRoutes:
+    def test_market_route_requires_api_key_when_auth_enabled(self, monkeypatch):
+        monkeypatch.setenv("AUTH_ENABLED", "true")
+        monkeypatch.setenv("ADSHARE_API_KEY", "secret")
+        monkeypatch.setenv("HISTORICAL_ENABLED", "false")
+
+        from adshare.core.config import get_settings
+        from adshare.main import create_app
+
+        get_settings.cache_clear()
+        client = TestClient(create_app())
+
+        missing = client.get("/market/codes")
+        invalid = client.get("/market/codes", headers={"X-API-Key": "wrong"})
+
+        assert missing.status_code == 401
+        assert invalid.status_code == 403
+
+    def test_historical_admin_route_requires_api_key(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("AUTH_ENABLED", "true")
+        monkeypatch.setenv("ADSHARE_API_KEY", "secret")
+        monkeypatch.setenv("HISTORICAL_ENABLED", "true")
+        monkeypatch.setenv("HISTORICAL_PATH", str(tmp_path))
+
+        from adshare.core.config import get_settings
+        from adshare.main import create_app
+
+        get_settings.cache_clear()
+        client = TestClient(create_app())
+
+        response = client.post("/historical/admin/repair?job=codes&dry_run=true")
+
+        assert response.status_code == 401
+
+    def test_health_remains_public_when_auth_enabled(self, monkeypatch):
+        monkeypatch.setenv("AUTH_ENABLED", "true")
+        monkeypatch.setenv("ADSHARE_API_KEY", "secret")
+        monkeypatch.setenv("HISTORICAL_ENABLED", "false")
+
+        from adshare.core.config import get_settings
+        from adshare.main import create_app
+
+        get_settings.cache_clear()
+        client = TestClient(create_app())
+
+        assert client.get("/health").status_code == 200

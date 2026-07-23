@@ -72,6 +72,22 @@ class TestComputePriceChanges:
         result = compute_price_changes(pd.DataFrame())
         assert result.empty
 
+    def test_previous_close_is_scoped_per_stock(self):
+        import pandas as pd
+        df = pd.DataFrame(
+            {
+                "code": ["000001.SZ", "600519.SH", "000001.SZ", "600519.SH"],
+                "date": [20250102, 20250102, 20250103, 20250103],
+                "close": [10.0, 100.0, 11.0, 101.0],
+            }
+        )
+
+        result = compute_price_changes(df)
+        latest = result[result["date"] == 20250103].set_index("code")
+
+        assert latest.loc["000001.SZ", "pre_close"] == 10.0
+        assert latest.loc["600519.SH", "pre_close"] == 100.0
+
 
 class TestConvertVolume:
     def test_shares_to_lots(self):

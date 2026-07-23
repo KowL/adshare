@@ -101,6 +101,17 @@ class DataSourceAdapter(Protocol):
         """Return the trading calendar as a DataFrame with a ``date`` column."""
         ...
 
+    def get_adjustment_factors(
+        self,
+        codes: str,
+        begin_date: int,
+        end_date: int,
+        local_path: str,
+        refresh: bool = True,
+    ) -> pd.DataFrame:
+        """Return cumulative adjustment factors in canonical long form."""
+        ...
+
     def get_stock_basic(
         self, codes: Optional[str] = None, summary_only: bool = False
     ) -> pd.DataFrame:

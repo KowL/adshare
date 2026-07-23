@@ -70,6 +70,58 @@ class TestTushareStockDaily:
         data = response.json()
         assert data["data"]["fields"] == ["ts_code", "trade_date", "close"]
 
+    def test_daily_single_date_includes_previous_close(self, client):
+        response = client.get(
+            "/tushare/stock/daily",
+            params={
+                "ts_code": "000001.SZ",
+                "start_date": "20240105",
+                "end_date": "20240105",
+            },
+        )
+
+        assert response.status_code == 200
+        payload = response.json()["data"]
+        assert len(payload["items"]) == 1
+        row = dict(zip(payload["fields"], payload["items"][0]))
+        assert row["trade_date"] == 20240105
+        assert row["pre_close"] == pytest.approx(10.4)
+        assert row["change"] == pytest.approx(0.1)
+
+
+class TestTushareStockPeriods:
+    def test_weekly_uses_last_trading_date(self, client):
+        response = client.get(
+            "/tushare/stock/weekly",
+            params={
+                "ts_code": "000001.SZ",
+                "start_date": "20240102",
+                "end_date": "20240111",
+            },
+        )
+
+        payload = response.json()["data"]
+        rows = [
+            dict(zip(payload["fields"], item))
+            for item in payload["items"]
+        ]
+        assert [row["trade_date"] for row in rows] == [20240111, 20240105]
+
+    def test_monthly_uses_last_trading_date(self, client):
+        response = client.get(
+            "/tushare/stock/monthly",
+            params={
+                "ts_code": "000001.SZ",
+                "start_date": "20240102",
+                "end_date": "20240111",
+            },
+        )
+
+        payload = response.json()["data"]
+        assert len(payload["items"]) == 1
+        row = dict(zip(payload["fields"], payload["items"][0]))
+        assert row["trade_date"] == 20240111
+
 
 class TestTushareStockBasic:
     def test_stock_basic(self, client):

@@ -7,6 +7,7 @@ Provides endpoints matching the Pro data platform stock API conventions:
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from typing import Optional
 
 import pandas as pd
@@ -18,6 +19,7 @@ from adshare.historical.models import normalize_period
 from adshare.historical.warehouse import HistoricalWarehouse
 from adshare.services.dataframe_formatter import build_response, build_error_response, to_fields_items
 from adshare.services.derived_metrics import (
+    aggregate_kline_period,
     apply_adjustment,
     build_limit_list,
     compute_moving_averages,
@@ -31,6 +33,7 @@ from adshare.services.derived_metrics import (
     map_stock_basic_fields,
     map_suspend_fields,
     map_trade_cal_fields,
+    kline_lookback_date,
 )
 from adshare.services.limit_up import LimitDownService, LimitUpService
 from adshare.services.market_data import MarketDataService
@@ -201,19 +204,28 @@ def _get_kline_data(
         from datetime import datetime
         ed = int(datetime.now().strftime("%Y%m%d"))
 
+    query_begin = kline_lookback_date(sd)
+    query_period = "day" if period in {"week", "month"} else period
     result = service.get_kline(
         codes=codes,
-        begin_date=sd,
+        begin_date=query_begin,
         end_date=ed,
-        period=period,
+        period=query_period,
         source="auto",
     )
     df = result.df
     if df is None or df.empty:
         return build_response(data=to_fields_items(pd.DataFrame()))
 
-    # Compute derived fields
+    # Derive weekly/monthly bars from daily data so trade_date is the actual
+    # period-end trading day and boundary periods are not omitted.
+    df = aggregate_kline_period(df, period)
     df = compute_price_changes(df)
+    if "date" in df.columns:
+        df = df[
+            (pd.to_numeric(df["date"], errors="coerce") >= sd)
+            & (pd.to_numeric(df["date"], errors="coerce") <= ed)
+        ]
     df = convert_volume_to_lots(df)
     df = map_kline_fields(df)
     df = filter_fields(df, fields)

@@ -96,13 +96,9 @@ def _fix_kline_df(df: pd.DataFrame) -> Tuple[pd.DataFrame, int, int, int]:
 
     rows_in = len(df)
 
+    # Unknown factors stay null until the worker fetches real cumulative
+    # factors.  A fabricated 1.0 silently disables qfq/hfq.
     adj_filled = 0
-    if "adj_factor" in df.columns:
-        n = int(df["adj_factor"].isna().sum())
-        if n:
-            df = df.copy()
-            df.loc[df["adj_factor"].isna(), "adj_factor"] = 1.0
-            adj_filled = n
 
     invalid_before = 0
     if (
@@ -133,8 +129,7 @@ def repair_kline_directory(
 
     For each file we:
 
-    1. Fill missing ``adj_factor`` with 1.0 (the AmazingData SDK does
-       not currently expose an adjustment factor).
+    1. Preserve unknown ``adj_factor`` values for the dedicated factor sync.
     2. Flip ``is_suspended`` to True and null out prices for rows
        where the upstream pipeline reported ``OHLCV = 0`` on a normal
        trading day (caused by a sync failure that returned 0 for every

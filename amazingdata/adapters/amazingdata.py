@@ -247,6 +247,69 @@ class AmazingDataAdapter:
             result = result[result["date"] == date]
         return result
 
+    def get_adjustment_factors(
+        self,
+        codes: str,
+        begin_date: int,
+        end_date: int,
+        local_path: str,
+        refresh: bool = True,
+    ) -> pd.DataFrame:
+        """Get cumulative backward-adjustment factors from AmazingData."""
+        code_list = [
+            code.strip()
+            for code in str(codes).split(",")
+            if code.strip()
+        ]
+        if not code_list:
+            return pd.DataFrame(columns=["code", "date", "adj_factor"])
+
+        def _fetch():
+            self._get_client()
+            self._ensure_base_data()
+            return self._base_data.get_backward_factor(
+                code_list,
+                local_path=local_path,
+                is_local=not refresh,
+            )
+
+        raw = self._with_retry(_fetch)
+        if raw is None or not isinstance(raw, pd.DataFrame) or raw.empty:
+            return pd.DataFrame(columns=["code", "date", "adj_factor"])
+
+        if {"code", "date", "adj_factor"} <= set(raw.columns):
+            result = raw[["code", "date", "adj_factor"]].copy()
+        else:
+            wide = raw.copy()
+            wide.index.name = "date"
+            result = (
+                wide.stack()
+                .rename("adj_factor")
+                .rename_axis(index=["date", "code"])
+                .reset_index()
+            )
+
+        result["code"] = result["code"].astype(str)
+        parsed_dates = pd.to_datetime(
+            result["date"].astype(str),
+            errors="coerce",
+        )
+        result["date"] = pd.to_numeric(
+            parsed_dates.dt.strftime("%Y%m%d"),
+            errors="coerce",
+        )
+        result["adj_factor"] = pd.to_numeric(
+            result["adj_factor"],
+            errors="coerce",
+        )
+        result = result.dropna(subset=["date", "adj_factor"])
+        result["date"] = result["date"].astype(int)
+        result = result[
+            result["code"].isin(code_list)
+            & result["date"].between(int(begin_date), int(end_date))
+        ]
+        return result.sort_values(["code", "date"]).reset_index(drop=True)
+
     def get_kline(
         self,
         codes: str,
