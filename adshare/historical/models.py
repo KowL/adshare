@@ -65,6 +65,7 @@ CALENDAR_DTYPES: Dict[str, str] = {
 CODES_COLUMNS: Tuple[str, ...] = (
     "code",
     "name",
+    "comp_name",
     "list_date",
     "delist_date",
     "is_listed",
@@ -76,6 +77,7 @@ CODES_COLUMNS: Tuple[str, ...] = (
 CODES_DTYPES: Dict[str, str] = {
     "code": "string",
     "name": "string",
+    "comp_name": "string",
     "list_date": "int32",
     "delist_date": "int32",
     "is_listed": "bool",
@@ -359,7 +361,19 @@ def standardize_codes_df(df: pd.DataFrame) -> pd.DataFrame:
         "SECURITY_CODE": "code",
         "SECUCODE": "code",
         "SECURITY_NAME": "name",
-        "symbol": "name",  # symbol is the security name in some SDKs
+        "SECURITYNAME": "name",
+        "NAME": "name",
+        "SYMBOL": "name",  # symbol is the security name in some SDKs
+        "COMP_NAME": "comp_name",
+        "COMPANY_NAME": "comp_name",
+        "LISTDATE": "list_date",
+        "LIST_DATE": "list_date",
+        "DELISTDATE": "delist_date",
+        "DELIST_DATE": "delist_date",
+        "LISTPLATE_NAME": "list_plate",
+        "IS_LISTED": "is_listed",
+        "INDUSTRY": "industry",
+        "INDUSTRY_NAME": "industry",
     }
     for src, dst in rename_map.items():
         if src in df.columns and dst not in df.columns:
@@ -392,9 +406,19 @@ def standardize_codes_df(df: pd.DataFrame) -> pd.DataFrame:
     df["code"] = df["code"].astype(str)
     n = len(df)
     if "name" in df.columns:
-        df["name"] = df["name"].astype(str)
+        df["name"] = df["name"].fillna("").astype(str)
     else:
         df["name"] = pd.Series([""] * n, index=df.index, dtype="string")
+
+    # Preserve the complete metadata returned by the SDK.  These fields are
+    # exposed by the stock_basic endpoint even though the warehouse's compact
+    # code schema only stores the core columns.
+    if "comp_name" not in df.columns:
+        df["comp_name"] = ""
+    if "industry" not in df.columns:
+        df["industry"] = ""
+    df["comp_name"] = df["comp_name"].fillna("").astype(str)
+    df["industry"] = df["industry"].fillna("").astype(str)
 
     for col in ("list_date", "delist_date"):
         if col in df.columns:

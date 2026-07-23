@@ -590,6 +590,42 @@ def sync_meta_codes(
             else:
                 raise
 
+        # SDK adapters may return code metadata in the index with only a
+        # symbol/name column. Normalize that shape before merging cache data.
+        if raw is not None and not raw.empty and "code" not in raw.columns:
+            index_name = raw.index.name
+            raw = raw.reset_index()
+            raw = raw.rename(columns={raw.columns[0]: "code"})
+            if index_name and index_name in raw.columns and index_name != "code":
+                raw = raw.rename(columns={index_name: "code"})
+
+        # Keep trusted display metadata from an existing cache when the SDK
+        # response only contains the code list (or provides blank names).
+        cached_path = warehouse.meta_dir() / "codes.parquet"
+        cached = pd.DataFrame()
+        if cached_path.exists():
+            try:
+                cached = pd.read_parquet(cached_path)
+            except Exception as e:
+                logger.warning("Failed to read cached code metadata: %s", e)
+        if raw is not None and not raw.empty and not cached.empty and "code" in cached.columns:
+            cached = cached.drop_duplicates("code").set_index("code")
+            raw = raw.copy()
+            if "code" in raw.columns:
+                raw = raw.set_index("code")
+                for column in ("name", "comp_name", "industry", "list_date", "delist_date"):
+                    if column not in raw.columns:
+                        raw[column] = pd.NA
+                    if column in cached.columns:
+                        missing = raw[column].isna() | raw[column].astype(object).astype(str).eq("")
+                        replacement = cached[column].reindex(raw.index)
+                        values = raw[column].astype(object).tolist()
+                        for position, is_missing in enumerate(missing.tolist()):
+                            if is_missing:
+                                values[position] = replacement.iloc[position]
+                        raw[column] = values
+                raw = raw.reset_index()
+
         if raw is not None and not (hasattr(raw, "empty") and raw.empty):
             if "code" in raw.columns:
                 before = len(raw)
@@ -943,6 +979,15 @@ def init_scheduler(settings: Optional[Settings] = None) -> "BackgroundScheduler"
                 hour=int(settings.sync_index_component_hour),
                 minute=int(settings.sync_index_component_minute),
                 id="sync_index_component", replace_existing=True,
+            )
+            # Keep a dedicated financial job slot for scheduler compatibility.
+            # The worker itself remains a no-op while financial sync is disabled.
+            scheduler.add_job(
+                _run_sync_financial, "cron",
+                day_of_week="sun",
+                hour=5,
+                minute=0,
+                id="sync_financial", replace_existing=True,
             )
 
         if settings.maintenance_schedule_enabled:

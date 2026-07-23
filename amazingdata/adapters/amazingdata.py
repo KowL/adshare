@@ -353,12 +353,22 @@ class AmazingDataAdapter:
             # Normalize column names to lowercase snake_case
             col_map = {
                 "MARKET_CODE": "code",
+                "SECURITY_CODE": "code",
+                "SECUCODE": "code",
                 "SECURITY_NAME": "name",
+                "SECURITYNAME": "name",
+                "NAME": "name",
+                "SYMBOL": "name",
                 "COMP_NAME": "comp_name",
+                "COMPANY_NAME": "comp_name",
                 "LISTDATE": "list_date",
+                "LIST_DATE": "list_date",
                 "DELISTDATE": "delist_date",
+                "DELIST_DATE": "delist_date",
                 "LISTPLATE_NAME": "list_plate",
                 "IS_LISTED": "is_listed",
+                "INDUSTRY": "industry",
+                "INDUSTRY_NAME": "industry",
             }
             df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
             if summary_only and "code" in df.columns and "name" in df.columns:
