@@ -215,10 +215,12 @@ def map_stock_basic_fields(df: pd.DataFrame) -> pd.DataFrame:
     df["name"] = df.get("name", "")
 
     # Missing fields — return empty/defaults
-    df["area"] = ""
-    df["fullname"] = df.get("comp_name", "")
-    df["enname"] = ""
-    df["cnspell"] = ""
+    df["area"] = df.get("area", "")
+    df["fullname"] = df.get("comp_name", df["name"])
+    df["fullname"] = df["fullname"].fillna("").astype(str)
+    df.loc[df["fullname"].eq(""), "fullname"] = df.loc[df["fullname"].eq(""), "name"]
+    df["enname"] = df.get("enname", "")
+    df["cnspell"] = df.get("cnspell", "")
     df["curr_type"] = "CNY"
     df["is_hs"] = "N"
 

@@ -324,7 +324,7 @@ class HistoricalWarehouse:
         path = self.meta_dir() / "codes.parquet"
         if not path.exists():
             return pd.DataFrame(columns=[
-                "code", "name", "list_date", "delist_date",
+                "code", "name", "comp_name", "list_date", "delist_date",
                 "is_listed", "board", "industry", "sync_at",
             ])
         sql = f"SELECT * FROM read_parquet('{path}') WHERE 1=1"
