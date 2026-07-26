@@ -1504,6 +1504,7 @@ def main() -> int:
         logger.error("Failed to login to AmazingData, exiting")
         return 1
 
+    warehouse: Optional[HistoricalWarehouse] = None
     try:
         if settings.historical_enabled:
             warehouse = get_warehouse(settings)
@@ -1533,6 +1534,11 @@ def main() -> int:
     except Exception as e:
         logger.error("Sync scheduler init error: %s", e)
         return 1
+
+    if warehouse is not None:
+        for period in ("day", "week", "month"):
+            _write_period_metadata(period, warehouse.root, warehouse, 0)
+        logger.info("Historical freshness initialized from existing warehouse")
 
     scheduler_obj = get_scheduler()
 
