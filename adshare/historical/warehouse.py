@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import threading
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
@@ -24,6 +25,24 @@ from adshare.core.logging import get_logger
 from adshare.historical.models import _safe_code, normalize_period, period_to_subdir
 
 logger = get_logger(__name__)
+
+
+def _coverage_end_date(period: str, raw_date: int) -> str:
+    """Convert a bar label date to the last calendar date it covers.
+
+    Weekly/monthly bars are labeled by period *start* (Monday / 1st
+    trading day), so the raw MAX(date) understates actual coverage.
+    """
+    if period == "day":
+        return str(raw_date)
+    d = date(raw_date // 10000, raw_date // 100 % 100, raw_date % 100)
+    if period == "week":
+        end = d + timedelta(days=4 - d.weekday())
+    else:  # month
+        next_month = date(d.year + d.month // 12, d.month % 12 + 1, 1)
+        end = next_month - timedelta(days=1)
+    end = min(end, date.today())
+    return end.strftime("%Y%m%d")
 
 
 class HistoricalWarehouse:
@@ -564,13 +583,15 @@ class HistoricalWarehouse:
             return None
         if not row or row[0] is None:
             return None
+        coverage_end = _coverage_end_date(period, int(row[0]))
         return {
-            "latest_trade_date": str(int(row[0])),
-            "latest_complete_date": str(int(row[0])),
+            "latest_trade_date": coverage_end,
+            "latest_complete_date": coverage_end,
             "code_count": int(row[1] or 0),
             "last_sync_at": int(row[2]) if row[2] is not None else None,
         }
 
+    def health(self) -> Dict[str, Any]:
         try:
             with self._lock:
                 self._con.execute("SELECT 1").fetchone()
