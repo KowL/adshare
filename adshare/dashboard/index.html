@@ -1,25 +1,25 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>adshare service dashboard</title>
+  <title>adshare 服务看板</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
   <div class="app">
     <header class="app-header">
       <h1 class="app-title">
-        adshare service dashboard
+        adshare 服务看板
         <small id="clock">--:--:--</small>
       </h1>
       <div class="controls">
-        <label for="apiKey">API key</label>
+        <label for="apiKey">API 密钥</label>
         <input id="apiKey" type="password" autocomplete="off"
                placeholder="X-API-Key" />
-        <button id="testBtn">Test</button>
-        <button id="alertsBtn" disabled>Enable alerts</button>
-        <button class="link-button" id="debugToggle">debug</button>
+        <button id="testBtn">测试</button>
+        <button id="alertsBtn" disabled>启用告警</button>
+        <button class="link-button" id="debugToggle">调试</button>
       </div>
     </header>
 
@@ -31,13 +31,13 @@
 
     <section class="row">
       <div class="panel" id="realtimePanel">
-        <h2>Realtime counters</h2>
+        <h2>实时计数</h2>
         <div class="counter-grid" id="counters">
           <!-- counter boxes injected by app.js -->
         </div>
       </div>
       <div class="panel" id="sparklinePanel">
-        <h2>Realtime activity (30 min)</h2>
+        <h2>实时活动（30 分钟）</h2>
         <svg class="spark" id="spark" viewBox="0 0 600 64"
              preserveAspectRatio="none">
           <line class="axis" x1="0" y1="32" x2="600" y2="32" />
@@ -51,16 +51,16 @@
     </section>
 
     <section class="panel">
-      <h2>Historical data freshness</h2>
+      <h2>历史数据新鲜度</h2>
       <table class="freshness" id="freshness">
         <thead>
           <tr>
-            <th>Period</th>
-            <th>Latest trade date</th>
-            <th>Complete through</th>
-            <th>Codes</th>
-            <th>Last run</th>
-            <th>Status</th>
+            <th>周期</th>
+            <th>最新交易日期</th>
+            <th>数据完整至</th>
+            <th>代码数量</th>
+            <th>最近运行</th>
+            <th>状态</th>
           </tr>
         </thead>
         <tbody id="freshnessBody">
@@ -72,7 +72,7 @@
     <section class="debug hidden" id="debugPane">
       <h2 style="margin:0 0 10px; font-size:13px; text-transform:uppercase;
                  letter-spacing:0.06em; color:var(--text-dim);">
-        Raw /status payload
+        原始 /status 响应
       </h2>
       <pre id="debugPre"></pre>
     </section>

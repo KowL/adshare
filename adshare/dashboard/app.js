@@ -21,11 +21,20 @@ const SERVICE_ORDER = [
   'redis',
 ];
 
+const STATUS_LABELS = {
+  initialising: '初始化中',
+  ok: '正常',
+  degraded: '降级',
+  down: '故障',
+};
+
+const PERIOD_LABELS = { day: '日线', week: '周线', month: '月线' };
+
 const COUNTER_KEYS = [
-  ['total_received',  'received'],
-  ['saved_to_redis',  'saved'],
-  ['published',       'published'],
-  ['failed',          'failed'],
+  ['total_received', '已接收'],
+  ['saved_to_redis', '已保存'],
+  ['published', '已发布'],
+  ['failed', '失败'],
 ];
 
 // ---------------------------------------------------------------------
@@ -153,8 +162,8 @@ async function poll() {
     renderCards();
     showBanner(
       fetchError
-        ? `Network error: ${fetchError.message || fetchError.name || 'failed'}`
-        : `API responded ${resp ? resp.status : 'no response'}`,
+        ? `网络错误：${fetchError.message || fetchError.name || '请求失败'}`
+        : `API 返回 ${resp ? resp.status : '无响应'}`,
     );
     return;
   }
@@ -162,7 +171,7 @@ async function poll() {
   try {
     payload = await resp.json();
   } catch (e) {
-    showBanner('API returned non-JSON');
+    showBanner('API 返回的不是 JSON');
     return;
   }
 
@@ -228,8 +237,8 @@ function maybeNotify(name, prev, curr) {
       Notification.permission === 'granted'
     ) {
       try {
-        new Notification(`adshare: ${name} → ${curr}`, {
-          body: `State changed from ${prev} to ${curr}`,
+        new Notification(`adshare：${name} → ${STATUS_LABELS[curr] || curr}`, {
+          body: `状态从“${STATUS_LABELS[prev] || prev}”变为“${STATUS_LABELS[curr] || curr}”`,
           tag: `adshare-${name}`,
         });
       } catch (e) {
@@ -241,17 +250,17 @@ function maybeNotify(name, prev, curr) {
 
 els.alertsBtn.addEventListener('click', async () => {
   if (!window.Notification) {
-    els.alertsBtn.textContent = 'no notification API';
+    els.alertsBtn.textContent = '浏览器不支持通知';
     els.alertsBtn.disabled = true;
     return;
   }
   const perm = await Notification.requestPermission();
   if (perm === 'granted') {
     state.audioEnabled = true;
-    els.alertsBtn.textContent = 'Alerts enabled';
+    els.alertsBtn.textContent = '告警已启用';
     els.alertsBtn.disabled = true;
   } else {
-    els.alertsBtn.textContent = 'Permission denied';
+    els.alertsBtn.textContent = '通知权限被拒绝';
   }
 });
 
@@ -275,14 +284,15 @@ function renderCards() {
     const card = document.createElement('div');
     card.className = 'card';
     const smoothed = state.smoothed[name].status;
+    const displayStatus = STATUS_LABELS[smoothed] || smoothed;
     card.innerHTML = `
       <div class="card-name">${name}</div>
       <div class="card-status">
-        <span class="pill ${smoothed}">${smoothed}</span>
+        <span class="pill ${smoothed}">${displayStatus}</span>
       </div>
       <div class="meta">
-        <div class="kv"><span>age</span><span>${ageText(svc)}</span></div>
-        <div class="kv"><span>last seen</span><span>${fmtTs(svc.last_seen_at)}</span></div>
+        <div class="kv"><span>年龄</span><span>${ageText(svc)}</span></div>
+        <div class="kv"><span>最后心跳</span><span>${fmtTs(svc.last_seen_at)}</span></div>
         ${detailRow(svc)}
       </div>
     `;
@@ -292,14 +302,14 @@ function renderCards() {
 
 function ageText(svc) {
   if (svc.age_sec == null) return '—';
-  return `${svc.age_sec.toFixed(1)} s`;
+  return `${svc.age_sec.toFixed(1)} 秒`;
 }
 
 function detailRow(svc) {
   if (svc.name !== 'amazingdata-realtime' || !svc.payload) return '';
   const age = svc.payload.tick_age_sec;
   if (age == null) return '';
-  return `<div class="kv"><span>tick age</span><span>${age.toFixed(1)} s</span></div>`;
+  return `<div class="kv"><span>行情延迟</span><span>${age.toFixed(1)} 秒</span></div>`;
 }
 
 function renderRealtime(stats) {
@@ -329,7 +339,7 @@ function renderSparkline(history) {
     .filter((n) => Number.isFinite(n));
   if (counts.length < 2) {
     els.sparkLine.setAttribute('points', '');
-    els.sparkMeta.textContent = 'collecting data…';
+    els.sparkMeta.textContent = '正在收集数据…';
     return;
   }
   const max = Math.max(...counts);
@@ -348,13 +358,12 @@ function renderSparkline(history) {
     .join(' ');
   els.sparkLine.setAttribute('points', pts);
   els.sparkMeta.textContent =
-    `${counts.length} samples · min ${min.toLocaleString()} · ` +
-    `max ${max.toLocaleString()} · last ${counts[counts.length - 1].toLocaleString()}`;
+    `${counts.length} 个样本 · 最小 ${min.toLocaleString()} · ` +
+    `最大 ${max.toLocaleString()} · 最新 ${counts[counts.length - 1].toLocaleString()}`;
 }
 
 function renderFreshness(freshness) {
   const rows = freshness?.rows || [];
-  const PERIOD_LABELS = { day: 'Day', week: 'Week', month: 'Month' };
   const periodOrder = ['day', 'week', 'month'];
   els.freshnessBody.innerHTML = '';
   for (const period of periodOrder) {
@@ -364,13 +373,16 @@ function renderFreshness(freshness) {
       tr.className = 'missing';
       tr.innerHTML = `
         <td>${PERIOD_LABELS[period]}</td>
-        <td colspan="5">no data — never synced</td>
+        <td colspan="5">暂无数据 — 尚未同步</td>
       `;
     } else {
       const inProgress = row.is_in_progress;
       const completeTag = inProgress
-        ? `<span class="pill degraded">in progress</span>`
+        ? `<span class="pill degraded">同步中</span>`
         : '';
+      const runStatus = row.last_run_status || 'unknown';
+      const runStatusLabel = runStatus === 'ok' ? '正常' :
+        runStatus === 'down' ? '失败' : '未知';
       tr.innerHTML = `
         <td>${PERIOD_LABELS[period]}</td>
         <td>${row.latest_trade_date || '—'}</td>
@@ -378,8 +390,8 @@ function renderFreshness(freshness) {
         <td class="num">${formatNum(row.code_count)}</td>
         <td>${fmtIso(row.last_run_at)}</td>
         <td>
-          <span class="pill ${row.last_run_status === 'ok' ? 'ok' : 'down'}">
-            ${row.last_run_status || 'unknown'}
+          <span class="pill ${runStatus === 'ok' ? 'ok' : 'down'}">
+            ${runStatusLabel}
           </span>
         </td>
       `;
@@ -421,23 +433,23 @@ els.testBtn.addEventListener('click', async () => {
   // in sync, and blur fires before click so the bullets-display
   // never reaches the request.
   els.testBtn.disabled = true;
-  els.testBtn.textContent = 'Testing…';
+  els.testBtn.textContent = '测试中…';
   try {
     const resp = await fetchStatus();
     if (resp.ok) {
-      els.testBtn.textContent = 'OK ✓';
+      els.testBtn.textContent = '通过 ✓';
       els.alertsBtn.disabled = false;
     } else if (resp.status === 401) {
-      els.testBtn.textContent = '401 — bad key';
+      els.testBtn.textContent = '密钥错误（401）';
     } else {
-      els.testBtn.textContent = `Error ${resp.status}`;
+      els.testBtn.textContent = `错误 ${resp.status}`;
     }
   } catch (e) {
-    els.testBtn.textContent = 'Network error';
+    els.testBtn.textContent = '网络错误';
   } finally {
     setTimeout(() => {
       els.testBtn.disabled = false;
-      els.testBtn.textContent = 'Test';
+      els.testBtn.textContent = '测试';
     }, 1500);
   }
 });
@@ -449,7 +461,7 @@ els.debugToggle.addEventListener('click', () => {
 
 if (window.Notification && Notification.permission === 'granted') {
   state.audioEnabled = true;
-  els.alertsBtn.textContent = 'Alerts enabled';
+  els.alertsBtn.textContent = '告警已启用';
   els.alertsBtn.disabled = true;
 }
 
