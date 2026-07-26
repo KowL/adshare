@@ -403,24 +403,30 @@ els.apiKey.addEventListener('focus', () => {
   els.apiKey.value = state.apiKey;
   els.apiKey.type = 'text';
 });
+els.apiKey.addEventListener('input', () => {
+  state.apiKey = els.apiKey.value.trim();
+});
 els.apiKey.addEventListener('blur', () => {
   state.apiKey = els.apiKey.value.trim();
   localStorage.setItem('adshare_api_key', state.apiKey);
   els.apiKey.value = state.apiKey ? '•'.repeat(8) : '';
   els.apiKey.type = 'password';
+  // Auto-start polling once a key is provided so users don't have
+  // to click Test after pasting.
+  if (state.apiKey) startPolling();
 });
 
 els.testBtn.addEventListener('click', async () => {
-  state.apiKey = els.apiKey.value.trim();
+  // state.apiKey is current — the `input` event listener keeps it
+  // in sync, and blur fires before click so the bullets-display
+  // never reaches the request.
   els.testBtn.disabled = true;
   els.testBtn.textContent = 'Testing…';
   try {
     const resp = await fetchStatus();
     if (resp.ok) {
       els.testBtn.textContent = 'OK ✓';
-      localStorage.setItem('adshare_api_key', state.apiKey);
       els.alertsBtn.disabled = false;
-      startPolling();
     } else if (resp.status === 401) {
       els.testBtn.textContent = '401 — bad key';
     } else {
