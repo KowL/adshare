@@ -542,7 +542,35 @@ class HistoricalWarehouse:
             "periods": period_stats,
         }
 
-    def health(self) -> Dict[str, Any]:
+    def freshness_stats(self, period: str) -> Optional[Dict[str, Any]]:
+        """Return freshness metrics from the current on-disk K-line view."""
+        view_map = {
+            "day": ("daily", "v_kline_day"),
+            "week": ("weekly", "v_kline_week"),
+            "month": ("monthly", "v_kline_month"),
+        }
+        subdir, view = view_map[period]
+        if not list((self.root / "A_share" / subdir).glob("*.parquet")):
+            return None
+        try:
+            row = self.connection.execute(
+                f"""
+                SELECT MAX(date), COUNT(DISTINCT code), MAX(sync_at)
+                FROM {view}
+                """
+            ).fetchone()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("freshness query failed for %s: %s", period, e)
+            return None
+        if not row or row[0] is None:
+            return None
+        return {
+            "latest_trade_date": str(int(row[0])),
+            "latest_complete_date": str(int(row[0])),
+            "code_count": int(row[1] or 0),
+            "last_sync_at": int(row[2]) if row[2] is not None else None,
+        }
+
         try:
             with self._lock:
                 self._con.execute("SELECT 1").fetchone()

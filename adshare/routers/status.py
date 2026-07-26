@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Response
@@ -30,6 +31,7 @@ from fastapi import APIRouter, Depends, Response
 from adshare import dependencies as deps
 from adshare.core.cache import CacheManager
 from adshare.core.logging import get_logger
+from adshare.historical.warehouse import HistoricalWarehouse
 
 logger = get_logger(__name__)
 
@@ -42,11 +44,6 @@ _HEARTBEAT_KEYS = {
 _HISTORY_STREAMS = {
     "amazingdata-realtime": "adshare:stats:amazingdata-realtime",
     "amazingdata-batch": "adshare:stats:amazingdata-batch",
-}
-_FRESHNESS_KEYS = {
-    "day": "adshare:data:freshness:kline:day",
-    "week": "adshare:data:freshness:kline:week",
-    "month": "adshare:data:freshness:kline:month",
 }
 _JOB_FAILURES_HASH = "adshare:data:freshness:job:failures"
 _STATUS_EVENTS_STREAM = "adshare:status:events"
@@ -103,12 +100,13 @@ def _derive_status(age_sec: Optional[float]) -> str:
 @router.get("", dependencies=[Depends(_no_cache)])
 async def get_status_composite(
     cache: CacheManager = Depends(deps.get_cache_manager_dep),
+    warehouse: Optional[HistoricalWarehouse] = Depends(deps.get_warehouse_dep),
 ) -> Dict[str, Any]:
     """Composite snapshot the dashboard polls every 7 s."""
     now = time.time()
     services = _build_services(cache, now)
     realtime_stats = _build_realtime_stats(cache, now)
-    data_freshness = _build_data_freshness(cache)
+    data_freshness = _build_data_freshness(cache, warehouse)
     return {
         "ts": now,
         "services": services,
@@ -138,9 +136,10 @@ async def get_realtime_stats(
 @router.get("/data-freshness", dependencies=[Depends(_no_cache)])
 async def get_data_freshness(
     cache: CacheManager = Depends(deps.get_cache_manager_dep),
+    warehouse: Optional[HistoricalWarehouse] = Depends(deps.get_warehouse_dep),
 ) -> Dict[str, Any]:
-    """Per-period kline freshness rows + recent job failures."""
-    return {"ts": time.time(), "freshness": _build_data_freshness(cache)}
+    """Per-period kline freshness read from the server warehouse."""
+    return {"ts": time.time(), "freshness": _build_data_freshness(cache, warehouse)}
 
 
 @router.get("/events", dependencies=[Depends(_no_cache)])
@@ -267,18 +266,35 @@ def _read_history(
     return out
 
 
-def _build_data_freshness(cache: CacheManager) -> Dict[str, Any]:
+def _build_data_freshness(
+    cache: CacheManager,
+    warehouse: Optional[HistoricalWarehouse],
+) -> Dict[str, Any]:
     rows: List[Dict[str, Any]] = []
-    for period, key in _FRESHNESS_KEYS.items():
-        row = _read_json(cache, key)
-        if row is None:
+    for period in ("day", "week", "month"):
+        metrics = warehouse.freshness_stats(period) if warehouse else None
+        if metrics is None:
             rows.append({
                 "period": period,
                 "missing": True,
                 "last_run_status": "unknown",
             })
-        else:
-            rows.append({"period": period, "missing": False, **row})
+            continue
+        last_sync_at = metrics.pop("last_sync_at", None)
+        rows.append({
+            "period": period,
+            "missing": False,
+            **metrics,
+            "last_run_at": (
+                datetime.fromtimestamp(last_sync_at, timezone.utc).isoformat()
+                if last_sync_at is not None else None
+            ),
+            "last_run_status": "ok",
+            "last_error": None,
+            "rows_inserted": None,
+            "is_in_progress": False,
+        })
+
     failures: Dict[str, str] = {}
     try:
         raw = cache.redis.hgetall(_JOB_FAILURES_HASH)

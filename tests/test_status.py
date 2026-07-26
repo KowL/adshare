@@ -10,16 +10,12 @@ import pytest
 
 
 class _FakeRedis:
-    """In-memory stand-in for the redis client surface used by
-    ``adshare.routers.status``."""
-
     def __init__(self) -> None:
         self.strings: Dict[str, bytes] = {}
         self.ttls: Dict[str, float] = {}
         self.streams: Dict[str, List[Any]] = {}
         self.hashes: Dict[str, Dict[str, bytes]] = {}
 
-    # String
     def set(self, key: str, value: Any, ex: Optional[int] = None) -> bool:
         if isinstance(value, str):
             value = value.encode("utf-8")
@@ -29,43 +25,36 @@ class _FakeRedis:
         return True
 
     def get(self, key: str) -> Optional[bytes]:
-        v = self.strings.get(key)
-        if v is None:
+        value = self.strings.get(key)
+        if value is None:
             return None
         if key in self.ttls and self.ttls[key] < time.time():
             del self.strings[key]
             del self.ttls[key]
             return None
-        return v
+        return value
 
-    # Stream
-    def xrevrange(
-        self, stream: str, count: Optional[int] = None,
-    ) -> List[Any]:
+    def xrevrange(self, stream: str, count: Optional[int] = None) -> List[Any]:
         entries = list(self.streams.get(stream, []))
         entries.reverse()
-        if count is not None:
-            entries = entries[:count]
-        return entries
+        return entries[:count] if count is not None else entries
 
     def xadd(
         self, stream: str, fields: Dict[str, Any], maxlen: Optional[int] = None,
         approximate: bool = False,
     ) -> str:
         encoded = {}
-        for k, v in fields.items():
-            kb = k.encode("utf-8") if isinstance(k, str) else k
-            if isinstance(v, str):
-                v = v.encode("utf-8")
-            encoded[kb] = v
+        for key, value in fields.items():
+            encoded[key.encode() if isinstance(key, str) else key] = (
+                value.encode() if isinstance(value, str) else value
+            )
         entries = self.streams.setdefault(stream, [])
-        entry_id = f"{len(entries)}"
+        entry_id = str(len(entries))
         entries.append((entry_id, encoded))
         if maxlen is not None and len(entries) > maxlen:
             entries.pop(0)
         return entry_id
 
-    # Hash
     def hgetall(self, key: str) -> Dict[str, bytes]:
         return dict(self.hashes.get(key, {}))
 
@@ -75,24 +64,38 @@ class _FakeCacheManager:
         self.redis = _FakeRedis()
 
 
+class _FakeWarehouse:
+    def __init__(self) -> None:
+        self.metrics: Dict[str, Optional[Dict[str, Any]]] = {
+            "day": None, "week": None, "month": None,
+        }
+
+    def freshness_stats(self, period: str) -> Optional[Dict[str, Any]]:
+        row = self.metrics[period]
+        return dict(row) if row is not None else None
+
+
 @pytest.fixture
 def fake_cache() -> _FakeCacheManager:
     return _FakeCacheManager()
 
 
 @pytest.fixture
-def status_client(client, fake_cache, monkeypatch):
-    """TestClient with the cache manager replaced by a fake."""
-    import adshare.dependencies as _deps_mod
+def fake_warehouse() -> _FakeWarehouse:
+    return _FakeWarehouse()
+
+
+@pytest.fixture
+def status_client(client, fake_cache, fake_warehouse):
+    import adshare.dependencies as deps
 
     app = client.app
-    app.dependency_overrides[_deps_mod.get_cache_manager_dep] = (
-        lambda: fake_cache
-    )
+    app.dependency_overrides[deps.get_cache_manager_dep] = lambda: fake_cache
+    app.dependency_overrides[deps.get_warehouse_dep] = lambda: fake_warehouse
     return client
 
 
-def _seed_heartbeat(fake_cache: _FakeCacheManager, svc: str, age_sec: float = 5.0):
+def _seed_heartbeat(cache: _FakeCacheManager, service: str, age_sec: float = 5.0):
     payload = {
         "ts": time.time() - age_sec,
         "uptime_s": 100.0,
@@ -100,123 +103,96 @@ def _seed_heartbeat(fake_cache: _FakeCacheManager, svc: str, age_sec: float = 5.
                   "published": 9, "failed": 1, "start_time": None},
         "codes_count": 5000,
     }
-    fake_cache.redis.set(
-        f"adshare:heartbeat:{svc}",
-        json.dumps(payload),
-        ex=30,
-    )
+    cache.redis.set(f"adshare:heartbeat:{service}", json.dumps(payload), ex=30)
 
 
-def _seed_freshness(fake_cache: _FakeCacheManager, period: str, in_progress: bool):
-    row = {
-        "period": period,
+def _server_row() -> Dict[str, Any]:
+    return {
         "latest_trade_date": "2026-07-25",
-        "latest_complete_date": "2026-07-24" if in_progress else "2026-07-25",
+        "latest_complete_date": "2026-07-25",
         "code_count": 5000,
-        "last_run_at": "2026-07-26T17:10:00+08:00",
-        "last_run_status": "ok",
-        "last_error": None,
-        "rows_inserted": 5000,
-        "is_in_progress": in_progress,
+        "last_sync_at": 1785076200,
     }
-    fake_cache.redis.set(
-        f"adshare:data:freshness:kline:{period}",
-        json.dumps(row),
-        ex=86400,
-    )
 
 
 class TestStatusComposite:
-    def test_returns_services_and_freshness(self, status_client, fake_cache):
+    def test_returns_services_and_server_freshness(
+        self, status_client, fake_cache, fake_warehouse,
+    ):
         _seed_heartbeat(fake_cache, "amazingdata-realtime", age_sec=3.0)
         _seed_heartbeat(fake_cache, "amazingdata-batch", age_sec=10.0)
-        _seed_freshness(fake_cache, "day", in_progress=False)
-        _seed_freshness(fake_cache, "week", in_progress=False)
-        _seed_freshness(fake_cache, "month", in_progress=False)
+        for period in ("day", "week", "month"):
+            fake_warehouse.metrics[period] = _server_row()
 
         resp = status_client.get("/status")
         assert resp.status_code == 200
         assert resp.headers.get("cache-control") == "no-store"
         data = resp.json()
-
-        names = {s["name"] for s in data["services"]}
+        names = {service["name"] for service in data["services"]}
         assert {"adshare-api", "amazingdata-realtime",
                 "amazingdata-batch", "redis"} == names
-
         realtime = next(
-            s for s in data["services"] if s["name"] == "amazingdata-realtime"
+            service for service in data["services"]
+            if service["name"] == "amazingdata-realtime"
         )
         assert realtime["alive"] is True
         assert realtime["status"] == "ok"
+        assert all(not row["missing"] for row in data["data_freshness"]["rows"])
 
-        periods = {r["period"] for r in data["data_freshness"]["rows"]}
-        assert periods == {"day", "week", "month"}
+    def test_redis_freshness_is_ignored(
+        self, status_client, fake_cache, fake_warehouse,
+    ):
+        fake_cache.redis.set(
+            "adshare:data:freshness:kline:day",
+            json.dumps({"latest_trade_date": "1900-01-01"}),
+        )
+        fake_warehouse.metrics["day"] = _server_row()
+        response = status_client.get("/status/data-freshness")
+        day = next(row for row in response.json()["freshness"]["rows"]
+                   if row["period"] == "day")
+        assert day["latest_trade_date"] == "2026-07-25"
 
     def test_missing_heartbeat_is_down(self, status_client, fake_cache):
-        # realtime heartbeat absent → down
         _seed_heartbeat(fake_cache, "amazingdata-batch", age_sec=2.0)
+        services = status_client.get("/status/services").json()["services"]
+        by_name = {service["name"]: service for service in services}
+        assert by_name["amazingdata-realtime"]["status"] == "down"
+        assert by_name["amazingdata-realtime"]["alive"] is False
+        assert by_name["amazingdata-batch"]["status"] == "ok"
 
-        resp = status_client.get("/status/services")
-        assert resp.status_code == 200
-        services = {s["name"]: s for s in resp.json()["services"]}
-        assert services["amazingdata-realtime"]["status"] == "down"
-        assert services["amazingdata-realtime"]["alive"] is False
-        assert services["amazingdata-batch"]["status"] == "ok"
-        assert services["adshare-api"]["status"] == "ok"
-
-    def test_stale_heartbeat_is_degraded_or_down(
-        self, status_client, fake_cache,
-    ):
-        # age_sec=60 → older than 30 s TTL was overridden to bypass TTL
-        # by writing directly; result must be "degraded" or "down".
-        payload = {"ts": time.time() - 60, "uptime_s": 1.0}
+    def test_stale_heartbeat_is_degraded_or_down(self, status_client, fake_cache):
         fake_cache.redis.set(
             "adshare:heartbeat:amazingdata-realtime",
-            json.dumps(payload),
+            json.dumps({"ts": time.time() - 60, "uptime_s": 1.0}),
         )
-        resp = status_client.get("/status/services")
-        rt = next(
-            s for s in resp.json()["services"]
-            if s["name"] == "amazingdata-realtime"
-        )
-        assert rt["status"] in ("degraded", "down")
-        assert rt["alive"] is False
+        services = status_client.get("/status/services").json()["services"]
+        realtime = next(s for s in services if s["name"] == "amazingdata-realtime")
+        assert realtime["status"] in ("degraded", "down")
+        assert realtime["alive"] is False
 
-    def test_missing_freshness_row_reported(self, status_client, fake_cache):
-        resp = status_client.get("/status/data-freshness")
-        rows = {r["period"]: r for r in resp.json()["freshness"]["rows"]}
+    def test_missing_server_freshness_row_reported(self, status_client):
+        rows = {
+            row["period"]: row
+            for row in status_client.get("/status/data-freshness").json()["freshness"]["rows"]
+        }
         assert rows["day"]["missing"] is True
         assert rows["week"]["missing"] is True
         assert rows["month"]["missing"] is True
 
-    def test_in_progress_flag_surfaces(self, status_client, fake_cache):
-        _seed_freshness(fake_cache, "day", in_progress=True)
-        resp = status_client.get("/status/data-freshness")
-        rows = {r["period"]: r for r in resp.json()["freshness"]["rows"]}
-        assert rows["day"]["is_in_progress"] is True
-        assert rows["day"]["latest_complete_date"] == "2026-07-24"
-
     def test_realtime_stats_history_roundtrip(self, status_client, fake_cache):
         _seed_heartbeat(fake_cache, "amazingdata-realtime", age_sec=1.0)
-        # Seed a 1-min counter snapshot
         for i in range(3):
-            snap = {"ts": time.time() - 60 * (3 - i), "total_received": i * 100}
+            snapshot = {"ts": time.time() - 60 * (3 - i), "total_received": i * 100}
             fake_cache.redis.xadd(
                 "adshare:stats:amazingdata-realtime",
-                {"data": json.dumps(snap)},
-                maxlen=30,
+                {"data": json.dumps(snapshot)}, maxlen=30,
             )
+        stats = status_client.get("/status/realtime/stats").json()["stats"]
+        assert stats["amazingdata-realtime"]["heartbeat"]["stats"]["total_received"] == 10
+        assert len(stats["amazingdata-realtime"]["history"]) == 3
+        assert stats["amazingdata-realtime"]["history"][-1]["total_received"] == 200
 
-        resp = status_client.get("/status/realtime/stats")
-        assert resp.status_code == 200
-        stats = resp.json()["stats"]["amazingdata-realtime"]
-        assert stats["heartbeat"]["stats"]["total_received"] == 10
-        assert len(stats["history"]) == 3
-        assert stats["history"][-1]["total_received"] == 200
-
-    def test_events_endpoint_returns_empty_when_unseeded(
-        self, status_client, fake_cache,
-    ):
-        resp = status_client.get("/status/events")
-        assert resp.status_code == 200
-        assert resp.json()["events"] == []
+    def test_events_endpoint_returns_empty_when_unseeded(self, status_client):
+        response = status_client.get("/status/events")
+        assert response.status_code == 200
+        assert response.json()["events"] == []
