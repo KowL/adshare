@@ -66,10 +66,14 @@ CODES_COLUMNS: Tuple[str, ...] = (
     "code",
     "name",
     "comp_name",
+    "pinyin",
+    "comp_name_eng",
+    "comp_sname_eng",
     "list_date",
     "delist_date",
     "is_listed",
     "board",
+    "list_plate",
     "industry",
     "sync_at",
 )
@@ -78,10 +82,14 @@ CODES_DTYPES: Dict[str, str] = {
     "code": "string",
     "name": "string",
     "comp_name": "string",
+    "pinyin": "string",
+    "comp_name_eng": "string",
+    "comp_sname_eng": "string",
     "list_date": "int32",
     "delist_date": "int32",
     "is_listed": "bool",
     "board": "string",
+    "list_plate": "string",
     "industry": "string",
     "sync_at": "int64",
 }
@@ -361,6 +369,9 @@ def standardize_codes_df(df: pd.DataFrame) -> pd.DataFrame:
         "SYMBOL": "name",  # symbol is the security name in some SDKs
         "COMP_NAME": "comp_name",
         "COMPANY_NAME": "comp_name",
+        "PINYIN": "pinyin",
+        "COMP_NAME_ENG": "comp_name_eng",
+        "COMP_SNAME_ENG": "comp_sname_eng",
         "LISTDATE": "list_date",
         "LIST_DATE": "list_date",
         "DELISTDATE": "delist_date",
@@ -373,6 +384,8 @@ def standardize_codes_df(df: pd.DataFrame) -> pd.DataFrame:
     for src, dst in rename_map.items():
         if src in df.columns and dst not in df.columns:
             df = df.rename(columns={src: dst})
+    if "list_plate" in df.columns and "board" not in df.columns:
+        df = df.rename(columns={"list_plate": "board"})
 
     # If the DataFrame has a non-default index whose values look like codes,
     # promote that index to a 'code' column. This handles adapters that
@@ -405,21 +418,19 @@ def standardize_codes_df(df: pd.DataFrame) -> pd.DataFrame:
     else:
         df["name"] = pd.Series([""] * n, index=df.index, dtype="string")
 
-    # Preserve the complete metadata returned by the SDK.  These fields are
-    # exposed by the stock_basic endpoint even though the warehouse's compact
-    # code schema only stores the core columns.
-    if "comp_name" not in df.columns:
-        df["comp_name"] = ""
-    if "industry" not in df.columns:
-        df["industry"] = ""
-    df["comp_name"] = df["comp_name"].fillna("").astype(str)
-    df["industry"] = df["industry"].fillna("").astype(str)
+    # Preserve the complete metadata returned by the SDK's stock_basic endpoint.
+    for col in ("comp_name", "pinyin", "comp_name_eng", "comp_sname_eng", "industry"):
+        if col not in df.columns:
+            df[col] = ""
+        df[col] = df[col].fillna("").astype(str)
 
     for col in ("list_date", "delist_date"):
         if col in df.columns:
             df[col] = df[col].apply(_date_to_int)
         else:
             df[col] = pd.Series([0] * n, index=df.index, dtype="int32")
+        if col == "delist_date":
+            df.loc[df[col].eq(19700101), col] = 0
         df[col] = _coerce_int(df[col], "int32")
 
     if "is_listed" in df.columns:
@@ -431,9 +442,9 @@ def standardize_codes_df(df: pd.DataFrame) -> pd.DataFrame:
         df["board"] = df["code"].apply(_infer_board)
     df["board"] = df["board"].astype(str)
 
-    if "industry" not in df.columns:
-        df["industry"] = pd.Series([""] * n, index=df.index, dtype="string")
-    df["industry"] = df["industry"].astype(str)
+    if "list_plate" not in df.columns:
+        df["list_plate"] = df["board"]
+    df["list_plate"] = df["list_plate"].fillna("").astype(str)
 
     if "sync_at" not in df.columns:
         df["sync_at"] = int(time.time())

@@ -85,6 +85,25 @@ class FakeSDK:
             index=self.codes,
         )
 
+    def get_stock_basic(self, codes=None, summary_only: bool = False) -> pd.DataFrame:
+        code_list = list(self.codes)
+        if codes:
+            code_list = [c.strip() for c in str(codes).split(",") if c.strip()]
+        return pd.DataFrame(
+            {
+                "code": code_list,
+                "name": [f"Stock {c}" for c in code_list],
+                "comp_name": [f"Company {c}" for c in code_list],
+                "pinyin": [f"PY{idx}" for idx, _ in enumerate(code_list)],
+                "comp_name_eng": [f"Company {idx}" for idx, _ in enumerate(code_list)],
+                "comp_sname_eng": [f"C{idx}" for idx, _ in enumerate(code_list)],
+                "list_date": [20200101] * len(code_list),
+                "delist_date": [0] * len(code_list),
+                "list_plate": ["主板"] * len(code_list),
+                "is_listed": [1] * len(code_list),
+            }
+        )
+
     def get_calendar(self, market: str = "SH") -> pd.DataFrame:
         dates = []
         cur = datetime(self.year_start, 1, 1)
@@ -256,7 +275,7 @@ def test_5year_meta_sync(five_year_settings):
         settings=five_year_settings, warehouse=wh, adapter=fake
     )
     assert result_codes.success
-    assert result_codes.rows == 5
+    assert result_codes.rows == 4
 
     result_cal = hist_sync.sync_meta_calendar(
         market="SH",
@@ -271,9 +290,50 @@ def test_5year_meta_sync(five_year_settings):
     # Verify queryable
     wh.refresh_views()
     df_codes = wh.query_codes()
-    assert len(df_codes) == 5
+    assert len(df_codes) == 4
     df_cal = wh.query_calendar(market="SH")
     assert len(df_cal) > 0
+
+
+def test_meta_sync_falls_back_to_stock_basic_when_code_info_names_are_blank(five_year_settings):
+    codes = ["000001.SZ", "600000.SH"]
+    fake = MagicMock()
+    fake.get_code_info.return_value = pd.DataFrame(
+        {
+            "code": codes,
+            "name": ["", ""],
+            "list_date": [0, 0],
+            "comp_name": ["", ""],
+        }
+    )
+    fake.get_stock_basic.return_value = pd.DataFrame(
+        {
+            "MARKET_CODE": codes,
+            "SECURITY_NAME": ["平安银行", "浦发银行"],
+            "COMP_NAME": ["平安银行股份有限公司", "上海浦东发展银行股份有限公司"],
+            "PINYIN": ["PAYH", "SPDB"],
+            "COMP_NAME_ENG": ["Ping An Bank Co., Ltd.", "Shanghai Pudong Development Bank Co., Ltd."],
+            "COMP_SNAME_ENG": ["PAB", "SPDB"],
+            "LISTDATE": [19910403, 19991110],
+            "DELISTDATE": [0, 0],
+            "LISTPLATE_NAME": ["主板", "主板"],
+            "IS_LISTED": [1, 1],
+        }
+    )
+    wh = hist_warehouse.get_warehouse(five_year_settings)
+
+    result = hist_sync.sync_meta_codes(
+        settings=five_year_settings, warehouse=wh, adapter=fake
+    )
+
+    assert result.success
+    fake.get_stock_basic.assert_called_once_with(summary_only=False)
+    df = pd.read_parquet(wh.meta_dir() / "codes.parquet")
+    assert df["name"].tolist() == ["平安银行", "浦发银行"]
+    assert df["comp_name"].tolist() == ["平安银行股份有限公司", "上海浦东发展银行股份有限公司"]
+    assert df["pinyin"].tolist() == ["PAYH", "SPDB"]
+    assert df["list_date"].tolist() == [19910403, 19991110]
+    assert df["board"].tolist() == ["主板", "主板"]
 
 
 def test_backfill_handles_partial_failures(five_year_settings):
