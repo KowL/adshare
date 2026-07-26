@@ -10,10 +10,12 @@ import asyncio
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.staticfiles import StaticFiles
 
 from adshare.core.config import get_settings
 from adshare.core.auth import require_connection_auth
@@ -31,6 +33,7 @@ from adshare.routers import (
     historical,
     market,
     realtime,
+    status,
     stock_data,
     technical,
     tushare,
@@ -141,6 +144,7 @@ def create_app() -> FastAPI:
     protected = [Depends(require_connection_auth)]
 
     app.include_router(health.router)
+    app.include_router(status.router, dependencies=protected)
     app.include_router(market.router, dependencies=protected)
     app.include_router(financial.router, dependencies=protected)
     app.include_router(technical.router, dependencies=protected)
@@ -171,7 +175,17 @@ def create_app() -> FastAPI:
             "metrics": settings.metrics_path if settings.metrics_enabled else None,
             "realtime": "/realtime",
             "websocket": "/realtime/ws",
+            "dashboard": "/dashboard",
+            "status": "/status",
         }
+
+    dashboard_dir = Path(__file__).resolve().parent / "dashboard"
+    if dashboard_dir.exists():
+        app.mount(
+            "/dashboard",
+            StaticFiles(directory=str(dashboard_dir), html=True),
+            name="dashboard",
+        )
 
     return app
 

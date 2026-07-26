@@ -50,6 +50,7 @@ from adshare.core.realtime_keys import (  # noqa: E402
 
 from amazingdata.adapters.amazingdata import get_adapter  # noqa: E402
 from amazingdata.adapters.base import DataSourceAdapter, SubscriptionSource  # noqa: E402
+from amazingdata.heartbeat import HeartbeatWriter  # noqa: E402
 
 logger = get_logger("amazingdata.realtime")
 
@@ -106,6 +107,8 @@ class RealtimePublisher:
         self._index_code_list: List[str] = []
         self._running = False
         self._subscribe_thread: Optional[threading.Thread] = None
+        self._start_time: float = time.time()
+        self._last_tick_time: float = 0.0
 
         self.stats: Dict[str, Any] = {
             "total_received": 0,
@@ -287,6 +290,7 @@ class RealtimePublisher:
 
     def _handle_snapshot(self, data: Any, period: int) -> None:
         try:
+            self._last_tick_time = time.time()
             self.stats["total_received"] += 1
             code = self._extract_code(data)
             if not code:
@@ -311,6 +315,7 @@ class RealtimePublisher:
 
     def _handle_index_snapshot(self, data: Any, period: int) -> None:
         try:
+            self._last_tick_time = time.time()
             self.stats["total_received"] += 1
             code = self._extract_code(data)
             if not code:
@@ -335,6 +340,7 @@ class RealtimePublisher:
 
     def _handle_kline(self, data: Any, period: int, period_str: str) -> None:
         try:
+            self._last_tick_time = time.time()
             self.stats["total_received"] += 1
             code = self._extract_code(data)
             if not code:
@@ -475,6 +481,7 @@ def main() -> int:
         return 1
 
     publisher = None
+    heartbeat: Optional[HeartbeatWriter] = None
     try:
         publisher = get_realtime_publisher()
         if not publisher.initialize():
@@ -484,9 +491,47 @@ def main() -> int:
         logger.exception("Realtime publisher init error: %s", e)
         return 1
 
+    def _heartbeat_payload() -> Dict[str, Any]:
+        assert publisher is not None
+        now = time.time()
+        tick_age = (
+            now - publisher._last_tick_time
+            if publisher._last_tick_time > 0
+            else None
+        )
+        return {
+            "uptime_s": round(now - publisher._start_time, 3),
+            "last_tick_time": publisher._last_tick_time,
+            "tick_age_sec": (
+                round(tick_age, 3) if tick_age is not None else None
+            ),
+            "stats": dict(publisher.stats),
+            "codes_count": len(publisher._code_list),
+            "index_codes_count": len(publisher._index_code_list),
+            "periods": list(getattr(settings, "realtime_kline_periods", []) or []),
+            "sdk_account": settings.amazingdata_connection_string,
+        }
+
+    def _counter_snapshot() -> Dict[str, Any]:
+        assert publisher is not None
+        return dict(publisher.stats)
+
+    heartbeat = HeartbeatWriter(
+        service_name="amazingdata-realtime",
+        get_payload=_heartbeat_payload,
+        get_counter_snapshot=_counter_snapshot,
+    )
+    heartbeat.start()
+    logger.info("Realtime heartbeat writer started")
+
     def _signal_handler(signum, frame):  # noqa: ARG001
         logger.info("Received signal %s, shutting down...", signum)
         _shutdown_event.set()
+        if heartbeat is not None:
+            try:
+                heartbeat.stop()
+            except Exception:
+                pass
         if publisher is not None:
             try:
                 publisher.shutdown()

@@ -65,10 +65,48 @@ from adshare.historical.warehouse import HistoricalWarehouse, get_warehouse  # n
 
 from amazingdata.adapters.amazingdata import get_adapter  # noqa: E402
 from amazingdata.adapters.base import DataSourceAdapter  # noqa: E402
+from amazingdata.freshness import publish_kline_freshness  # noqa: E402
+from amazingdata.heartbeat import HeartbeatWriter  # noqa: E402
+
+try:
+    from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_EXECUTED  # noqa: E402
+except ImportError:  # pragma: no cover
+    EVENT_JOB_EXECUTED = 4096
+    EVENT_JOB_ERROR = 8192
 
 logger = get_logger("amazingdata.batch")
 
 _shutdown_event = threading.Event()
+
+
+# Module-level job-run tracking — consumed by the heartbeat payload
+# getter. Updated by the scheduler listener registered in
+# ``init_scheduler``.
+_last_job_lock = threading.Lock()
+_last_job: dict = {
+    "id": None,
+    "status": None,
+    "at": None,
+    "error": None,
+}
+
+
+def _on_job_event(event) -> None:  # noqa: ANN001
+    """Track the most recent scheduler job outcome for the heartbeat."""
+    code = getattr(event, "code", None)
+    is_error = code == EVENT_JOB_ERROR
+    is_success = code == EVENT_JOB_EXECUTED and not getattr(event, "exception", None)
+    if not (is_error or is_success):
+        return
+    exc = getattr(event, "exception", None)
+    err_str = f"{type(exc).__name__}: {exc}" if exc else None
+    with _last_job_lock:
+        _last_job.update({
+            "id": getattr(event, "job_id", None),
+            "status": "ok" if is_success else "failed",
+            "at": int(time.time()),
+            "error": err_str if is_error else None,
+        })
 
 
 # ============================================================
@@ -478,6 +516,26 @@ def _write_period_metadata(
             last_date=last_date,
             last_sync_at=int(time.time()),
         )
+        # Publish freshness to Redis for the dashboard. Failures are
+        # non-fatal — the parquet metadata is the source of truth.
+        try:
+            worker_settings = get_worker_settings()
+            row = publish_kline_freshness(
+                period=period,
+                code_count=len(existing),
+                rows_inserted=rows_written,
+                first_date=first_date,
+                last_date=last_date,
+                last_sync_at=int(time.time()),
+                historical_path=worker_settings.historical_path,
+            )
+            if row is None:
+                logger.debug(
+                    "freshness publish returned no row for period=%s last_date=%s",
+                    period, last_date,
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("freshness publish failed for %s: %s", period, e)
     except Exception as e:  # noqa: BLE001
         logger.warning("sync_kline: failed to write metadata: %s", e)
 
@@ -701,13 +759,38 @@ def sync_meta_codes(
     warehouse = warehouse or get_warehouse(settings)
     result = SyncResult(job="sync_meta_codes", started_at=time.time())
 
+    def _metadata_is_sparse(df: Optional[pd.DataFrame]) -> bool:
+        """Return true when SDK code_info lacks stock_basic fields."""
+        if df is None or (hasattr(df, "empty") and df.empty):
+            return True
+        sample = df.copy()
+        rename_map = {
+            "SECURITY_NAME": "name",
+            "SECURITYNAME": "name",
+            "SYMBOL": "name",
+            "COMP_NAME": "comp_name",
+            "LISTDATE": "list_date",
+            "LISTPLATE_NAME": "list_plate",
+        }
+        sample = sample.rename(columns={k: v for k, v in rename_map.items() if k in sample.columns})
+        if "name" not in sample.columns:
+            return True
+        name_blank = sample["name"].fillna("").astype(str).str.strip().eq("").mean()
+        if name_blank > 0.9:
+            return True
+        for column in ("comp_name", "list_date", "list_plate"):
+            if column not in sample.columns:
+                return True
+        return False
+
     try:
         adapter_obj = adapter or _get_adapter_safe()
         raw: Optional[pd.DataFrame] = None
         try:
             with _SDK_CALL_LOCK:
                 raw = adapter_obj.get_code_info(security_type="EXTRA_STOCK_A")
-                if raw is None or (hasattr(raw, "empty") and raw.empty):
+                if _metadata_is_sparse(raw):
+                    logger.info("SDK code_info is sparse; fetching stock_basic metadata")
                     raw = adapter_obj.get_stock_basic(summary_only=False)
         except Exception as e:
             logger.warning("SDK code info fetch failed: %s; using cached codes", e)
@@ -719,7 +802,8 @@ def sync_meta_codes(
 
         # SDK adapters may return code metadata in the index with only a
         # symbol/name column. Normalize that shape before merging cache data.
-        if raw is not None and not raw.empty and "code" not in raw.columns:
+        code_aliases = {"MARKET_CODE", "SECURITY_CODE", "SECUCODE", "code"}
+        if raw is not None and not raw.empty and not (code_aliases & set(raw.columns)):
             index_name = raw.index.name
             raw = raw.reset_index()
             raw = raw.rename(columns={raw.columns[0]: "code"})
@@ -740,7 +824,17 @@ def sync_meta_codes(
             raw = raw.copy()
             if "code" in raw.columns:
                 raw = raw.set_index("code")
-                for column in ("name", "comp_name", "industry", "list_date", "delist_date"):
+                for column in (
+                    "name",
+                    "comp_name",
+                    "pinyin",
+                    "comp_name_eng",
+                    "comp_sname_eng",
+                    "industry",
+                    "list_date",
+                    "delist_date",
+                    "list_plate",
+                ):
                     if column not in raw.columns:
                         raw[column] = pd.NA
                     if column in cached.columns:
@@ -1063,6 +1157,10 @@ def init_scheduler(settings: Optional[Settings] = None) -> "BackgroundScheduler"
 
         settings = settings or get_worker_settings()
         scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
+        scheduler.add_listener(
+            _on_job_event,
+            EVENT_JOB_EXECUTED | EVENT_JOB_ERROR,
+        )
 
         # Sync jobs — gated by sync_schedule_enabled.
         # NOTE: financial sync is disabled (HDF5 cache too large, data unused).
@@ -1392,6 +1490,8 @@ def _run_sync_index_component() -> None:
 def main() -> int:
     setup_logging()
     settings = get_worker_settings()
+    _batch_start_time = time.time()
+    heartbeat: Optional[HeartbeatWriter] = None
 
     logger.info("=" * 50)
     logger.info("AmazingData Batch starting...")
@@ -1418,6 +1518,11 @@ def main() -> int:
     def _signal_handler(signum, frame):  # noqa: ARG001
         logger.info("Received signal %s, shutting down...", signum)
         _shutdown_event.set()
+        if heartbeat is not None:
+            try:
+                heartbeat.stop()
+            except Exception:
+                pass
 
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)
@@ -1428,6 +1533,44 @@ def main() -> int:
     except Exception as e:
         logger.error("Sync scheduler init error: %s", e)
         return 1
+
+    scheduler_obj = get_scheduler()
+
+    def _batch_heartbeat_payload() -> dict:
+        now = time.time()
+        with _last_job_lock:
+            last = dict(_last_job)
+        next_jobs = []
+        state = "stopped"
+        if scheduler_obj is not None and scheduler_obj.running:
+            state = "running"
+            for job in scheduler_obj.get_jobs():
+                next_at = job.next_run_time
+                next_jobs.append({
+                    "id": job.id,
+                    "next_run_at": (
+                        next_at.isoformat() if next_at is not None else None
+                    ),
+                })
+        return {
+            "uptime_s": round(
+                now - _batch_start_time, 3
+            ),
+            "last_job": last,
+            "scheduler_state": state,
+            "next_jobs": next_jobs,
+        }
+
+    def _batch_counter_snapshot() -> dict:
+        return {}
+
+    heartbeat = HeartbeatWriter(
+        service_name="amazingdata-batch",
+        get_payload=_batch_heartbeat_payload,
+        get_counter_snapshot=_batch_counter_snapshot,
+    )
+    heartbeat.start()
+    logger.info("Batch heartbeat writer started")
 
     logger.info("Batch worker running. Press Ctrl+C or send SIGTERM to stop.")
     try:
