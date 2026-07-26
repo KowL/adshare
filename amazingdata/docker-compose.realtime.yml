@@ -30,6 +30,9 @@ services:
       - HISTORICAL_PATH=/app/data
       - ADSHARE_LOG_LEVEL=${ADSHARE_LOG_LEVEL:-INFO}
       - ADSHARE_LOG_DIR=/app/logs
+      # Pin timezone to Asia/Shanghai so APScheduler cron (configured in CST)
+      # fires at the intended local hour instead of UTC.
+      - TZ=Asia/Shanghai
       # Ensure amazingdata package stays importable when working_dir is /app/data
       - PYTHONPATH=/app
     volumes:
