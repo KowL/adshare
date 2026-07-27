@@ -18,6 +18,7 @@ services:
     build:
       context: ..
       dockerfile: amazingdata/realtime.Dockerfile
+    image: amazingdata-realtime:latest
     platform: linux/amd64
     container_name: amazingdata-realtime
     # SDK (InfoData) hardcodes a Windows-style local path "D://AmazingData_local_data"

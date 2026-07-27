@@ -18,6 +18,7 @@ services:
     build:
       context: ..
       dockerfile: amazingdata/batch.Dockerfile
+    image: amazingdata-batch:latest
     platform: linux/amd64
     container_name: amazingdata-batch
     # SDK (InfoData) hardcodes "D://AmazingData_local_data" — set working_dir

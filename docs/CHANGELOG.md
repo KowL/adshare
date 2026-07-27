@@ -8,6 +8,7 @@
 - **`adshare/pyproject.toml`: `readme` field dropped** — it only existed to satisfy hatch validation via the `README.adshare-stub.md` placeholder; both the field and the stub file are gone.
 - **Deleted `adshare/.env.remote-api`** (stale per-environment credential copy).
 - **Root `.dockerignore` added.** `amazingdata/batch.Dockerfile` and `realtime.Dockerfile` build with the project root as context and `COPY adshare/ amazingdata/ scripts/` — previously that baked `adshare/.env`, `amazingdata/batch.env` and `amazingdata/realtime.env` (TGW + Redis credentials) into both worker images. Env files, `__pycache__`, `.git`, local data/logs/cache, and unrelated dirs are now excluded from the build context; both worker images verified to contain no env files.
+- **Worker image names de-duplicated.** Both worker compose files now pin `image: amazingdata-batch:latest` / `image: amazingdata-realtime:latest`, replacing compose's default `<project>-<service>` names (`amazingdata-batch-amazingdata-batch`, `amazingdata-realtime-amazingdata-realtime`).
 
 ### Changed (2026-07-27)
 
