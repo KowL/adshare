@@ -15,7 +15,7 @@ adshare is a standalone data service that wraps the AmazingData SDK (Linux/amd64
 - **Fundamental Analysis**: 90 factors (ROE, PE, growth, safety, valuation, etc.)
 - **Factor Analysis**: IC analysis, stratified backtest, multi-factor composite
 - **Real-time State**: Redis for subscription/snapshot short-lived market data
-- **Historical Warehouse**: Local Parquet + DuckDB written by scheduled sync jobs
+- **Historical Store**: PostgreSQL written directly by scheduled AmazingData sync jobs
 - **Monitoring**: Prometheus metrics at `/metrics`
 - **Rate Limiting**: SlowAPI with configurable limits
 - **Auth**: API Key authentication (optional)
@@ -50,6 +50,9 @@ ADSHARE_API_KEY=your-secret-api-key
 # Redis (default via docker compose)
 REDIS_HOST=redis
 REDIS_PORT=6379
+
+# PostgreSQL (API and batch worker must use the same database)
+DATABASE_URL=postgresql://adshare:adshare@postgres:5432/adshare
 ```
 
 ### Deploy
@@ -80,10 +83,15 @@ curl http://localhost:8000/fundamental/factors
 |----------|--------|-------------|
 | `/health` | GET | Health check |
 | `/metrics` | GET | Prometheus metrics |
-| `/market/codes` | GET | Stock code list |
-| `/market/kline` | GET | K-line data |
-| `/market/snapshot` | GET | Snapshot data |
-| `/market/stock/basic` | GET | Stock basic info |
+| `/status` | GET | Composite service status |
+| `/status/data-freshness` | GET | Warehouse + realtime data freshness |
+| `/realtime/quote/{code}` | GET | Real-time quote for one code |
+| `/realtime/quotes` | GET | Real-time quotes for multi codes |
+| `/realtime/index/{code}` | GET | Real-time index snapshot |
+| `/realtime/kline` | GET | Real-time intraday K-line |
+| `/realtime/stats` | GET | Real-time broadcast stats |
+| `/realtime/ws` | WS | Real-time WebSocket stream |
+| `/realtime/sse` | GET | Real-time SSE stream |
 | `/financial/statement` | GET | Financial statements |
 | `/financial/shareholder` | GET | Shareholder data |
 | `/technical/indicators` | GET | List all indicators |
@@ -93,19 +101,12 @@ curl http://localhost:8000/fundamental/factors
 | `/factor/capabilities` | GET | Factor analysis capabilities |
 | `/factor/analyze` | GET | Run factor analysis |
 | `/factor/composite` | POST | Composite multiple factors |
-
-| `/tushare/stock/daily` | GET/POST | Tushare Pro compatible daily K-line |
-| `/tushare/stock/weekly` | GET/POST | Tushare Pro compatible weekly K-line |
-| `/tushare/stock/monthly` | GET/POST | Tushare Pro compatible monthly K-line |
-| `/tushare/stock/stock_basic` | GET/POST | Tushare Pro compatible stock basic |
-| `/tushare/stock/trade_cal` | GET/POST | Tushare Pro compatible trading calendar |
-| `/tushare/stock/adj_factor` | GET/POST | Tushare Pro compatible adjustment factor |
-| `/tushare/stock/suspend_d` | GET/POST | Tushare Pro compatible suspension info |
-| `/tushare/stock/limit_list` | GET/POST | Tushare Pro compatible limit-up/down list |
-| `/tushare/realtime/rt_k` | GET/POST | Tushare Pro compatible realtime Level-1 snapshot |
-| `/tushare/realtime/rt_min` | GET/POST | Tushare Pro compatible realtime minute K-line |
+| `/tushare` | POST | Tushare Pro compatible unified entry point |
 
 See `/docs` for full OpenAPI documentation.
+
+See [PostgreSQL data architecture](docs/postgresql-data-architecture.md) for
+schema, deployment, and migration from the retired Parquet/DuckDB warehouse.
 
 ## Tushare Compatibility
 

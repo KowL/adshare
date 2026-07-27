@@ -1,46 +1,60 @@
 # adshare/docker-compose.yml
-# adshare API service.
+# adshare API service — API-only.
 #
 # Build:
 #   docker compose -f adshare/docker-compose.yml build
 # Run:
 #   docker compose -f adshare/docker-compose.yml up -d
 #
-# This compose is **API-only**. The AmazingData SDK workers are separate:
+# This compose does NOT start PostgreSQL or Redis. Both are external
+# services that the API connects to via environment variables:
+#   - DATABASE_URL   (PostgreSQL 15+, shared with amazingdata-batch)
+#   - REDIS_HOST/PORT/PASSWORD/DB
+#
+# The AmazingData SDK workers are separate compose projects:
 #   - amazingdata/docker-compose.realtime.yml  (intraday subscription)
 #   - amazingdata/docker-compose.batch.yml     (after-hours sync)
-# Both workers must share the same Redis instance configured here.
-
-version: "3.8"
+# Both workers must reach the same Redis and PostgreSQL configured here.
 
 services:
   adshare-api:
     build:
       context: .
       dockerfile: Dockerfile
+    image: adshare-api:latest
     container_name: adshare-api
     ports:
       - "8000:8000"
     env_file:
       - .env
     environment:
-      - REDIS_HOST=${REDIS_HOST:-redis}
-      - REDIS_PORT=${REDIS_PORT:-6379}
-      - REDIS_PASSWORD=${REDIS_PASSWORD}
-      - REDIS_DB=${REDIS_DB:-0}
+      # Bound on all interfaces inside the container; the published port
+      # (8000:8000) controls host exposure.
       - ADSHARE_HOST=0.0.0.0
       - ADSHARE_PORT=8000
-      - HISTORICAL_ENABLED=${HISTORICAL_ENABLED:-true}
-      - HISTORICAL_PATH=${HISTORICAL_PATH:-/app/data}
-      - DUCKDB_MODE=${DUCKDB_MODE:-memory}
       - ADSHARE_LOG_LEVEL=${ADSHARE_LOG_LEVEL:-INFO}
+      # External services. Defaults assume Redis + Postgres run on the
+      # Docker host (`localhost` resolves correctly under `network_mode:
+      # host`; for the default bridge network on Mac/Windows set
+      # `host.docker.internal`, on Linux set the docker0 bridge gateway
+      # e.g. `172.17.0.1`). Always override DATABASE_URL + REDIS_HOST in
+      # `.env` to match the actual deployment.
+      - REDIS_HOST=${REDIS_HOST:-localhost}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - REDIS_DB=${REDIS_DB:-0}
+      - DATABASE_URL=${DATABASE_URL:-postgresql://adshare:adshare@localhost:5432/adshare}
+      - DATABASE_AUTO_MIGRATE=${DATABASE_AUTO_MIGRATE:-true}
+      - HISTORICAL_ENABLED=${HISTORICAL_ENABLED:-true}
+      # Pin timezone to Asia/Shanghai so structlog timestamps and any
+      # naive datetime.now() calls match the worker's CST schedule.
+      - TZ=Asia/Shanghai
     volumes:
-      - ../data:/app/data
       - ../cache:/app/cache
       - ../logs:/app/logs
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 3

@@ -1,4 +1,4 @@
-"""Backfill K-line data into the L3 historical warehouse (flat layout).
+"""Backfill K-line data into PostgreSQL.
 
 Usage::
 
@@ -8,11 +8,7 @@ Usage::
     python -m scripts.backfill_kline --begin-year 2020 --period daily    # legacy CLI (auto-converted)
 
 By default the script uses the cached ``AmazingData`` adapter to pull data,
-then writes the standard per-code Parquet files via
-:mod:`amazingdata.batch` (one file per code, all years merged).
-The script is intentionally simple — it does not do incremental backfill
-or resume: each invocation rewrites the per-stock Parquet files for the
-requested window.
+then performs idempotent PostgreSQL upserts via :mod:`amazingdata.batch`.
 """
 
 from __future__ import annotations
@@ -83,7 +79,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--meta",
         action="store_true",
-        help="Also refresh meta/codes.parquet and meta/calendar.parquet before backfilling.",
+        help="Also refresh master.stock and market.trade_calendar before backfilling.",
     )
     parser.add_argument(
         "--market",
@@ -100,7 +96,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--adj-factor",
         action="store_true",
-        help="Fetch real cumulative adjustment factors and patch the selected K-line files.",
+        help="Fetch cumulative factors into market.adjustment_factor.",
     )
     return parser.parse_args()
 
@@ -134,21 +130,19 @@ def main() -> int:
         return 1
 
     warehouse = get_warehouse(settings)
-    print(f"📦 Warehouse root: {warehouse.root}")
+    print(f"🐘 PostgreSQL: {settings.database_url.rsplit('@', 1)[-1]}")
 
     code_list = _codes_arg(args.codes)
     if code_list:
         print(f"🔎 Restricting to {len(code_list)} codes")
     else:
-        # Read from local meta/codes.parquet instead of SDK to avoid GIL crashes
-        codes_path = warehouse.root / "meta" / "codes.parquet"
-        if codes_path.exists():
-            import pandas as pd
-            df = pd.read_parquet(codes_path)
+        # Read from PostgreSQL instead of making another SDK metadata call.
+        df = warehouse.query_codes(is_listed=True)
+        if not df.empty:
             code_list = df["code"].tolist()
-            print(f"🔎 Backfilling all A-share codes from local cache ({len(code_list)} codes)")
+            print(f"🔎 Backfilling all A-share codes from PostgreSQL ({len(code_list)} codes)")
         else:
-            print("❌ meta/codes.parquet not found; run sync_meta_codes first")
+            print("❌ master.stock is empty; run with --meta first")
             return 1
 
     batch_size = args.batch_size
@@ -172,11 +166,11 @@ def main() -> int:
     results: List[SyncResult] = []
 
     if args.meta:
-        print("\n--- meta/codes.parquet ---")
+        print("\n--- master.stock ---")
         results.append(sync_meta_codes())
         print(f"   rows={results[-1].rows} success={results[-1].success}")
 
-        print(f"\n--- meta/calendar.parquet (market={args.market}) ---")
+        print(f"\n--- market.trade_calendar (market={args.market}) ---")
         results.append(sync_meta_calendar(market=args.market))
         print(f"   rows={results[-1].rows} success={results[-1].success}")
 
@@ -211,7 +205,6 @@ def main() -> int:
             from_date=from_date,
             to_date=to_date,
             codes=code_list,
-            periods=tuple(periods),
         )
         print(
             f"   succeeded={factor_result.succeeded} "
@@ -226,13 +219,13 @@ def main() -> int:
     total_duration = time.time() - started
     kline_results = [r for r in results if r.job.startswith("sync_kline")]
     total_rows = sum(r.rows for r in kline_results)
-    total_files = sum(r.succeeded for r in results if r.job.startswith("sync_kline"))
+    total_securities = sum(r.succeeded for r in results if r.job.startswith("sync_kline"))
     total_skipped = sum(r.skipped for r in kline_results)
     total_failed = sum(r.failed for r in results)
     print("\n=== Backfill complete ===")
     print(f"   periods={periods} duration={total_duration:.2f}s")
     print(
-        f"   kline_rows={total_rows} files_written={total_files} "
+        f"   kline_rows={total_rows} securities_written={total_securities} "
         f"skipped={total_skipped} failures={total_failed}"
     )
     return 0 if total_failed == 0 else 2

@@ -24,12 +24,19 @@ WORKDIR /app
 # Use Tsinghua pip mirror for faster downloads in CN
 RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
 
-# System deps (gcc for any C-extension deps, curl for healthcheck, libhdf5 for tables)
+# Pin timezone to Asia/Shanghai so structlog timestamps and any
+# naive datetime.now() calls match the worker's CST schedule.
+ENV TZ=Asia/Shanghai
+
+# System deps (gcc for any C-extension deps, curl for healthcheck, libhdf5 for tables,
+# tzdata so the ENV TZ resolves to a real zoneinfo entry).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     curl \
     libhdf5-dev \
-    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+    tzdata \
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* \
+    && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
 # Install adshare and all its declared dependencies.
 # pyproject.toml is self-contained under adshare/.

@@ -5,6 +5,12 @@
 > 范围: `adshare/` 应用代码、`tests/` 测试、`docs/` 架构文档  
 > 验证: `pytest -q`，221 passed
 
+> **架构变更说明（2026-07-27）**：本文中提到的 L3 Parquet/DuckDB 历史仓、RESTful
+> `/market/*` `/historical/*` `adshare/historical/sync.py` 已被新架构替代。当前：
+> PostgreSQL 仓库（`docs/postgresql-data-architecture.md`）、统一 Tushare 入口
+> `POST /tushare`（`docs/tushare-migration.md`）、同步逻辑迁至 `amazingdata.batch`。
+> 本评审保留作为历史架构记录。
+
 ---
 
 ## 1. 当前架构判断

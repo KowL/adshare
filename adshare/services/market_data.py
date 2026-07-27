@@ -1,6 +1,6 @@
 """Application service for market data access.
 
-Reads from the L3 historical warehouse (Parquet/DuckDB) only.
+Reads historical data from PostgreSQL only.
 SDK fallback has been removed — data is populated by amazingdata.batch.
 """
 
@@ -49,7 +49,7 @@ class MarketDataService:
         offset: int = 0,
         source: str = "auto",
     ) -> KlineQueryResult:
-        """Return K-line data from the L3 warehouse."""
+        """Return K-line data from PostgreSQL."""
         code_list = _normalize_codes(codes)
         if not code_list:
             return KlineQueryResult(pd.DataFrame(), "none", False)
@@ -72,7 +72,7 @@ class MarketDataService:
                     )
                     synced = warehouse.is_synced(begin_date, end_date, period, code_list)
                 except Exception as e:  # noqa: BLE001
-                    logger.debug("L3 warehouse lookup failed: %s", e)
+                    logger.debug("PostgreSQL lookup failed: %s", e)
                     df = pd.DataFrame()
                     synced = False
 
@@ -83,7 +83,7 @@ class MarketDataService:
         )
 
     def get_code_list(self, security_type: str = "stock_a") -> list[str]:
-        """Return the market code list from the L3 warehouse.
+        """Return the market code list from PostgreSQL.
 
         ``security_type`` is accepted for API compatibility but currently
         does not filter — the warehouse stores the SH/SZ A-share universe.
@@ -99,7 +99,7 @@ class MarketDataService:
         return []
 
     def get_calendar(self, market: str = "SH", date: Optional[int] = None) -> pd.DataFrame:
-        """Return the trading calendar from the L3 warehouse."""
+        """Return the trading calendar from PostgreSQL."""
         warehouse = self._get_warehouse()
         if warehouse is not None:
             try:
@@ -112,6 +112,26 @@ class MarketDataService:
                 logger.warning("Local calendar lookup failed: %s", e)
         return pd.DataFrame()
 
+    def get_adjustment_factors(
+        self,
+        codes: str | Sequence[str],
+        begin_date: int,
+        end_date: int,
+    ) -> pd.DataFrame:
+        """Return canonical factors directly from PostgreSQL."""
+        code_list = _normalize_codes(codes)
+        if not code_list:
+            return pd.DataFrame()
+        warehouse = self._get_warehouse()
+        if warehouse is not None:
+            try:
+                return warehouse.query_adjustment_factors(
+                    code_list, begin_date, end_date
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Adjustment factor lookup failed: %s", e)
+        return pd.DataFrame()
+
     def get_snapshot(
         self,
         codes: str,
@@ -120,7 +140,7 @@ class MarketDataService:
     ) -> pd.DataFrame:
         """Return snapshot data.
 
-        Note: Snapshot is not stored in the L3 warehouse.
+        Note: Snapshot remains in Redis and is not stored in PostgreSQL.
         This endpoint returns empty data in API-only mode.
         """
         logger.warning("Snapshot not available in API-only mode")
@@ -131,7 +151,7 @@ class MarketDataService:
         codes: Optional[str] = None,
         summary_only: bool = False,
     ) -> pd.DataFrame:
-        """Return stock basic information from the L3 warehouse."""
+        """Return stock basic information from PostgreSQL."""
         warehouse = self._get_warehouse()
         if warehouse is not None:
             try:

@@ -309,45 +309,43 @@ class TestRoutes:
                 "fields": "",
             },
         )
-        assert response.status_code == 400
-        assert response.json()["code"] == -1
+        # Per the Tushare Pro protocol: HTTP stays 200, error reported via ``code``
+        assert response.status_code == 200
+        assert response.json()["code"] == -400
 
-    def test_rest_rt_k_get(self, client, patch_cache):
+    def test_unified_entry_rt_k_no_data(self, client, patch_cache):
+        patch_cache(FakeCacheManager())
+        response = client.post(
+            "/tushare",
+            json={"api_name": "rt_k", "token": "", "params": {"ts_code": "600000.SH"}},
+        )
+        assert response.status_code == 200
+        assert response.json()["data"]["items"] == []
+
+    def test_unified_entry_rt_k_with_top_level_params(self, client, patch_cache):
+        """Tushare clients also pass params at the top level — should work."""
         patch_cache(FakeCacheManager(snapshots={"600000.SH": _sample_snapshot()}))
-        response = client.get(
-            "/tushare/realtime/rt_k", params={"ts_code": "600000.SH"}
+        response = client.post(
+            "/tushare",
+            json={"api_name": "rt_k", "token": "", "ts_code": "600000.SH"},
         )
         assert response.status_code == 200
         data = response.json()
         assert data["code"] == 0
         assert data["data"]["items"][0][0] == "600000.SH"
 
-    def test_rest_rt_min_get(self, client, patch_cache):
+    def test_unified_entry_rt_min_top_level_freq(self, client, patch_cache):
         patch_cache(FakeCacheManager(stream_entries=_stream_entries(n=3)))
-        response = client.get(
-            "/tushare/realtime/rt_min",
-            params={"ts_code": "600000.SH", "freq": "5MIN"},
+        response = client.post(
+            "/tushare",
+            json={
+                "api_name": "rt_min",
+                "token": "",
+                "ts_code": "600000.SH",
+                "freq": "5MIN",
+            },
         )
         assert response.status_code == 200
         data = response.json()
         assert data["code"] == 0
         assert data["data"]["items"][0][2] == "5MIN"
-
-    def test_rest_rt_min_post(self, client, patch_cache):
-        patch_cache(FakeCacheManager(stream_entries=_stream_entries(n=1)))
-        response = client.post(
-            "/tushare/realtime/rt_min",
-            json={"ts_code": "600000.SH", "freq": "1MIN"},
-        )
-        assert response.status_code == 200
-        data = response.json()
-        assert data["code"] == 0
-        assert len(data["data"]["items"]) == 1
-
-    def test_rest_rt_k_no_data(self, client, patch_cache):
-        patch_cache(FakeCacheManager())
-        response = client.get(
-            "/tushare/realtime/rt_k", params={"ts_code": "600000.SH"}
-        )
-        assert response.status_code == 200
-        assert response.json()["data"]["items"] == []

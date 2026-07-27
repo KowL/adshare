@@ -14,7 +14,7 @@
 
 - **单一数据源**: 多客户端共享同一个 AmazingData 登录会话与连接池
 - **平台解耦**: 下游可在任意平台（ARM Mac、云函数、浏览器）通过 HTTP 调用，不受 SDK x86 限制
-- **缓存边界清晰**: Redis 仅保存实时/订阅行情短期状态；本地 Parquet 仅由定时任务维护历史行情与元数据
+- **缓存边界清晰**: Redis 仅保存实时/订阅行情短期状态；PostgreSQL 历史仓库由 AmazingData worker 的定时任务写入
 - **可观测性**: Prometheus Metrics + 结构化日志，全链路可监控
 
 ---
@@ -27,15 +27,15 @@
 | Web 框架 | FastAPI | >=0.115 | 自动 OpenAPI 生成、Pydantic v2 原生支持 |
 | 数据验证 | Pydantic | >=2.9 | 所有请求/响应必须定义 BaseModel |
 | 实时状态 | Redis | 7.x | 仅用于实时/订阅行情短期状态与限流计数 |
-| 本地历史仓 | Parquet (pyarrow) | >=18 | 定时任务保存历史行情与元数据 |
+| 历史仓库 | PostgreSQL | >=15 | 由 `amazingdata.batch` 容器写入，API 进程只读查询（psycopg 连接池） |
 | 监控 | Prometheus Client | >=0.21 | `/metrics` 暴露标准指标 |
 | 容器 | Docker + Compose | - | 必须指定 `platform: linux/amd64` |
 | 日志 | structlog | >=24.4 | JSON 结构化输出，支持日志轮转 |
 
 **禁止引入的依赖**（除非经过架构评审）：
-- `SQLAlchemy` / 任何 ORM（项目无关系型数据库）
+- `SQLAlchemy` / 任何 ORM（项目用 psycopg 直连，不上 ORM）
 - `flask` / `django`（与 FastAPI 冲突）
-- `pytables` / `h5py`（HDF5 系统库已由 `adshare/Dockerfile`（API 镜像）与 `amazingdata/base.Dockerfile`（worker 基础镜像）安装，评估后若未使用应移除）
+- 旧的本地 Parquet/DuckDB 仓储相关包（`duckdb`、`pyarrow` 仅限 batch 内部使用）
 
 ---
 
@@ -67,7 +67,7 @@
 
 - **绝不捕获裸 `Exception` 后静默吞掉**。必须记录日志或重新抛出自定义 HTTPException
 - SDK 调用统一使用 `_with_retry` 装饰器（最多 3 次，指数退避）
-- 对外接口返回的 HTTP 状态码规范:
+- **通用 REST 路由**对外接口返回的 HTTP 状态码规范:
   - `200` 成功
   - `400` 参数校验失败（Pydantic ValidationError）
   - `401` API Key 缺失
@@ -75,6 +75,7 @@
   - `404` 资源不存在（如股票代码无数据）
   - `500` 服务端内部错误（SDK 异常、计算错误）
   - `503` AmazingData 连接中断；实时订阅接口可在 Redis 不可用时返回降级状态
+- **Tushare Pro 兼容路由 (`POST /tushare`)** 始终返回 HTTP `200`,实际错误通过响应体的 `code` 字段表达(参考 Tushare Pro 协议)。鉴权失败 → `code: 20001` / `20002`;参数错误 → `code: -400`;不支持的 `api_name` → `code: -501`。详见 `docs/tushare-migration.md`。
 
 ### 3.4 日志规范
 
@@ -104,21 +105,19 @@ adshare/                 # FastAPI 包（API 进程，不直接依赖 AmazingDat
 │   ├── realtime_keys.py # 实时数据 Redis key 规范
 │   └── metrics.py       # Prometheus 指标定义
 ├── adapters/            # 空壳保留目录（SDK 适配已迁至 amazingdata 包）
-├── clients/             # 出站客户端封装（tushare_client 等）
 ├── engines/             # 纯计算引擎（无外部 I/O）
 │   ├── technical/       # 57 个技术指标（纯 pandas/numpy）
 │   ├── fundamental/     # 90 个基本面因子（纯 pandas/numpy）
 │   └── factor/          # 因子分析（IC、分层、复合）
-├── historical/          # L3 历史数仓（Parquet + DuckDB）
-│   ├── warehouse.py     # 仓库读写与 DuckDB 视图
-│   └── admin.py         # /historical/admin 运维路由
+├── historical/          # PostgreSQL 历史仓库（worker 写入、API 读）
+│   ├── warehouse.py     # 历史仓库读写（psycopg 连接池 + SQL）
+│   ├── models.py        # 字段定义与 DataFrame 校验
+│   └── migrations/      # SQL 迁移脚本
 ├── routers/             # API 路由层
-│   ├── health.py        # 健康检查、登录状态、手动登入/登出
-│   ├── market.py        # 行情数据: codes, kline, snapshot, stock/basic, limit-up
-│   ├── stock_data.py    # Pro 风格股票数据: /daily, /stock_basic, /pro_bar 等
+│   ├── health.py        # 健康检查、Prometheus metrics
+│   ├── status.py        # 综合状态: /status, /status/data-freshness
 │   ├── realtime.py      # 实时行情: REST + WebSocket(/realtime/ws) + SSE(/realtime/sse)
-│   ├── historical.py    # 历史数仓查询: kline, calendar, codes, sql
-│   ├── tushare/         # Tushare Pro 协议兼容（统一入口 + stock/index 分类路由）
+│   ├── tushare/         # Tushare Pro 协议兼容（单一 POST /tushare 入口）
 │   ├── financial.py     # 财务数据（已禁用，直接返回 503）
 │   ├── technical.py     # 技术分析: analyze, indicators 列表
 │   ├── fundamental.py   # 基本面分析: analyze, factors 列表
@@ -145,10 +144,11 @@ amazingdata/             # SDK worker 包（唯一依赖 AmazingData SDK，linux
 tests/                   # 测试目录，目录结构与 adshare/ 镜像
 ├── conftest.py
 ├── test_api.py
-├── test_market.py
+├── test_auth.py
 ├── test_tushare.py
 ├── test_realtime_push.py
-├── test_historical.py
+├── test_postgres_warehouse.py
+├── routers/
 └── ...
 
 skills/                  # AI Agent Skill 定义（供外部 Agent 读取）
@@ -180,7 +180,7 @@ docs/                    # 项目文档（本文档所在目录）
 ### 5.1 URL 与版本
 
 - 当前无 URL 版本前缀（v0 阶段），稳定后迁移至 `/v1/...`
-- 资源命名使用名词复数或集合名，如 `/market/codes`, `/financial/statement`
+- 资源命名使用名词复数或集合名，如 `/financial/statement`, `/tushare`(统一入口)
 - 动作使用 HTTP Method 表达:
   - `GET` 查询（幂等）
   - `POST` 创建/复合计算（如 `/factor/composite`）
@@ -233,8 +233,8 @@ docs/                    # 项目文档（本文档所在目录）
 | 存储 | 保存内容 | 说明 |
 |------|----------|------|
 | Redis | 实时/订阅行情短期状态 | TTL 默认 300s；不保存 K 线、财务、代码表等请求结果 |
-| Historical Parquet | 历史 K 线、交易日历、代码表、元数据 | 由每日定时任务写入；通过 DuckDB 查询 |
-| SDK | 未同步或实时查询的回源数据 | 不在 adapter 层做通用缓存 |
+| PostgreSQL (历史仓库) | 历史 K 线、交易日历、代码表、参考数据 | 由 `amazingdata.batch` 容器按计划同步写入；API 通过 `adshare.historical.warehouse.HistoricalWarehouse` 只读查询 |
+| SDK | 未同步或实时查询的回源数据 | 仅 worker 进程（`amazingdata` 包）使用，API 进程不直接调 SDK |
 
 ### 6.2 Redis Key 规范
 
@@ -245,7 +245,7 @@ docs/                    # 项目文档（本文档所在目录）
 ### 6.3 禁止事项
 
 - 禁止将 K 线、财务报表、股东数据、代码表等普通查询结果写入 Redis。
-- 禁止通过 `CacheManager` 写本地 Parquet。历史文件只能由 `adshare.historical` 定时同步与仓库模块维护。
+- 禁止新增本地 Parquet/DuckDB 仓库 — 历史仓库已统一到 PostgreSQL。`data/A_share/` 下的旧 parquet 文件仅用作一次性迁移 (`scripts/migrate_parquet_to_postgres.py`) 的源。
 - Redis 不可用时，实时行情缓存降级为 miss，不应影响历史仓或 SDK 查询路径。
 
 ---

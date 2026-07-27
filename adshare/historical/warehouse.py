@@ -1,251 +1,501 @@
-"""DuckDB-backed query layer for the L3 historical data warehouse.
+"""PostgreSQL-backed market-data repository.
 
-The warehouse creates an in-memory DuckDB connection and exposes
-:class:`HistoricalWarehouse` for SQL-style queries against the on-disk
-Parquet files. The connection is shared across threads with an internal
-``threading.RLock`` to keep things safe in FastAPI's threadpool.
-
-The on-disk layout is flat: one Parquet file per (period, code) with all
-years merged (e.g. ``A_share/daily/000001.SZ.parquet``).
+The public class name is intentionally kept as ``HistoricalWarehouse`` so
+service and router dependency injection stays stable. The implementation no
+longer reads or writes Parquet/DuckDB: AmazingData workers upsert into the
+same PostgreSQL database that the API queries.
 """
 
 from __future__ import annotations
 
-import os
+import hashlib
+import json
 import threading
-from datetime import date, timedelta
+from datetime import date, datetime, timezone
+from decimal import Decimal
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Dict, Mapping, Optional, Sequence
 
-import duckdb
 import pandas as pd
 
 from adshare.core.config import Settings, get_settings
 from adshare.core.logging import get_logger
-from adshare.historical.models import _safe_code, normalize_period, period_to_subdir
+from adshare.historical.models import normalize_period, standardize_kline_df, validate_kline_df
 
 logger = get_logger(__name__)
 
+_BAR_TABLES = {
+    "daily": "market.daily_bar",
+    "weekly": "market.weekly_bar",
+    "monthly": "market.monthly_bar",
+}
 
-def _coverage_end_date(period: str, raw_date: int) -> str:
-    """Convert a bar label date to the last calendar date it covers.
 
-    Weekly/monthly bars are labeled by period *start* (Monday / 1st
-    trading day), so the raw MAX(date) understates actual coverage.
-    """
-    if period == "day":
-        return str(raw_date)
-    d = date(raw_date // 10000, raw_date // 100 % 100, raw_date % 100)
-    if period == "week":
-        end = d + timedelta(days=4 - d.weekday())
-    else:  # month
-        next_month = date(d.year + d.month // 12, d.month % 12 + 1, 1)
-        end = next_month - timedelta(days=1)
-    end = min(end, date.today())
-    return end.strftime("%Y%m%d")
+def _date_from_int(value: Any) -> Optional[date]:
+    if value is None:
+        return None
+    try:
+        if bool(pd.isna(value)):
+            return None
+    except (TypeError, ValueError):
+        pass
+    if value == "":
+        return None
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value
+    digits = "".join(ch for ch in str(int(value)) if ch.isdigit())
+    if len(digits) != 8 or digits == "00000000":
+        return None
+    return datetime.strptime(digits, "%Y%m%d").date()
+
+
+def _clean(value: Any) -> Any:
+    if value is None:
+        return None
+    try:
+        if bool(pd.isna(value)):
+            return None
+    except (TypeError, ValueError):
+        pass
+    if hasattr(value, "item"):
+        value = value.item()
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    return value
+
+
+def _exchange_parts(code: str) -> tuple[str, str, str]:
+    raw = str(code).strip().upper()
+    symbol, _, suffix = raw.partition(".")
+    exchange = {"SH": "SSE", "SZ": "SZSE", "BJ": "BSE"}.get(suffix)
+    if exchange is None:
+        exchange = "SSE" if symbol.startswith(("60", "68", "69")) else "SZSE"
+        suffix = "SH" if exchange == "SSE" else "SZ"
+        raw = f"{symbol}.{suffix}"
+    return raw, symbol, exchange
+
+
+def _stock_key(code: str) -> str:
+    canonical, symbol, exchange = _exchange_parts(code)
+    del canonical
+    return f"{exchange}.{symbol}"
+
+
+def _frame(rows: Sequence[Mapping[str, Any]], columns: Optional[Sequence[str]] = None) -> pd.DataFrame:
+    df = pd.DataFrame(list(rows), columns=columns)
+    for column in df.columns:
+        if any(isinstance(v, Decimal) for v in df[column].dropna().head(20)):
+            df[column] = pd.to_numeric(df[column], errors="coerce")
+    return df
 
 
 class HistoricalWarehouse:
-    """DuckDB connection manager for the historical Parquet warehouse."""
+    """Connection-pooled PostgreSQL repository used by API and workers."""
 
     def __init__(self, settings: Optional[Settings] = None) -> None:
         self.settings = settings or get_settings()
-        self.root = Path(self.settings.historical_path).resolve()
-        self.root.mkdir(parents=True, exist_ok=True)
-        self._con: Optional[duckdb.DuckDBPyConnection] = None
-        self._lock = threading.RLock()
-        self._max_rows = int(self.settings.duckdb_max_rows)
-        self._query_timeout = int(self.settings.duckdb_query_timeout)
-        self._init_directory_layout()
-        self._init_connection()
+        self._max_rows = int(self.settings.database_query_max_rows)
+        self._pool = self._create_pool()
+        if self.settings.database_auto_migrate:
+            self.initialize_schema()
 
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
-
-    def _init_directory_layout(self) -> None:
-        for sub in ("daily", "weekly", "monthly"):
-            (self.root / "A_share" / sub).mkdir(parents=True, exist_ok=True)
-        (self.root / "meta").mkdir(parents=True, exist_ok=True)
-        (self.root / "snapshot").mkdir(parents=True, exist_ok=True)
-        (self.root / "reference").mkdir(parents=True, exist_ok=True)
-
-    def _init_connection(self) -> None:
-        mode = (self.settings.duckdb_mode or "memory").lower()
-        if mode == "file":
-            db_path = Path(self.settings.duckdb_file_path)
-            db_path.parent.mkdir(parents=True, exist_ok=True)
-            self._con = duckdb.connect(database=str(db_path))
-        else:
-            self._con = duckdb.connect(database=":memory:")
-
-        # Use safe defaults; allow larger memory for analytical scans
+    def _create_pool(self):
         try:
-            self._con.execute(f"PRAGMA threads={max(1, (os.cpu_count() or 2))}")
-        except Exception:
-            pass
-        self._register_views()
+            from psycopg.rows import dict_row
+            from psycopg_pool import ConnectionPool
+        except ImportError as exc:  # pragma: no cover - dependency packaging failure
+            raise RuntimeError(
+                "PostgreSQL support requires psycopg[binary,pool]"
+            ) from exc
+        return ConnectionPool(
+            conninfo=self.settings.database_url,
+            min_size=max(1, int(self.settings.database_pool_min_size)),
+            max_size=max(
+                int(self.settings.database_pool_min_size),
+                int(self.settings.database_pool_max_size),
+            ),
+            timeout=float(self.settings.database_connect_timeout),
+            kwargs={
+                "autocommit": False,
+                "row_factory": dict_row,
+                "connect_timeout": int(self.settings.database_connect_timeout),
+                "options": "-c search_path=market,master,public",
+            },
+            open=True,
+        )
 
-    def _register_views(self) -> None:
-        if self._con is None:
-            return
-        root = str(self.root)
-        for period, view in (
-            ("daily", "v_kline_day"),
-            ("weekly", "v_kline_week"),
-            ("monthly", "v_kline_month"),
-        ):
-            glob = f"{root}/A_share/{period}/*.parquet"
-            sql = f"""
-                CREATE OR REPLACE VIEW {view} AS
-                SELECT
-                    regexp_extract(filename, '.*[\\\\/]([^\\\\/]+)\\.parquet$', 1) AS code,
-                    date, open, high, low, close, volume, amount,
-                    adj_factor, is_suspended, sync_at
-                FROM read_parquet('{glob}', filename=1, hive_partitioning=false)
-            """
-            try:
-                self._con.execute(sql)
-            except Exception as e:
-                logger.warning("Failed to register view %s: %s", view, e)
-
-        # Meta views
-        try:
-            self._con.execute(
-                f"CREATE OR REPLACE VIEW v_calendar AS "
-                f"SELECT * FROM read_parquet('{root}/meta/calendar.parquet')"
-            )
-        except Exception as e:
-            logger.debug("v_calendar not registered: %s", e)
-
-        try:
-            self._con.execute(
-                f"CREATE OR REPLACE VIEW v_codes AS "
-                f"SELECT * FROM read_parquet('{root}/meta/codes.parquet')"
-            )
-        except Exception as e:
-            logger.debug("v_codes not registered: %s", e)
-
-        # Reference data views (financial, shareholder, index component, etc.)
-        ref_root = f"{root}/reference"
-        for view_name, file_name in (
-            ("v_income", "income.parquet"),
-            ("v_balance_sheet", "balance_sheet.parquet"),
-            ("v_cashflow", "cashflow.parquet"),
-            ("v_fina_indicator", "fina_indicator.parquet"),
-            ("v_stk_holdernumber", "stk_holdernumber.parquet"),
-            ("v_index_member", "index_member.parquet"),
-            ("v_index_weight", "index_weight.parquet"),
-            ("v_namechange", "namechange.parquet"),
-        ):
-            path = f"{ref_root}/{file_name}"
-            try:
-                self._con.execute(
-                    f"CREATE OR REPLACE VIEW {view_name} AS "
-                    f"SELECT * FROM read_parquet('{path}')"
+    def initialize_schema(self) -> None:
+        migration_dir = Path(__file__).parent / "migrations"
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("CREATE SCHEMA IF NOT EXISTS market")
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS market.schema_migration (
+                        version     VARCHAR(255) PRIMARY KEY,
+                        applied_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                    """
                 )
-            except Exception as e:
-                logger.debug("%s not registered: %s", view_name, e)
+                cur.execute("SELECT to_regclass('master.stock') AS stock_table")
+                stock_schema_exists = cur.fetchone()["stock_table"] is not None
+                cur.execute(
+                    "SELECT to_regclass('market.adjustment_factor') "
+                    "AS factor_table"
+                )
+                factor_schema_exists = cur.fetchone()["factor_table"] is not None
+                cur.execute(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM information_schema.columns
+                        WHERE table_schema = 'market'
+                          AND table_name = 'daily_bar'
+                          AND column_name = 'stock_code'
+                    ) AS cache_columns
+                    """
+                )
+                cache_schema_exists = cur.fetchone()["cache_columns"]
+
+                # Adopt databases created before explicit migration tracking.
+                adopted: list[str] = []
+                if stock_schema_exists:
+                    adopted.extend(
+                        ["001_postgresql.sql", "002_rename_security_to_stock.sql"]
+                    )
+                if factor_schema_exists:
+                    adopted.append("003_adjustment_factor.sql")
+                if cache_schema_exists:
+                    adopted.append("004_cache_stock_identity_on_bars.sql")
+                if adopted:
+                    cur.executemany(
+                        """
+                        INSERT INTO market.schema_migration (version)
+                        VALUES (%s)
+                        ON CONFLICT (version) DO NOTHING
+                        """,
+                        [(version,) for version in adopted],
+                    )
+
+                cur.execute("SELECT version FROM market.schema_migration")
+                applied = {row["version"] for row in cur.fetchall()}
+                for migration in sorted(migration_dir.glob("*.sql")):
+                    if migration.name in applied:
+                        continue
+                    cur.execute(migration.read_text(encoding="utf-8"))
+                    cur.execute(
+                        """
+                        INSERT INTO market.schema_migration (version)
+                        VALUES (%s)
+                        ON CONFLICT (version) DO NOTHING
+                        """,
+                        (migration.name,),
+                    )
+            conn.commit()
 
     def close(self) -> None:
-        with self._lock:
-            if self._con is not None:
-                try:
-                    self._con.close()
-                except Exception:
-                    pass
-                self._con = None
+        self._pool.close()
 
-    @property
-    def connection(self) -> duckdb.DuckDBPyConnection:
-        if self._con is None:
-            with self._lock:
-                if self._con is None:
-                    self._init_connection()
-        assert self._con is not None
-        return self._con
+    def refresh_views(self) -> None:
+        """Compatibility no-op; PostgreSQL views are migration-managed."""
+
+    def _fetch_df(self, sql: str, params: Sequence[Any] = ()) -> pd.DataFrame:
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SET LOCAL statement_timeout = {int(self.settings.database_query_timeout) * 1000}"
+                )
+                cur.execute(sql, tuple(params))
+                rows = cur.fetchall()
+        return _frame(rows)
+
+    def _execute_many(self, sql: str, rows: Sequence[Sequence[Any]]) -> int:
+        if not rows:
+            return 0
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.executemany(sql, rows)
+                affected = cur.rowcount
+            conn.commit()
+        return max(0, affected)
 
     # ------------------------------------------------------------------
-    # Path helpers
+    # Worker writes
     # ------------------------------------------------------------------
 
-    def kline_dir(self, period: str, year: Optional[int] = None) -> Path:
-        """Return the K-line directory for a period.
-
-        ``year`` is accepted for backward compatibility but is ignored in
-        the flat layout — every code lives directly under
-        ``A_share/{subdir}/``.
+    def upsert_stocks(self, df: pd.DataFrame) -> int:
+        if df is None or df.empty:
+            return 0
+        rows: list[tuple[Any, ...]] = []
+        for record in df.to_dict("records"):
+            code, symbol, exchange = _exchange_parts(str(record.get("code", "")))
+            if not symbol:
+                continue
+            listed = bool(record.get("is_listed", True))
+            name = str(record.get("name") or code)
+            list_date = _date_from_int(record.get("list_date"))
+            delist_date = _date_from_int(record.get("delist_date"))
+            rows.append((
+                _stock_key(code), code, symbol, exchange, name,
+                _clean(record.get("comp_name")), _clean(record.get("comp_sname_eng")),
+                _clean(record.get("comp_name_eng")), _clean(record.get("pinyin")),
+                _clean(record.get("board")), _clean(record.get("list_plate")),
+                _clean(record.get("industry")), list_date, delist_date,
+                "LISTED" if listed else "DELISTED",
+                name.upper().startswith(("*ST", "ST")),
+                datetime.now(timezone.utc),
+            ))
+        sql = """
+            INSERT INTO master.stock (
+                stock_key, code, symbol, exchange_code, security_name,
+                company_name, security_name_en, company_name_en, pinyin,
+                board_type, list_plate, industry, list_date, delist_date,
+                listing_status, is_st, source_updated_at
+            ) VALUES (
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s
+            )
+            ON CONFLICT (code) DO UPDATE SET
+                stock_key = EXCLUDED.stock_key,
+                symbol = EXCLUDED.symbol,
+                exchange_code = EXCLUDED.exchange_code,
+                security_name = EXCLUDED.security_name,
+                company_name = EXCLUDED.company_name,
+                security_name_en = EXCLUDED.security_name_en,
+                company_name_en = EXCLUDED.company_name_en,
+                pinyin = EXCLUDED.pinyin,
+                board_type = EXCLUDED.board_type,
+                list_plate = EXCLUDED.list_plate,
+                industry = EXCLUDED.industry,
+                list_date = EXCLUDED.list_date,
+                delist_date = EXCLUDED.delist_date,
+                listing_status = EXCLUDED.listing_status,
+                is_st = EXCLUDED.is_st,
+                source_updated_at = EXCLUDED.source_updated_at,
+                updated_at = NOW()
         """
-        del year
-        subdir = normalize_period(period)
-        return self.root / "A_share" / subdir
+        return self._execute_many(sql, rows)
 
-    def meta_dir(self) -> Path:
-        return self.root / "meta"
+    def upsert_securities(self, df: pd.DataFrame) -> int:
+        """Backward-compatible alias for callers migrating to ``upsert_stocks``."""
+        return self.upsert_stocks(df)
 
-    # ------------------------------------------------------------------
-    # Sync status
-    # ------------------------------------------------------------------
+    def ensure_stock(self, code: str) -> None:
+        canonical, symbol, exchange = _exchange_parts(code)
+        self._execute_many(
+            """
+            INSERT INTO master.stock (
+                stock_key, code, symbol, exchange_code, security_name
+            ) VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (code) DO NOTHING
+            """,
+            [(_stock_key(canonical), canonical, symbol, exchange, canonical)],
+        )
 
-    def is_synced(
-        self,
-        begin_date: int,
-        end_date: int,
-        period: str,
-        codes: Optional[Sequence[str]] = None,
-    ) -> bool:
-        """Return True if the requested range is fully covered locally.
-
-        A range is considered ``synced`` if:
-
-        1. The ``A_share/{subdir}/`` directory exists and contains at least
-           one Parquet file.
-        2. Every requested code has a file (only checked when ``codes`` is
-           non-empty).
-        3. The on-disk file for each requested code covers the
-           ``[begin_date, end_date]`` window (only when ``codes`` is given
-           and ``period == "day"``). The check verifies
-           ``min(date) <= begin_date`` and ``max(date) >= end_date``
-           against the actual file contents.
+    def upsert_kline(self, code: str, period: str, df: pd.DataFrame) -> int:
+        std = validate_kline_df(standardize_kline_df(df, code=code))
+        if std is None or std.empty:
+            return 0
+        canonical, _, _ = _exchange_parts(code)
+        self.ensure_stock(canonical)
+        table = _BAR_TABLES[normalize_period(period)]
+        rows: list[tuple[Any, ...]] = []
+        now = datetime.now(timezone.utc)
+        for record in std.to_dict("records"):
+            trade_date = _date_from_int(record.get("date"))
+            if trade_date is None:
+                continue
+            rows.append((
+                canonical, trade_date,
+                _clean(record.get("open")), _clean(record.get("high")),
+                _clean(record.get("low")), _clean(record.get("close")),
+                _clean(record.get("volume")), _clean(record.get("amount")),
+                bool(record.get("is_suspended", False)), now,
+            ))
+        sql = f"""
+            INSERT INTO {table} (
+                stock_id, stock_code, stock_name, trade_date,
+                open_price, high_price, low_price,
+                close_price, volume, amount, is_suspended,
+                source_updated_at
+            )
+            SELECT s.stock_id, s.code, s.security_name,
+                   v.trade_date::DATE, v.open_price::NUMERIC,
+                   v.high_price::NUMERIC, v.low_price::NUMERIC,
+                   v.close_price::NUMERIC, v.volume::NUMERIC,
+                   v.amount::NUMERIC, v.is_suspended::BOOLEAN,
+                   v.source_updated_at::TIMESTAMPTZ
+            FROM (VALUES (
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+            )) AS v(
+                code, trade_date, open_price, high_price, low_price,
+                close_price, volume, amount, is_suspended, source_updated_at
+            )
+            JOIN master.stock s ON s.code = v.code
+            ON CONFLICT (stock_id, trade_date) DO UPDATE SET
+                stock_code = EXCLUDED.stock_code,
+                stock_name = EXCLUDED.stock_name,
+                open_price = EXCLUDED.open_price,
+                high_price = EXCLUDED.high_price,
+                low_price = EXCLUDED.low_price,
+                close_price = EXCLUDED.close_price,
+                volume = EXCLUDED.volume,
+                amount = EXCLUDED.amount,
+                is_suspended = EXCLUDED.is_suspended,
+                source_updated_at = EXCLUDED.source_updated_at,
+                updated_at = NOW()
         """
-        subdir = normalize_period(period)
-        period_dir = self.root / "A_share" / subdir
-        if not period_dir.exists():
-            return False
-        parquet_files = list(period_dir.glob("*.parquet"))
-        if not parquet_files:
-            return False
-        if codes:
-            expected = {_safe_code(c) for c in codes}
-            found = {f.stem for f in parquet_files}
-            if not expected.issubset(found):
-                return False
-        if codes and subdir == "daily":
+        return self._execute_many(sql, rows)
+
+    def upsert_adjustment_factors(
+        self, code: str, factors: pd.DataFrame
+    ) -> int:
+        if factors is None or factors.empty:
+            return 0
+        canonical, _, _ = _exchange_parts(code)
+        self.ensure_stock(canonical)
+        now = datetime.now(timezone.utc)
+        rows = []
+        for record in factors.to_dict("records"):
+            effective_date = _date_from_int(record.get("date"))
+            raw_factor = _clean(record.get("adj_factor"))
             try:
-                local = self.query_kline(codes, begin_date, end_date, period)
-            except Exception as e:  # noqa: BLE001
-                logger.debug("is_synced coverage check failed: %s", e)
-                return False
-            if local.empty or "code" not in local.columns or "date" not in local.columns:
-                return False
-            dates = pd.to_numeric(local["date"], errors="coerce").fillna(0).astype(int)
-            local = local.assign(date=dates)
-            for code in codes:
-                code_df = local[local["code"].astype(str) == str(code)]
-                if code_df.empty:
-                    return False
-                if int(begin_date) == int(end_date):
-                    if not (code_df["date"] == int(begin_date)).any():
-                        return False
-                    continue
-                if int(code_df["date"].min()) > int(begin_date):
-                    return False
-                if int(code_df["date"].max()) < int(end_date):
-                    return False
-        return True
+                factor = Decimal(str(raw_factor))
+            except (ValueError, TypeError):
+                continue
+            if effective_date is not None and factor > 0:
+                rows.append((canonical, effective_date, factor, now))
+        return self._execute_many(
+            """
+            INSERT INTO market.adjustment_factor (
+                stock_id, effective_date, adj_factor, source_updated_at
+            )
+            SELECT s.stock_id, v.effective_date::DATE,
+                   v.adj_factor::NUMERIC, v.source_updated_at::TIMESTAMPTZ
+            FROM (VALUES (%s, %s, %s, %s)) AS v(
+                code, effective_date, adj_factor, source_updated_at
+            )
+            JOIN master.stock s ON s.code = v.code
+            ON CONFLICT (stock_id, effective_date) DO UPDATE SET
+                adj_factor = EXCLUDED.adj_factor,
+                source_updated_at = EXCLUDED.source_updated_at,
+                updated_at = NOW()
+            """,
+            rows,
+        )
+
+    def upsert_calendar(self, df: pd.DataFrame) -> int:
+        if df is None or df.empty:
+            return 0
+        now = datetime.now(timezone.utc)
+        rows = []
+        for record in df.to_dict("records"):
+            trade_date = _date_from_int(record.get("date"))
+            if trade_date is not None:
+                rows.append((
+                    trade_date, str(record.get("market") or "SH"),
+                    bool(record.get("is_trading_day", True)),
+                    int(record.get("weekday", trade_date.weekday())), now,
+                ))
+        return self._execute_many(
+            """
+            INSERT INTO market.trade_calendar (
+                trade_date, market, is_trading_day, weekday, source_updated_at
+            ) VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (market, trade_date) DO UPDATE SET
+                is_trading_day = EXCLUDED.is_trading_day,
+                weekday = EXCLUDED.weekday,
+                source_updated_at = EXCLUDED.source_updated_at
+            """,
+            rows,
+        )
+
+    def upsert_reference(self, data_type: str, df: pd.DataFrame) -> int:
+        if df is None or df.empty:
+            return 0
+        try:
+            from psycopg.types.json import Jsonb
+        except ImportError as exc:  # pragma: no cover
+            raise RuntimeError("psycopg JSON support is unavailable") from exc
+        rows = []
+        for record in df.to_dict("records"):
+            payload = {str(k): _clean(v) for k, v in record.items()}
+            identity_columns = {
+                "balance": ("market_code", "ts_code", "code", "reporting_period", "report_type"),
+                "income": ("market_code", "ts_code", "code", "reporting_period", "report_type"),
+                "cashflow": ("market_code", "ts_code", "code", "reporting_period", "report_type"),
+                "shareholder": ("ts_code", "market_code", "code", "end_date"),
+                "index_member": ("index_code", "con_code", "in_date", "out_date"),
+            }.get(data_type, ())
+            identity = {
+                key: payload.get(key)
+                for key in identity_columns
+                if payload.get(key) is not None
+            }
+            encoded = json.dumps(
+                identity or payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            )
+            natural_key = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+            code = next(
+                (payload.get(k) for k in ("market_code", "ts_code", "code", "con_code") if payload.get(k)),
+                None,
+            )
+            raw_date = next(
+                (payload.get(k) for k in ("reporting_period", "end_date", "trade_date", "date") if payload.get(k)),
+                None,
+            )
+            rows.append((data_type, natural_key, code, _date_from_int(raw_date), Jsonb(payload)))
+        return self._execute_many(
+            """
+            INSERT INTO market.reference_data (
+                data_type, natural_key, code, reference_date, payload
+            ) VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (data_type, natural_key) DO UPDATE SET
+                code = EXCLUDED.code,
+                reference_date = EXCLUDED.reference_date,
+                payload = EXCLUDED.payload,
+                source_updated_at = NOW()
+            """,
+            rows,
+        )
+
+    def record_sync_job(
+        self,
+        *,
+        job_name: str,
+        data_type: str,
+        status: str,
+        sync_mode: str = "INCREMENTAL",
+        range_start: Optional[int] = None,
+        range_end: Optional[int] = None,
+        records_read: int = 0,
+        records_inserted: int = 0,
+        records_failed: int = 0,
+        started_at: Optional[float] = None,
+        error_message: Optional[str] = None,
+    ) -> int:
+        started = datetime.fromtimestamp(started_at, timezone.utc) if started_at else datetime.now(timezone.utc)
+        return self._execute_many(
+            """
+            INSERT INTO market.sync_job (
+                job_name, data_type, sync_mode, job_status, range_start,
+                range_end, records_read, records_inserted, records_failed,
+                started_at, completed_at, error_message
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s)
+            """,
+            [(
+                job_name, data_type, sync_mode, status,
+                _date_from_int(range_start), _date_from_int(range_end),
+                int(records_read), int(records_inserted), int(records_failed),
+                started, error_message,
+            )],
+        )
 
     # ------------------------------------------------------------------
-    # Queries
+    # API reads
     # ------------------------------------------------------------------
 
     def query_kline(
@@ -257,58 +507,38 @@ class HistoricalWarehouse:
         limit: Optional[int] = None,
         offset: int = 0,
     ) -> pd.DataFrame:
-        """Query K-line rows from the on-disk Parquet files."""
         if not codes:
             return pd.DataFrame()
-
-        subdir = normalize_period(period)
-        safe_codes = [_safe_code(c) for c in codes]
-
-        begin = int(begin_date)
-        end = int(end_date)
-
-        # Build explicit file list instead of glob — globbing 10k+ parquet files
-        # and then regexp-extracting the code out of each filename took ~45s for
-        # full-market queries. Listing the 5000+ files we actually need drops it
-        # to ~5s (8x faster, measured 2026-06-11).
-        #
-        # Critical: do NOT add a `WHERE code IN (?,?,?)` filter on top of the
-        # explicit file list. read_parquet(['a','b',...]) already restricts to
-        # those files, and the IN clause forces DuckDB's planner to build a
-        # 10k-element hash table on a cold connection — measured at 40s vs
-        # 0.6s without IN (2026-06-11). The code column is derived from the
-        # filename so we can still return it for downstream filters.
-        file_paths = [
-            str(Path(self.root) / "A_share" / subdir / f"{code}.parquet")
-            for code in safe_codes
-        ]
-        # Drop any codes without a parquet file (avoid read_parquet errors on
-        # missing paths).
-        existing_paths: list[str] = []
-        for path in file_paths:
-            if Path(path).exists():
-                existing_paths.append(path)
-        if not existing_paths:
-            return pd.DataFrame()
-        file_list_sql = "[" + ",".join(f"'{p}'" for p in existing_paths) + "]"
-
-        params: List[Any] = [begin, end]
-
+        table = _BAR_TABLES[normalize_period(period)]
+        canonical = [_exchange_parts(code)[0] for code in codes]
         sql = f"""
-            SELECT
-                regexp_extract(filename, '.*/([^/]+)\\.parquet$', 1) AS code,
-                date, open, high, low, close, volume, amount,
-                adj_factor, is_suspended, sync_at
-            FROM read_parquet({file_list_sql}, filename=true, union_by_name=true)
-            WHERE date BETWEEN ? AND ?
-            ORDER BY code, date
+            SELECT b.stock_code AS code,
+                   b.stock_name AS name,
+                   TO_CHAR(b.trade_date, 'YYYYMMDD')::INTEGER AS date,
+                   b.open_price AS open, b.high_price AS high,
+                   b.low_price AS low, b.close_price AS close,
+                   b.volume, b.amount, af.adj_factor, b.is_suspended,
+                   EXTRACT(EPOCH FROM b.source_updated_at)::BIGINT AS sync_at
+              FROM {table} b
+              LEFT JOIN LATERAL (
+                  SELECT f.adj_factor
+                    FROM market.adjustment_factor f
+                   WHERE f.stock_id = b.stock_id
+                     AND f.effective_date <= b.trade_date
+                   ORDER BY f.effective_date DESC
+                   LIMIT 1
+              ) af ON TRUE
+             WHERE b.stock_code = ANY(%s)
+               AND b.trade_date BETWEEN %s AND %s
+             ORDER BY b.stock_code, b.trade_date
         """
-
+        params: list[Any] = [
+            canonical, _date_from_int(begin_date), _date_from_int(end_date)
+        ]
         if limit is not None:
-            sql += " LIMIT ? OFFSET ?"
+            sql += " LIMIT %s OFFSET %s"
             params.extend([int(limit), int(offset)])
-
-        return self._execute_df(sql, params)
+        return self._fetch_df(sql, params)
 
     def query_calendar(
         self,
@@ -316,87 +546,103 @@ class HistoricalWarehouse:
         begin_date: Optional[int] = None,
         end_date: Optional[int] = None,
     ) -> pd.DataFrame:
-        path = self.meta_dir() / "calendar.parquet"
-        if not path.exists():
-            return pd.DataFrame(columns=[
-                "date", "market", "is_trading_day", "weekday", "sync_at"
-            ])
-        sql = f"SELECT * FROM read_parquet('{path}') WHERE 1=1"
-        params: List[Any] = []
+        sql = """
+            SELECT TO_CHAR(trade_date, 'YYYYMMDD')::INTEGER AS date,
+                   market, is_trading_day, weekday,
+                   EXTRACT(EPOCH FROM source_updated_at)::BIGINT AS sync_at
+              FROM market.trade_calendar
+             WHERE 1=1
+        """
+        params: list[Any] = []
         if market:
-            sql += " AND market = ?"
+            sql += " AND market = %s"
             params.append(market)
         if begin_date is not None:
-            sql += " AND date >= ?"
-            params.append(int(begin_date))
+            sql += " AND trade_date >= %s"
+            params.append(_date_from_int(begin_date))
         if end_date is not None:
-            sql += " AND date <= ?"
-            params.append(int(end_date))
-        sql += " ORDER BY date"
-        return self._execute_df(sql, params)
+            sql += " AND trade_date <= %s"
+            params.append(_date_from_int(end_date))
+        sql += " ORDER BY trade_date"
+        return self._fetch_df(sql, params)
+
+    def query_adjustment_factors(
+        self,
+        codes: Sequence[str],
+        begin_date: int,
+        end_date: int,
+    ) -> pd.DataFrame:
+        if not codes:
+            return pd.DataFrame()
+        canonical = [_exchange_parts(code)[0] for code in codes]
+        return self._fetch_df(
+            """
+            SELECT s.code,
+                   TO_CHAR(f.effective_date, 'YYYYMMDD')::INTEGER AS date,
+                   f.adj_factor,
+                   EXTRACT(EPOCH FROM f.source_updated_at)::BIGINT AS sync_at
+              FROM market.adjustment_factor f
+              JOIN master.stock s ON s.stock_id = f.stock_id
+             WHERE s.code = ANY(%s)
+               AND f.effective_date BETWEEN %s AND %s
+             ORDER BY s.code, f.effective_date
+            """,
+            [
+                canonical,
+                _date_from_int(begin_date),
+                _date_from_int(end_date),
+            ],
+        )
 
     def query_codes(
         self,
         board: Optional[str] = None,
         is_listed: Optional[bool] = None,
     ) -> pd.DataFrame:
-        path = self.meta_dir() / "codes.parquet"
-        if not path.exists():
-            return pd.DataFrame(columns=[
-                "code", "name", "comp_name", "list_date", "delist_date",
-                "is_listed", "board", "industry", "sync_at",
-            ])
-        sql = f"SELECT * FROM read_parquet('{path}') WHERE 1=1"
-        params: List[Any] = []
+        sql = """
+            SELECT code, security_name AS name, company_name AS comp_name,
+                   pinyin, company_name_en AS comp_name_eng,
+                   security_name_en AS comp_sname_eng,
+                   COALESCE(TO_CHAR(list_date, 'YYYYMMDD')::INTEGER, 0) AS list_date,
+                   COALESCE(TO_CHAR(delist_date, 'YYYYMMDD')::INTEGER, 0) AS delist_date,
+                   listing_status = 'LISTED' AS is_listed,
+                   board_type AS board, list_plate, industry,
+                   EXTRACT(EPOCH FROM source_updated_at)::BIGINT AS sync_at
+              FROM master.stock
+             WHERE 1=1
+        """
+        params: list[Any] = []
         if board:
-            sql += " AND board = ?"
+            sql += " AND board_type = %s"
             params.append(board)
         if is_listed is not None:
-            sql += " AND is_listed = ?"
+            sql += " AND (listing_status = 'LISTED') = %s"
             params.append(bool(is_listed))
         sql += " ORDER BY code"
-        return self._execute_df(sql, params)
-
-    def _view_exists(self, view_name: str) -> bool:
-        """Check if a DuckDB view exists."""
-        try:
-            rows = self.connection.execute(
-                "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = ?",
-                [view_name],
-            ).fetchall()
-            return bool(rows and rows[0][0] > 0)
-        except Exception:
-            return False
+        return self._fetch_df(sql, params)
 
     def _query_reference(
         self,
-        view_name: str,
-        file_name: str,
-        ts_code_col: str = "ts_code",
-        ts_code: Optional[str] = None,
+        data_type: str,
+        code: Optional[str] = None,
         begin_date: Optional[int] = None,
         end_date: Optional[int] = None,
-        date_col: Optional[str] = None,
     ) -> pd.DataFrame:
-        """Generic query helper for reference Parquet files."""
-        path = self.root / "reference" / file_name
-        if not path.exists():
+        sql = "SELECT payload FROM market.reference_data WHERE data_type = %s"
+        params: list[Any] = [data_type]
+        if code:
+            sql += " AND code = %s"
+            params.append(code)
+        if begin_date is not None:
+            sql += " AND reference_date >= %s"
+            params.append(_date_from_int(begin_date))
+        if end_date is not None:
+            sql += " AND reference_date <= %s"
+            params.append(_date_from_int(end_date))
+        rows = self._fetch_df(sql, params)
+        if rows.empty:
             return pd.DataFrame()
-
-        source = view_name if self._view_exists(view_name) else f"read_parquet('{path}')"
-        sql = f"SELECT * FROM {source} WHERE 1=1"
-        params: List[Any] = []
-
-        if ts_code:
-            sql += f" AND {ts_code_col} = ?"
-            params.append(ts_code)
-        if date_col and begin_date is not None:
-            sql += f" AND {date_col} >= ?"
-            params.append(int(begin_date))
-        if date_col and end_date is not None:
-            sql += f" AND {date_col} <= ?"
-            params.append(int(end_date))
-        return self._execute_df(sql, params)
+        return pd.DataFrame(rows["payload"].tolist())
 
     def query_financial(
         self,
@@ -405,25 +651,13 @@ class HistoricalWarehouse:
         begin_date: Optional[int] = None,
         end_date: Optional[int] = None,
     ) -> pd.DataFrame:
-        """Query financial statement data from reference table."""
-        view_map = {
-            "income": ("v_income", "income.parquet"),
-            "balance": ("v_balance_sheet", "balance_sheet.parquet"),
-            "balance_sheet": ("v_balance_sheet", "balance_sheet.parquet"),
-            "cashflow": ("v_cashflow", "cashflow.parquet"),
-        }
-        view_name, file_name = view_map.get(statement_type, (None, None))
-        if view_name is None:
-            return pd.DataFrame()
-        return self._query_reference(
-            view_name,
-            file_name,
-            ts_code_col="market_code",
-            ts_code=ts_code,
-            begin_date=begin_date,
-            end_date=end_date,
-            date_col="reporting_period",
-        )
+        kind = {
+            "balance_sheet": "balance",
+            "balance": "balance",
+            "income": "income",
+            "cashflow": "cashflow",
+        }.get(statement_type, statement_type)
+        return self._query_reference(kind, ts_code, begin_date, end_date)
 
     def query_shareholder(
         self,
@@ -431,218 +665,117 @@ class HistoricalWarehouse:
         begin_date: Optional[int] = None,
         end_date: Optional[int] = None,
     ) -> pd.DataFrame:
-        """Query shareholder number data from reference table."""
-        return self._query_reference(
-            "v_stk_holdernumber",
-            "stk_holdernumber.parquet",
-            ts_code=ts_code,
-            begin_date=begin_date,
-            end_date=end_date,
-            date_col="end_date",
-        )
+        return self._query_reference("shareholder", ts_code, begin_date, end_date)
 
     def query_index_member(
         self,
         index_code: Optional[str] = None,
         ts_code: Optional[str] = None,
     ) -> pd.DataFrame:
-        """Query index constituent data from reference table."""
-        path = self.root / "reference" / "index_member.parquet"
-        if not path.exists():
-            return pd.DataFrame()
-        source = "v_index_member" if self._view_exists("v_index_member") else f"read_parquet('{path}')"
-        sql = f"SELECT * FROM {source} WHERE 1=1"
-        params: List[Any] = []
-        if index_code:
-            sql += " AND index_code = ?"
-            params.append(index_code)
-        if ts_code:
-            sql += " AND con_code = ?"
-            params.append(ts_code)
-        return self._execute_df(sql, params)
+        df = self._query_reference("index_member", ts_code)
+        if index_code and not df.empty and "index_code" in df.columns:
+            df = df[df["index_code"].astype(str) == str(index_code)]
+        return df.reset_index(drop=True)
 
-    # ------------------------------------------------------------------
-    # SQL interface (constrained)
-    # ------------------------------------------------------------------
+    def is_synced(
+        self,
+        begin_date: int,
+        end_date: int,
+        period: str,
+        codes: Optional[Sequence[str]] = None,
+    ) -> bool:
+        if not codes:
+            return self.max_trade_date(period) is not None
+        df = self.query_kline(codes, begin_date, end_date, period)
+        if df.empty:
+            return False
+        requested = {_exchange_parts(code)[0] for code in codes}
+        return requested.issubset(set(df["code"].astype(str).unique()))
+
+    def max_trade_date(self, period: str) -> Optional[int]:
+        table = _BAR_TABLES[normalize_period(period)]
+        df = self._fetch_df(
+            f"SELECT TO_CHAR(MAX(trade_date), 'YYYYMMDD')::INTEGER AS value FROM {table}"
+        )
+        if df.empty or pd.isna(df.iloc[0]["value"]):
+            return None
+        return int(df.iloc[0]["value"])
 
     def execute_sql(self, sql: str, max_rows: Optional[int] = None) -> pd.DataFrame:
-        """Run a constrained read-only SQL query.
-
-        Only ``SELECT`` and CTE-style ``WITH`` statements are allowed.
-        ``ATTACH``, ``COPY`` and ``LOAD`` are rejected. Result size is
-        limited to ``settings.duckdb_max_rows`` unless a lower caller cap is
-        supplied. One extra row may be returned so callers can detect
-        truncation exactly.
-        """
         if not sql or not sql.strip():
             raise ValueError("empty SQL statement")
-        cleaned = sql.strip().lstrip("(").strip()
-        head = cleaned.split(None, 1)[0].upper() if cleaned else ""
+        cleaned = sql.strip().rstrip(";")
+        head = cleaned.lstrip("(").split(None, 1)[0].upper()
         if head not in {"SELECT", "WITH"}:
             raise ValueError("only SELECT/CTE statements are allowed")
-        forbidden = ("ATTACH", "COPY", "LOAD", "INSTALL", "EXPORT", "SET")
-        upper_sql = " ".join(cleaned.split())
-        for tok in forbidden:
-            if tok + " " in upper_sql.upper() or upper_sql.upper().endswith(tok):
-                raise ValueError(f"statement '{tok}' is not allowed")
-
-        row_cap = min(int(max_rows or self._max_rows), self._max_rows)
-        row_cap = max(1, row_cap)
-        wrapped = f"SELECT * FROM ({sql}) LIMIT {row_cap + 1}"
-        with self._lock:
-            try:
-                df = self._con.execute(wrapped).fetch_df()
-            except Exception as e:
-                raise RuntimeError(f"SQL execution failed: {e}") from e
-        return df
-
-    # ------------------------------------------------------------------
-    # Maintenance
-    # ------------------------------------------------------------------
-
-    def refresh_views(self) -> None:
-        """Re-register DuckDB views (call after writing new files)."""
-        with self._lock:
-            self._register_views()
-
-    def list_files(
-        self,
-        period: Optional[str] = None,
-        year: Optional[int] = None,
-    ) -> List[Path]:
-        root = self.root
-        results: List[Path] = []
-        del year  # flat layout: every code lives directly under A_share/{subdir}/
-        if period:
-            subdir = normalize_period(period)
-            base = root / "A_share" / subdir
-            if base.exists():
-                results.extend(sorted(p for p in base.glob("*.parquet")))
-            return results
-        for sub in ("daily", "weekly", "monthly"):
-            base = root / "A_share" / sub
-            if not base.exists():
-                continue
-            results.extend(sorted(p for p in base.glob("*.parquet")))
-        return results
+        forbidden = {
+            "INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "COPY",
+            "GRANT", "REVOKE", "TRUNCATE", "CALL", "DO", "SET", "RESET",
+        }
+        tokens = {token.strip("(),;").upper() for token in cleaned.split()}
+        hit = forbidden & tokens
+        if hit:
+            raise ValueError(f"statement '{sorted(hit)[0]}' is not allowed")
+        cap = max(1, min(int(max_rows or self._max_rows), self._max_rows))
+        return self._fetch_df(f"SELECT * FROM ({cleaned}) AS q LIMIT %s", [cap + 1])
 
     def stats(self) -> Dict[str, Any]:
-        """Return aggregate statistics of the warehouse."""
-        period_stats: Dict[str, Any] = {}
-        for sub in ("daily", "weekly", "monthly"):
-            base = self.root / "A_share" / sub
-            file_count = 0
-            total_bytes = 0
-            if base.exists():
-                for f in base.glob("*.parquet"):
-                    file_count += 1
-                    total_bytes += f.stat().st_size
-            # Pull min/max date from a single DuckDB scan over the view.
-            first_date: Optional[int] = None
-            last_date: Optional[int] = None
-            if file_count > 0:
-                try:
-                    row = self.connection.execute(
-                        f"SELECT MIN(date) AS lo, MAX(date) AS hi FROM v_kline_{'day' if sub == 'daily' else ('week' if sub == 'weekly' else 'month')}"
-                    ).fetchone()
-                    if row:
-                        first_date, last_date = row[0], row[1]
-                except Exception as e:  # noqa: BLE001
-                    logger.debug("stats date range probe failed for %s: %s", sub, e)
-            period_stats[sub] = {
-                "file_count": file_count,
-                "total_bytes": total_bytes,
-                "first_date": int(first_date) if first_date is not None else None,
-                "last_date": int(last_date) if last_date is not None else None,
-            }
-        return {
-            "root": str(self.root),
-            "duckdb_mode": self.settings.duckdb_mode,
-            "periods": period_stats,
-        }
+        periods: Dict[str, Any] = {}
+        for name, table in _BAR_TABLES.items():
+            df = self._fetch_df(
+                f"""
+                SELECT COUNT(*) AS total_rows,
+                       COUNT(DISTINCT stock_id) AS code_count,
+                       TO_CHAR(MIN(trade_date), 'YYYYMMDD')::INTEGER AS first_date,
+                       TO_CHAR(MAX(trade_date), 'YYYYMMDD')::INTEGER AS last_date
+                  FROM {table}
+                """
+            )
+            periods[name] = df.iloc[0].to_dict() if not df.empty else {}
+        return {"backend": "postgresql", "periods": periods}
 
     def freshness_stats(self, period: str) -> Optional[Dict[str, Any]]:
-        """Return freshness metrics from the current on-disk K-line view."""
-        view_map = {
-            "day": ("daily", "v_kline_day"),
-            "week": ("weekly", "v_kline_week"),
-            "month": ("monthly", "v_kline_month"),
-        }
-        subdir, view = view_map[period]
-        if not list((self.root / "A_share" / subdir).glob("*.parquet")):
+        table = _BAR_TABLES[normalize_period(period)]
+        df = self._fetch_df(
+            f"""
+            SELECT TO_CHAR(MAX(trade_date), 'YYYYMMDD') AS latest_trade_date,
+                   COUNT(DISTINCT stock_id) AS code_count,
+                   EXTRACT(EPOCH FROM MAX(source_updated_at))::BIGINT AS last_sync_at
+              FROM {table}
+            """
+        )
+        if df.empty or not df.iloc[0]["latest_trade_date"]:
             return None
-        try:
-            row = self.connection.execute(
-                f"""
-                SELECT MAX(date), COUNT(DISTINCT code), MAX(sync_at)
-                FROM {view}
-                """
-            ).fetchone()
-        except Exception as e:  # noqa: BLE001
-            logger.warning("freshness query failed for %s: %s", period, e)
-            return None
-        if not row or row[0] is None:
-            return None
-        coverage_end = _coverage_end_date(period, int(row[0]))
+        row = df.iloc[0]
         return {
-            "latest_trade_date": coverage_end,
-            "latest_complete_date": coverage_end,
-            "code_count": int(row[1] or 0),
-            "last_sync_at": int(row[2]) if row[2] is not None else None,
+            "latest_trade_date": str(row["latest_trade_date"]),
+            "latest_complete_date": str(row["latest_trade_date"]),
+            "code_count": int(row["code_count"] or 0),
+            "last_sync_at": int(row["last_sync_at"]) if not pd.isna(row["last_sync_at"]) else None,
         }
 
     def health(self) -> Dict[str, Any]:
         try:
-            with self._lock:
-                self._con.execute("SELECT 1").fetchone()
-            duckdb_ok = True
-        except Exception as e:
-            duckdb_ok = False
-            logger.debug("duckdb health probe failed: %s", e)
+            df = self._fetch_df("SELECT 1 AS ok")
+            connected = bool(not df.empty and int(df.iloc[0]["ok"]) == 1)
+            error = None
+        except Exception as exc:  # noqa: BLE001
+            connected = False
+            error = str(exc)
         return {
             "historical_enabled": self.settings.historical_enabled,
-            "root": str(self.root),
-            "duckdb_connected": duckdb_ok,
+            "backend": "postgresql",
+            "database_connected": connected,
+            "database": self.settings.database_url.rsplit("@", 1)[-1],
+            "error": error,
         }
 
-    # ------------------------------------------------------------------
-    # Internals
-    # ------------------------------------------------------------------
-
-    def _execute_df(self, sql: str, params: Optional[Sequence[Any]] = None) -> pd.DataFrame:
-        params = list(params or [])
-        with self._lock:
-            try:
-                if params:
-                    cur = self._con.execute(sql, params)
-                else:
-                    cur = self._con.execute(sql)
-                return cur.fetch_df()
-            except Exception as e:
-                msg = str(e)
-                if (
-                    "No files found" in msg
-                    or "IO Error" in msg
-                    or "No such file" in msg
-                    or "No match found" in msg
-                ):
-                    return pd.DataFrame()
-                raise
-
-
-# Note: ``_safe_code`` is imported from :mod:`adshare.historical.models`.
-
-
-# ----------------------------------------------------------------------
-# Singleton accessor
-# ----------------------------------------------------------------------
 
 _warehouse: Optional[HistoricalWarehouse] = None
 _warehouse_lock = threading.Lock()
 
 
 def get_warehouse(settings: Optional[Settings] = None) -> HistoricalWarehouse:
-    """Return the process-wide :class:`HistoricalWarehouse` singleton."""
     global _warehouse
     if _warehouse is None:
         with _warehouse_lock:
@@ -652,12 +785,10 @@ def get_warehouse(settings: Optional[Settings] = None) -> HistoricalWarehouse:
 
 
 def reset_warehouse() -> None:
-    """Tear down the singleton (used by tests)."""
     global _warehouse
     with _warehouse_lock:
         if _warehouse is not None:
             try:
                 _warehouse.close()
-            except Exception:
-                pass
-        _warehouse = None
+            finally:
+                _warehouse = None

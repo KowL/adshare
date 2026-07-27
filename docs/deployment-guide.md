@@ -1,5 +1,9 @@
 # adshare 部署指南
 
+> 2026-07-27：历史数据层已由 Parquet/DuckDB 切换为 PostgreSQL。
+> 新部署以 [`postgresql-data-architecture.md`](postgresql-data-architecture.md)
+> 为准；本文后续出现的 Parquet/DuckDB 命令仅作为旧环境迁移参考。
+
 > 版本: 1.0.0
 > 更新日期: 2026-07-17
 
@@ -71,7 +75,8 @@ REDIS_HOST=127.0.0.1
 REDIS_PORT=26739
 
 HISTORICAL_ENABLED=true
-HISTORICAL_PATH=./data
+DATABASE_URL=postgresql://adshare:<password>@<postgres-host>:5432/adshare
+DATABASE_AUTO_MIGRATE=true
 
 AUTH_ENABLED=true
 ADSHARE_API_KEY=<key>
@@ -156,8 +161,8 @@ docker compose -f adshare/docker-compose.yml up -d --build
 # 健康检查
 curl http://localhost:8888/health
 
-# 历史数据仓状态
-curl http://localhost:8888/historical/admin/health
+# 历史数据仓状态（PostgreSQL 行数 / 最新日期）
+curl http://localhost:8888/status/data-freshness
 ```
 
 ---
@@ -177,12 +182,12 @@ curl http://localhost:8888/historical/admin/health
 │  │ Service     │ │ Analysis     │ │ Analysis Service     │  │
 │  └─────────────┘ └──────────────┘ └──────────────────────┘  │
 │                           │                                  │
-│              ┌────────────┼────────────┐                    │
-│              ▼            ▼            ▼                    │
-│         ┌────────┐  ┌─────────┐  ┌──────────┐             │
-│         │ Redis  │  │ DuckDB  │  │ Parquet  │             │
-│         │ (实时) │  │ (查询)  │  │ (L3 仓)  │             │
-│         └────────┘  └─────────┘  └──────────┘             │
+│              ┌────────────┴────────────┐                    │
+│              ▼                         ▼                    │
+│         ┌────────┐           ┌─────────────────────┐        │
+│         │ Redis  │           │   PostgreSQL 15+    │        │
+│         │ (实时) │           │   (L3 历史仓库)     │        │
+│         └────────┘           └─────────────────────┘        │
 └─────────────────────────────────────────────────────────────┘
                            │
 ┌──────────────────────────▼──────────────────────────────────┐
@@ -196,7 +201,8 @@ curl http://localhost:8888/historical/admin/health
 
 - **API 服务**：纯 Python，可在任何平台运行（ARM Mac / x86 Linux）
 - **Worker 服务**：必须在 Linux/amd64 运行（AmazingData SDK 限制）
-- **数据流**：Worker 拉取 SDK 数据 → 写入 Parquet + Redis → API 服务读取
+- **数据流**：Worker 拉取 SDK 数据 → 写入 PostgreSQL（历史）+ Redis（实时）
+  → API 服务只读查询
 
 ---
 
@@ -220,36 +226,34 @@ docker compose -f amazingdata/docker-compose.batch.yml logs amazingdata-batch | 
 - 确认容器能访问 AmazingData 服务器
 - 在 x86 Linux 服务器上运行（ARM Mac 不支持 SDK）
 
-### Q2: `/market/kline` 返回空数据
+### Q2: `POST /tushare` 日线/周线/月线返回空数据
 
-**原因**: 历史数据仓未同步
+**原因**: PostgreSQL 历史仓未同步
 
 **排查**:
 ```bash
-# 检查仓库状态
-curl http://localhost:8888/historical/admin/stats
+# 检查 PostgreSQL 仓库状态（行数 / 最新日期）
+curl http://localhost:8888/status/data-freshness
 
-# 检查文件是否存在（生产：数据在 /opt/adshare/data）
-ls /opt/adshare/data/A_share/daily/ | head
-
-# 本地 Docker 部署方式时
-docker compose -f adshare/docker-compose.yml exec adshare-api ls /app/data/A_share/daily/
+# 直连 PostgreSQL 看行数（生产主机）
+psql "postgresql://adshare:<password>@127.0.0.1:5432/adshare" \
+  -c "SELECT period, COUNT(*), MIN(trade_date), MAX(trade_date) FROM market.daily_bar GROUP BY 1;"
 ```
 
 **解决**:
 
-同步任务需要数据源会话，只能在 worker 进程内执行（API 进程已不再提供
-`/historical/admin/sync` 端点）：
+同步任务需要数据源会话，只能在 worker 进程内执行（API 进程不持有 SDK 连接）：
 
 ```bash
-# 方式一：在 batch.env 中设置 SYNC_ON_START=true，然后重启 batch worker
+# 方式一：拉取最新镜像并启动 batch worker（按 APScheduler 周期同步）
 docker compose -f amazingdata/docker-compose.batch.yml up -d
 
-# 方式二：在 batch 容器内手动跑同步脚本（容器内 working_dir 为 /app/data，脚本用绝对路径）
-docker compose -f amazingdata/docker-compose.batch.yml exec amazingdata-batch python /app/scripts/backfill_kline.py --help
+# 方式二：在 batch 容器内手动跑回填脚本
+docker compose -f amazingdata/docker-compose.batch.yml exec amazingdata-batch \
+  python /app/scripts/backfill_kline.py --help
 ```
 
-### Q3: `/market/snapshot` 返回空数据
+### Q3: `/realtime/quote/{code}` 返回空数据
 
 **原因**: 快照数据不存储在 L3 仓库中，需要实时订阅
 
@@ -294,7 +298,7 @@ pip install apscheduler
 
 ### Q7: 覆盖率测试运行缓慢
 
-**原因**: DuckDB 首次查询需要编译视图
+**原因**: psycopg 连接池在集成测试中需要反复创建/释放连接
 
 **解决**:
 ```bash
@@ -302,7 +306,7 @@ pip install apscheduler
 pytest tests/ -q --no-cov
 
 # 或只运行特定模块
-pytest tests/test_market.py -q
+pytest tests/test_tushare.py -q
 ```
 
 ---
@@ -331,8 +335,7 @@ journalctl -u redis -f
 
 ```bash
 curl http://localhost:8888/health
-curl http://localhost:8888/historical/admin/health
-curl http://localhost:8888/technical/indicators
+curl http://localhost:8888/status/data-freshness
 ```
 
 ### Prometheus 指标
@@ -375,7 +378,15 @@ docker ps --filter name=amazingdata
 
 ### 数据迁移
 
-升级时历史数据仓（Parquet 文件）会自动兼容，无需手动迁移。
+历史数据层已切换为 PostgreSQL（见本文档顶部）。从旧 Parquet 仓升级时执行：
+
+```bash
+DATABASE_URL=postgresql://adshare:<password>@127.0.0.1:5432/adshare \
+  python -m scripts.migrate_parquet_to_postgres --source /opt/adshare/data
+```
+
+迁移走幂等 UPSERT，可中断后重跑。验证 PostgreSQL 行数和日期范围无误后，旧
+`/opt/adshare/data/A_share/` 目录可以离线归档。
 
 ---
 

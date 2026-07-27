@@ -2,10 +2,24 @@
 
 > 版本: 0.2.0-draft  
 > 更新日期: 2026-07-17  
-> 状态: 设计评审通过（修订后待开发）  
+> 状态: **设计已落地** — `rt_k` / `rt_min` 已通过统一 `POST /tushare` 入口暴露，
+> 本文保留为设计参考；与现网实现不一致之处以 `docs/tushare-migration.md` 和
+> 代码为准。  
 > 修订记录: v0.2 按评审意见修正——文件路径对齐 monorepo 结构、key 契约落到
 > `realtime_keys.py`、REST 路径统一为 rt_k/rt_min、配置落位到拆分后的 env 文件、
 > 风险表补充订阅规模与 snapshot 基线负载
+
+## 实现差异（v0.2 → 现网）
+
+- `rt_k` / `rt_min` 已注册到 `adshare/routers/tushare/__init__.py` 的统一分发，
+  不再单独挂在 `/tushare/realtime/rt_k`、`/tushare/realtime/rt_min` 子路径（§7.4
+  REST 直连路由已废弃）。
+- K 线 Stream 累积（`realtime_kline_history_ttl` / `realtime_kline_max_bars`）
+  是设计目标但 **worker 端尚未实现** — 当前 `_handle_kline` 仍只走 `SETEX`，下游
+  `rt_min` 只能拿到当前一根；如需历史须先完成 §13 的第 3 步。
+- §14 提到的“盘后归档到 `A_share/minute/{code}/` Parquet”**已废止**：历史仓库
+  改为 PostgreSQL（见 `docs/postgresql-data-architecture.md`），分钟 K 线若需要
+  历史留痕应归档到 PostgreSQL 分钟表，而非 Parquet。
 
 ---
 
@@ -34,11 +48,13 @@ adshare 当前已具备实时行情链路：
 2. **端点对等**：
    - `POST /tushare` 统一入口支持 `api_name=rt_k`
    - `POST /tushare` 统一入口支持 `api_name=rt_min`
-3. **REST 直连**：同步暴露 `GET/POST /tushare/realtime/rt_k` 与 `GET/POST /tushare/realtime/rt_min`
-4. **多周期**：1MIN / 5MIN / 15MIN / 30MIN / 60MIN 全部支持
-5. **响应字段**：符合 tushare Pro 字段命名习惯
-6. **零成本复用**：完全基于现有 Redis 实时数据 + 现有订阅通道，不引入新 SDK 调用
-7. **降级兼容**：与现有 `/realtime/*` REST/WebSocket/SSE 通道并存，互不干扰
+3. **多周期**：1MIN / 5MIN / 15MIN / 30MIN / 60MIN 全部支持
+4. **响应字段**：符合 tushare Pro 字段命名习惯
+5. **零成本复用**：完全基于现有 Redis 实时数据 + 现有订阅通道，不引入新 SDK 调用
+6. **降级兼容**：与现有 `/realtime/*` REST/WebSocket/SSE 通道并存，互不干扰
+
+> 之前计划在 `/tushare/realtime/rt_k` 与 `/tushare/realtime/rt_min` 暴露 REST 直连,
+> 后续已统一收敛到 `POST /tushare` 单一入口,这两个 RESTful 路径不再使用。
 
 ---
 

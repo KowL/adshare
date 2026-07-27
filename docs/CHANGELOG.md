@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### Changed (2026-07-27)
+
+- **Tushare router consolidated to a single `POST /tushare` entry point.** All `*_D` RESTful handlers (`/tushare/stock/daily`, `/tushare/index/...`, etc.) removed; the unified dispatcher routes by `api_name` field. Matches the official Tushare Pro protocol.
+- **Tushare Pro protocol compliance fixes.** HTTP 200 is now always returned (errors surface in the `code` body field per the official spec); `auth_enabled` failures return `code: 20001/20002`; date columns serialise as `YYYYMMDD` strings (e.g. `"20240105"`); `vol` returned in hands (浮点), `amount` in 千元; `msg` is `"Success"`; rows sorted ascending by `trade_date`.
+- **New Tushare handler `limit_list_d`** ([doc_id=298](https://tushare.pro/document/2?doc_id=298)) — daily limit-up/down detail with `trade_date` / `ts_code` / `limit_type` (U/D/Z) / `exchange` filters. Schema mirrors the official spec; `(limit_amount, float_mv, total_mv, turnover_ratio, fd_amount)` are returned as `null` while awaiting warehouse enrichment.
+
+### Removed (2026-07-27)
+
+- **`/market/*`, `/stock_data/*`, `/historical/*`, `/historical/admin/*` router groups** — superseded by `POST /tushare` (single entry) and the PostgreSQL warehouse's `data-freshness` endpoint. 46+ legacy endpoints deleted.
+- **`adshare/clients/tushare_client.py` + `tests/test_tushare_client.py`** — self-contained outbound client SDK that lived in the server repo with zero internal callers; if downstream apps need it, vendor the 194 lines (or use the official `tushare` SDK against the URL redirect trick in `README.md`).
+- **Dead code in `adshare/historical/models.py`** — `kline_file_path`, `period_to_subdir`, `write_metadata`, `summarize_kline_files`, plus the unused `_safe_code` helper and `Iterable`/`Path` imports.
+- **Misleading scheduled functions in `amazingdata/batch.py`** — `_run_repair_kline` / `_run_repair_financial` collapsed to a single `_run_schema_verify` (both entries now invoke the same idempotent `warehouse.initialize_schema()`); cron job IDs renamed `repair_*_weekly` → `schema_verify_*_weekly`.
+
+### Docs (2026-07-27)
+
+- Deleted fully-obsolete design docs: `docs/historical-data-architecture.md` (replaced by `postgresql-data-architecture.md`) and `docs/adshare-stock-api-plan.md` (pre-implementation proposal).
+- `docs/project-spec.md`: directory tree, technology-stack table, cache/storage architecture and HTTP-status-codes section rewritten to reflect PostgreSQL warehouse, deleted routers, and Tushare body-code conventions.
+- `amazingdata/README.amazingdata-stub.md`: corrected (was labelled `adshare` and pointing at the wrong README).
+
+## Unreleased
+
 ### Fixed (2026-07-23)
 
 - **API authentication now covers business and administrative routes.** When `AUTH_ENABLED=true`, market, financial, technical, fundamental, factor, realtime, stock-data, historical, and historical-admin endpoints require a valid `X-API-Key` header or `api_key` query parameter. Health, root, and metrics endpoints remain public for monitoring.

@@ -1,4 +1,4 @@
-"""盘后模式: APScheduler 定时同步 -> L3 warehouse (Parquet/DuckDB).
+"""盘后模式: APScheduler 定时同步 -> PostgreSQL.
 
 启动:
     python -m amazingdata.batch
@@ -11,7 +11,7 @@ Docker:
 
 职责:
 - 登录 AmazingData SDK
-- 初始化 HistoricalWarehouse (DuckDB views + Parquet layout)
+- 初始化 PostgreSQL repository（连接池 + schema migration）
 - 启动 APScheduler，按 cron 跑 K线/meta/参考数据同步任务
 - 阻塞主循环，按 SIGTERM/SIGINT 优雅退出
 
@@ -29,7 +29,6 @@ TGW 单连接账户约束:
 from __future__ import annotations
 
 import signal
-import subprocess
 import sys
 import threading
 import time
@@ -37,7 +36,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable, List, Optional, Sequence
+from typing import Any, List, Optional, Sequence
 
 # Allow running as ``python amazingdata/batch.py``
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -45,21 +44,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import pandas as pd  # noqa: E402
 
 from amazingdata.config import WorkerSettings, get_worker_settings  # noqa: E402
-from adshare.core.config import Settings as SharedSettings  # noqa: E402  # noqa: E402
 from adshare.core.logging import setup_logging, get_logger  # noqa: E402
 from adshare.historical.models import (  # noqa: E402
-    KLINE_COLUMNS,
     _filter_sh_sz_codes,
-    _financial_dedup_keys,
     _is_sh_sz_code,
     _normalize_financial_df,
-    kline_file_path,
     normalize_period,
     standardize_calendar_df,
     standardize_codes_df,
     standardize_kline_df,
     validate_kline_df,
-    write_metadata,
 )
 from adshare.historical.warehouse import HistoricalWarehouse, get_warehouse  # noqa: E402
 
@@ -154,7 +148,7 @@ def _load_codes_from_meta(
     warehouse: Optional[HistoricalWarehouse] = None,
     settings: Optional[WorkerSettings] = None,
 ) -> Optional[List[str]]:
-    """Load the A-share code list from the cached ``meta/codes.parquet``.
+    """Load the A-share code list from PostgreSQL.
 
     Returns ``None`` if the file is missing or empty. Reference sync jobs
     use this cache as their primary code source so they do not depend on
@@ -165,16 +159,13 @@ def _load_codes_from_meta(
     try:
         settings = settings or get_worker_settings()
         warehouse = warehouse or get_warehouse(settings)
-        path = warehouse.meta_dir() / "codes.parquet"
-        if not path.exists():
-            return None
-        df = pd.read_parquet(path)
+        df = warehouse.query_codes()
         if df is None or df.empty or "code" not in df.columns:
             return None
         codes = df["code"].dropna().astype(str).tolist()
         return [c for c in codes if _is_sh_sz_code(c)]
     except Exception as e:
-        logger.warning("Failed to load codes from meta/codes.parquet: %s", e)
+        logger.warning("Failed to load codes from PostgreSQL: %s", e)
         return None
 
 
@@ -198,68 +189,20 @@ def _ensure_code_suffix(code: str) -> str:
     return c
 
 
-def _existing_codes(period: str, root: Path) -> set[str]:
-    """Return the set of codes already present for a period (flat layout)."""
-    period_dir = root / "A_share" / normalize_period(period)
-    if not period_dir.exists():
-        return set()
-    return {f.stem for f in period_dir.glob("*.parquet")}
-
-
 def _persist_kline(
     df: pd.DataFrame,
     period: str,
     code: str,
-    root: Path,
-) -> Optional[Path]:
-    """Standardize, validate and merge with any existing Parquet file."""
+    warehouse: HistoricalWarehouse,
+) -> int:
+    """Standardize, validate and upsert one security into PostgreSQL."""
     if df is None or df.empty:
-        return None
+        return 0
     std = standardize_kline_df(df, code=code)
     std = validate_kline_df(std)
     if std.empty:
-        return None
-    code_key = _ensure_code_suffix(code)
-    file_path = kline_file_path(root, period, code_key)
-    file_path.parent.mkdir(parents=True, exist_ok=True)
-
-    if file_path.exists():
-        try:
-            existing = pd.read_parquet(file_path)
-            if not existing.empty:
-                std = pd.concat([existing, std], ignore_index=True)
-                if "sync_at" in std.columns:
-                    std = std.sort_values("sync_at").drop_duplicates(
-                        subset=[c for c in ("code", "date") if c in std.columns],
-                        keep="last",
-                    )
-                else:
-                    std = std.drop_duplicates(
-                        subset=[c for c in ("code", "date") if c in std.columns],
-                        keep="last",
-                    )
-                std = std.sort_values("date").reset_index(drop=True)
-        except Exception:
-            pass
-
-    std.to_parquet(file_path, engine="pyarrow", compression="zstd", index=False)
-    return file_path
-
-
-def _persist_meta(df: pd.DataFrame, path: Path) -> Optional[Path]:
-    if df is None or df.empty:
-        return None
-    path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(path, engine="pyarrow", compression="zstd", index=False)
-    return path
-
-
-def _persist_reference(df: pd.DataFrame, path: Path) -> Optional[Path]:
-    if df is None or df.empty:
-        return None
-    path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(path, engine="pyarrow", compression="zstd", index=False)
-    return path
+        return 0
+    return warehouse.upsert_kline(_ensure_code_suffix(code), period, std)
 
 
 def _date_bounds(
@@ -304,6 +247,37 @@ class SyncResult:
         return asdict(self)
 
 
+def _record_sync_result(
+    warehouse: HistoricalWarehouse,
+    result: SyncResult,
+    *,
+    data_type: str,
+    range_start: Optional[int] = None,
+    range_end: Optional[int] = None,
+) -> None:
+    """Persist an auditable completion row without masking the sync outcome."""
+    try:
+        status = (
+            "SUCCESS"
+            if result.success
+            else ("PARTIAL_SUCCESS" if result.succeeded else "FAILED")
+        )
+        warehouse.record_sync_job(
+            job_name=result.job,
+            data_type=data_type,
+            status=status,
+            range_start=range_start,
+            range_end=range_end,
+            records_read=result.rows,
+            records_inserted=result.rows,
+            records_failed=result.failed,
+            started_at=result.started_at,
+            error_message="\n".join(result.errors)[:10000] or None,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("failed to record sync job %s: %s", result.job, exc)
+
+
 # ============================================================
 # Sync jobs
 # ============================================================
@@ -322,7 +296,6 @@ def sync_kline(
     """Generic K-line sync (daily/weekly/monthly)."""
     settings = settings or get_worker_settings()
     warehouse = warehouse or get_warehouse(settings)
-    root = warehouse.root
     today = datetime.now()
     begin_date, end_date = _date_bounds(from_date, to_date, today)
 
@@ -398,15 +371,12 @@ def sync_kline(
                     code_df = batch_df[batch_df["code"].astype(str) == code_key]
                 else:
                     code_df = batch_df if len(batch) == 1 else pd.DataFrame()
-                path = _persist_kline(code_df, period, code, root)
-                if path is None:
+                written = _persist_kline(code_df, period, code, warehouse)
+                if written <= 0:
                     result.skipped += 1
                     continue
                 result.succeeded += 1
-                try:
-                    rows_written += len(pd.read_parquet(path))
-                except Exception:
-                    pass
+                rows_written += written
 
             logger.info(
                 "sync_kline(%s) range=[%s,%s] batch=%s/%s succeeded=%d skipped=%d failed=%d rows=%d",
@@ -418,7 +388,16 @@ def sync_kline(
         result.rows = rows_written
         result.finished_at = time.time()
         result.success = result.failed == 0
-        _write_period_metadata(period, root, warehouse, rows_written)
+        _publish_period_freshness(period, warehouse, rows_written)
+        _record_sync_result(
+            warehouse,
+            result,
+            data_type=normalize_period(period).upper().replace("DAILY", "DAILY_BAR")
+            .replace("WEEKLY", "WEEKLY_BAR")
+            .replace("MONTHLY", "MONTHLY_BAR"),
+            range_start=begin_date,
+            range_end=end_date,
+        )
         logger.info(
             "sync_kline(%s) range=[%s,%s] succeeded=%d skipped=%d failed=%d rows=%d duration=%.2fs",
             period, begin_date, end_date,
@@ -426,7 +405,7 @@ def sync_kline(
         )
         return result
 
-    def _sync_one(code: str) -> tuple[str, str, Optional[Path], Optional[str]]:
+    def _sync_one(code: str) -> tuple[str, str, int, Optional[str]]:
         attempts = max(1, int(settings.sync_retry_attempts))
         for attempt in range(attempts):
             with _SDK_CALL_LOCK:
@@ -442,29 +421,24 @@ def sync_kline(
                     if "exceed the max limitation" in err_str or "rate limit" in err_str:
                         time.sleep(0.5 * (attempt + 1))
                     if attempt == attempts - 1:
-                        return code, "failed", None, str(e)
+                        return code, "failed", 0, str(e)
                     time.sleep(0.2 * (attempt + 1))
                     continue
-            path = _persist_kline(df, period, code, root)
-            if path is None:
-                return code, "skipped", None, None
-            return code, "written", path, None
-        return code, "failed", None, "unknown"
+            written = _persist_kline(df, period, code, warehouse)
+            if written <= 0:
+                return code, "skipped", 0, None
+            return code, "written", written, None
+        return code, "failed", 0, "unknown"
 
     rows_written = 0
-    file_count = 0
     workers = max(1, int(settings.sync_workers))
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {pool.submit(_sync_one, c): c for c in codes}
         for fut in as_completed(futures):
-            code, status, path, err = fut.result()
+            code, status, written, err = fut.result()
             if status == "written":
                 result.succeeded += 1
-                file_count += 1
-                try:
-                    rows_written += len(pd.read_parquet(path))
-                except Exception:
-                    pass
+                rows_written += written
             elif status == "skipped":
                 result.skipped += 1
             else:
@@ -475,7 +449,16 @@ def sync_kline(
     result.rows = rows_written
     result.finished_at = time.time()
     result.success = result.failed == 0
-    _write_period_metadata(period, root, warehouse, rows_written)
+    _publish_period_freshness(period, warehouse, rows_written)
+    _record_sync_result(
+        warehouse,
+        result,
+        data_type=normalize_period(period).upper().replace("DAILY", "DAILY_BAR")
+        .replace("WEEKLY", "WEEKLY_BAR")
+        .replace("MONTHLY", "MONTHLY_BAR"),
+        range_start=begin_date,
+        range_end=end_date,
+    )
     logger.info(
         "sync_kline(%s) range=[%s,%s] succeeded=%d failed=%d rows=%d duration=%.2fs",
         period, begin_date, end_date,
@@ -484,52 +467,29 @@ def sync_kline(
     return result
 
 
-def _write_period_metadata(
+def _publish_period_freshness(
     period: str,
-    root: Path,
     warehouse: HistoricalWarehouse,
     rows_written: int,
 ) -> None:
-    """Refresh the per-period ``_metadata.json`` and DuckDB views."""
+    """Publish PostgreSQL freshness metrics to Redis for the dashboard."""
     try:
-        existing = _existing_codes(period, root)
-        warehouse.refresh_views()
-        first_date: Optional[int] = None
-        last_date: Optional[int] = None
         subdir = normalize_period(period)
-        view_map = {"daily": "v_kline_day", "weekly": "v_kline_week", "monthly": "v_kline_month"}
-        view = view_map.get(subdir)
-        if view and existing:
-            try:
-                row = warehouse.connection.execute(
-                    f"SELECT MIN(date), MAX(date) FROM {view}"
-                ).fetchone()
-                if row:
-                    first_date, last_date = row[0], row[1]
-            except Exception as e:  # noqa: BLE001
-                logger.debug("metadata date range probe failed: %s", e)
-        write_metadata(
-            root, period,
-            file_count=len(existing),
-            total_rows=rows_written,
-            first_date=first_date,
-            last_date=last_date,
-            last_sync_at=int(time.time()),
-        )
-        # Publish freshness to Redis for the dashboard. Failures are
-        # non-fatal — the parquet metadata is the source of truth.
+        stats = warehouse.stats()["periods"].get(subdir, {})
+        first_date = stats.get("first_date")
+        last_date = stats.get("last_date")
+        code_count = int(stats.get("code_count") or 0)
         try:
-            worker_settings = get_worker_settings()
-            row = publish_kline_freshness(
+            published = publish_kline_freshness(
                 period=period,
-                code_count=len(existing),
+                code_count=code_count,
                 rows_inserted=rows_written,
                 first_date=first_date,
                 last_date=last_date,
                 last_sync_at=int(time.time()),
-                historical_path=worker_settings.historical_path,
+                historical_path="postgresql",
             )
-            if row is None:
+            if published is None:
                 logger.debug(
                     "freshness publish returned no row for period=%s last_date=%s",
                     period, last_date,
@@ -537,7 +497,7 @@ def _write_period_metadata(
         except Exception as e:  # noqa: BLE001
             logger.warning("freshness publish failed for %s: %s", period, e)
     except Exception as e:  # noqa: BLE001
-        logger.warning("sync_kline: failed to write metadata: %s", e)
+        logger.warning("sync_kline: failed to publish freshness: %s", e)
 
 
 def sync_kline_daily(
@@ -623,13 +583,19 @@ def sync_adjustment_factors(
     from_date: Optional[int] = None,
     to_date: Optional[int] = None,
     codes: Optional[Sequence[str]] = None,
-    periods: Sequence[str] = ("daily", "weekly", "monthly"),
+    batch_size: Optional[int] = None,
     refresh: bool = True,
     settings: Optional[WorkerSettings] = None,
     warehouse: Optional[HistoricalWarehouse] = None,
     adapter=None,
 ) -> SyncResult:
-    """Fetch real cumulative factors and patch existing K-line files."""
+    """Fetch cumulative factors and upsert ``market.adjustment_factor``.
+
+    AmazingData returns adjustment factors as a wide date-by-stock matrix.
+    Requesting the whole market at once and stacking that matrix can require
+    several gigabytes of transient memory, so factors are fetched and
+    transformed in bounded stock batches.
+    """
     settings = settings or get_worker_settings()
     warehouse = warehouse or get_warehouse(settings)
     adapter_obj = adapter or _get_adapter_safe()
@@ -641,7 +607,7 @@ def sync_adjustment_factors(
     result = SyncResult(
         job="sync_adjustment_factors",
         started_at=time.time(),
-        total=len(code_list) * len(periods),
+        total=len(code_list),
     )
     if not code_list:
         result.success = True
@@ -650,98 +616,89 @@ def sync_adjustment_factors(
 
     local_path = Path(settings.amazingdata_local_path)
     local_path.mkdir(parents=True, exist_ok=True)
-    try:
-        with _SDK_CALL_LOCK:
-            factors = adapter_obj.get_adjustment_factors(
-                codes=",".join(code_list),
-                begin_date=begin_date,
-                end_date=end_date,
-                local_path=str(local_path),
-                refresh=refresh,
-            )
-    except Exception as exc:  # noqa: BLE001
-        result.failed = result.total
-        result.errors.append(str(exc))
-        result.finished_at = time.time()
-        return result
-
-    required = {"code", "date", "adj_factor"}
-    if not isinstance(factors, pd.DataFrame) or not required <= set(factors.columns):
-        result.failed = result.total
-        result.errors.append(
-            "adjustment factor source returned no canonical factor data"
-        )
-        result.finished_at = time.time()
-        return result
-
-    factors = factors.copy()
-    factors["code"] = factors["code"].astype(str)
-    factors["date"] = pd.to_numeric(factors["date"], errors="coerce")
-    factors["adj_factor"] = pd.to_numeric(
-        factors["adj_factor"], errors="coerce"
+    factor_batch_size = max(
+        1, int(batch_size or settings.max_codes_per_query)
     )
-    factors = factors.dropna(subset=["date", "adj_factor"])
-    factors["date"] = factors["date"].astype(int)
+    required = {"code", "date", "adj_factor"}
 
-    for period in periods:
-        subdir = normalize_period(period)
-        for code in code_list:
-            path = kline_file_path(warehouse.root, subdir, code)
-            if not path.exists():
-                result.skipped += 1
-                continue
+    for start in range(0, len(code_list), factor_batch_size):
+        batch = code_list[start : start + factor_batch_size]
+        batch_label = f"{start + 1}-{start + len(batch)}"
+        try:
+            with _SDK_CALL_LOCK:
+                factors = adapter_obj.get_adjustment_factors(
+                    codes=",".join(batch),
+                    begin_date=begin_date,
+                    end_date=end_date,
+                    local_path=str(local_path),
+                    refresh=refresh,
+                )
+        except Exception as exc:  # noqa: BLE001
+            result.failed += len(batch)
+            result.errors.append(f"batch {batch_label}: {exc}")
+            continue
+
+        if not isinstance(factors, pd.DataFrame) or not required <= set(factors.columns):
+            result.failed += len(batch)
+            result.errors.append(
+                f"batch {batch_label}: adjustment factor source returned "
+                "no canonical factor data"
+            )
+            continue
+
+        factors = factors.copy()
+        factors["code"] = factors["code"].astype(str)
+        factors["date"] = pd.to_numeric(factors["date"], errors="coerce")
+        factors["adj_factor"] = pd.to_numeric(
+            factors["adj_factor"], errors="coerce"
+        )
+        factors = factors.dropna(subset=["date", "adj_factor"])
+        factors["date"] = factors["date"].astype(int)
+
+        for code in batch:
             try:
-                frame = pd.read_parquet(path)
                 code_factors = (
                     factors[factors["code"] == code][["date", "adj_factor"]]
                     .drop_duplicates("date", keep="last")
                     .sort_values("date")
                 )
-                if frame.empty or code_factors.empty:
+                if code_factors.empty:
                     result.skipped += 1
                     continue
-
-                factor_series = code_factors.set_index("date")["adj_factor"]
-                target_dates = pd.Index(
-                    pd.to_numeric(frame["date"], errors="coerce")
-                    .dropna()
-                    .astype(int)
-                    .unique()
+                written = warehouse.upsert_adjustment_factors(
+                    code, code_factors
                 )
-                replacement = (
-                    factor_series.reindex(
-                        factor_series.index.union(target_dates)
-                    )
-                    .sort_index()
-                    .ffill()
-                    .reindex(target_dates)
-                )
-                factor_by_date = replacement.to_dict()
-                factor_values = pd.to_numeric(
-                    frame["date"], errors="coerce"
-                ).map(factor_by_date)
-                mask = factor_values.notna()
-                if not mask.any():
+                if written <= 0:
                     result.skipped += 1
                     continue
-
-                frame = frame.copy()
-                frame.loc[mask, "adj_factor"] = factor_values[mask].astype(float)
-                frame.to_parquet(
-                    path,
-                    engine="pyarrow",
-                    compression="zstd",
-                    index=False,
-                )
                 result.succeeded += 1
-                result.rows += int(mask.sum())
+                result.rows += written
             except Exception as exc:  # noqa: BLE001
                 result.failed += 1
-                result.errors.append(f"{subdir}/{code}: {exc}")
+                result.errors.append(f"{code}: {exc}")
 
-    warehouse.refresh_views()
+        logger.info(
+            "sync_adjustment_factors range=[%s,%s] batch=%s/%s "
+            "succeeded=%d skipped=%d failed=%d rows=%d",
+            begin_date,
+            end_date,
+            min(start + len(batch), len(code_list)),
+            len(code_list),
+            result.succeeded,
+            result.skipped,
+            result.failed,
+            result.rows,
+        )
+
     result.success = result.failed == 0
     result.finished_at = time.time()
+    _record_sync_result(
+        warehouse,
+        result,
+        data_type="ADJUSTMENT_FACTOR",
+        range_start=begin_date,
+        range_end=end_date,
+    )
     return result
 
 
@@ -754,7 +711,7 @@ def sync_meta_codes(
     warehouse: Optional[HistoricalWarehouse] = None,
     adapter=None,
 ) -> SyncResult:
-    """Refresh ``meta/codes.parquet`` from the SDK."""
+    """Refresh ``master.stock`` from the SDK."""
     settings = settings or get_worker_settings()
     warehouse = warehouse or get_warehouse(settings)
     result = SyncResult(job="sync_meta_codes", started_at=time.time())
@@ -810,15 +767,13 @@ def sync_meta_codes(
             if index_name and index_name in raw.columns and index_name != "code":
                 raw = raw.rename(columns={index_name: "code"})
 
-        # Keep trusted display metadata from an existing cache when the SDK
+        # Keep trusted display metadata from existing PostgreSQL rows when the SDK
         # response only contains the code list (or provides blank names).
-        cached_path = warehouse.meta_dir() / "codes.parquet"
-        cached = pd.DataFrame()
-        if cached_path.exists():
-            try:
-                cached = pd.read_parquet(cached_path)
-            except Exception as e:
-                logger.warning("Failed to read cached code metadata: %s", e)
+        try:
+            cached = warehouse.query_codes()
+        except Exception as e:
+            logger.warning("Failed to read cached code metadata: %s", e)
+            cached = pd.DataFrame()
         if raw is not None and not raw.empty and not cached.empty and "code" in cached.columns:
             cached = cached.drop_duplicates("code").set_index("code")
             raw = raw.copy()
@@ -858,15 +813,15 @@ def sync_meta_codes(
                         dropped,
                     )
         std = standardize_codes_df(raw)
-        path = _persist_meta(std, warehouse.meta_dir() / "codes.parquet")
-        result.success = path is not None
+        written = warehouse.upsert_stocks(std)
+        result.success = written > 0
         result.rows = len(std) if std is not None else 0
         result.finished_at = time.time()
     except Exception as e:
         logger.error("sync_meta_codes failed: %s", e)
         result.errors.append(str(e))
         result.finished_at = time.time()
-    warehouse.refresh_views()
+    _record_sync_result(warehouse, result, data_type="SECURITY")
     return result
 
 
@@ -876,7 +831,7 @@ def sync_meta_calendar(
     warehouse: Optional[HistoricalWarehouse] = None,
     adapter=None,
 ) -> SyncResult:
-    """Refresh ``meta/calendar.parquet`` from the SDK."""
+    """Refresh ``market.trade_calendar`` from the SDK."""
     settings = settings or get_worker_settings()
     warehouse = warehouse or get_warehouse(settings)
     result = SyncResult(job=f"sync_meta_calendar[{market}]", started_at=time.time())
@@ -885,14 +840,14 @@ def sync_meta_calendar(
         with _SDK_CALL_LOCK:
             raw = adapter_obj.get_calendar(market=market)
         std = standardize_calendar_df(raw, market=market)
-        path = _persist_meta(std, warehouse.meta_dir() / "calendar.parquet")
-        result.success = path is not None
+        written = warehouse.upsert_calendar(std)
+        result.success = written > 0
         result.rows = len(std) if std is not None else 0
     except Exception as e:
         logger.error("sync_meta_calendar failed: %s", e)
         result.errors.append(str(e))
     result.finished_at = time.time()
-    warehouse.refresh_views()
+    _record_sync_result(warehouse, result, data_type="TRADE_CALENDAR")
     return result
 
 
@@ -918,6 +873,7 @@ def sync_financial(
     """
     settings = settings or get_worker_settings()
     warehouse = warehouse or get_warehouse(settings)
+    del merge
     result = SyncResult(job=f"sync_financial_{statement_type}", started_at=time.time())
 
     file_map = {
@@ -978,19 +934,8 @@ def sync_financial(
         if "ts_code" not in combined.columns and "code" in combined.columns:
             combined = combined.rename(columns={"code": "ts_code"})
         combined = _normalize_financial_df(combined, statement_type)
-        target_path = warehouse.root / "reference" / file_name
-        if merge and target_path.exists():
-            try:
-                existing = pd.read_parquet(target_path)
-                existing = _normalize_financial_df(existing, statement_type)
-                combined = pd.concat([existing, combined], ignore_index=True)
-                dup_cols = _financial_dedup_keys(statement_type)
-                combined = combined.drop_duplicates(subset=dup_cols, keep="last")
-            except Exception:
-                pass
-        path = _persist_reference(combined, target_path)
-        result.success = path is not None
-        warehouse.refresh_views()
+        written = warehouse.upsert_reference(statement_type, combined)
+        result.success = written > 0
     else:
         result.success = result.failed == 0
 
@@ -1054,9 +999,8 @@ def sync_shareholder(
     if all_dfs:
         combined = pd.concat(all_dfs, ignore_index=True)
         combined.columns = [str(c).lower().strip() for c in combined.columns]
-        path = _persist_reference(combined, warehouse.root / "reference" / "stk_holdernumber.parquet")
-        result.success = path is not None
-        warehouse.refresh_views()
+        written = warehouse.upsert_reference("shareholder", combined)
+        result.success = written > 0
     else:
         result.success = result.failed == 0
 
@@ -1121,9 +1065,8 @@ def sync_index_component(
                     "sync_index_component: filtered out %d .BJ constituent rows",
                     dropped,
                 )
-        path = _persist_reference(combined, warehouse.root / "reference" / "index_member.parquet")
-        result.success = path is not None
-        warehouse.refresh_views()
+        written = warehouse.upsert_reference("index_member", combined)
+        result.success = written > 0
     else:
         result.success = result.failed == 0
 
@@ -1140,11 +1083,11 @@ def sync_index_component(
 # APScheduler glue
 # ============================================================
 
-_scheduler: Optional["BackgroundScheduler"] = None  # type: ignore[name-defined]
+_scheduler: Any = None
 _scheduler_lock = threading.Lock()
 
 
-def init_scheduler(settings: Optional[Settings] = None) -> "BackgroundScheduler":  # type: ignore[name-defined]
+def init_scheduler(settings: Optional[WorkerSettings] = None) -> Any:
     """Initialise the APScheduler instance if needed."""
     global _scheduler
     with _scheduler_lock:
@@ -1191,6 +1134,16 @@ def init_scheduler(settings: Optional[Settings] = None) -> "BackgroundScheduler"
                 minute=int(settings.sync_meta_codes_minute),
                 id="sync_meta_codes", replace_existing=True,
             )
+            calendar_minute = int(settings.sync_meta_codes_minute) + 10
+            calendar_hour = (
+                int(settings.sync_meta_codes_hour) + calendar_minute // 60
+            ) % 24
+            scheduler.add_job(
+                _run_sync_meta_calendar, "cron",
+                hour=calendar_hour,
+                minute=calendar_minute % 60,
+                id="sync_meta_calendar", replace_existing=True,
+            )
             scheduler.add_job(
                 _run_sync_shareholder, "cron",
                 day_of_week=settings.sync_shareholder_day_of_week,
@@ -1217,18 +1170,18 @@ def init_scheduler(settings: Optional[Settings] = None) -> "BackgroundScheduler"
 
         if settings.maintenance_schedule_enabled:
             scheduler.add_job(
-                _run_repair_kline, "cron",
+                _run_schema_verify, "cron",
                 day_of_week=settings.maintenance_kline_day_of_week,
                 hour=int(settings.maintenance_kline_hour),
                 minute=int(settings.maintenance_kline_minute),
-                id="repair_kline_weekly", replace_existing=True,
+                id="schema_verify_kline_weekly", replace_existing=True,
             )
             scheduler.add_job(
-                _run_repair_financial, "cron",
+                _run_schema_verify, "cron",
                 day_of_week=settings.maintenance_financial_day_of_week,
                 hour=int(settings.maintenance_financial_hour),
                 minute=int(settings.maintenance_financial_minute),
-                id="repair_financial_weekly", replace_existing=True,
+                id="schema_verify_reference_weekly", replace_existing=True,
             )
             logger.info(
                 "maintenance schedule enabled: kline=%s %02d:%02d, financial=%s %02d:%02d",
@@ -1243,7 +1196,7 @@ def init_scheduler(settings: Optional[Settings] = None) -> "BackgroundScheduler"
         return scheduler
 
 
-def start_scheduler() -> Optional["BackgroundScheduler"]:  # type: ignore[name-defined]
+def start_scheduler() -> Any:
     scheduler = init_scheduler()
     with _scheduler_lock:
         if not scheduler.running:
@@ -1262,7 +1215,7 @@ def shutdown_scheduler() -> None:
         _scheduler = None
 
 
-def get_scheduler() -> Optional["BackgroundScheduler"]:  # type: ignore[name-defined]
+def get_scheduler() -> Any:
     return _scheduler
 
 
@@ -1277,9 +1230,7 @@ def _run_sync_kline_daily() -> None:
         end_date = int(datetime.now().strftime("%Y%m%d"))
         begin_date = 20200101
         try:
-            warehouse.refresh_views()
-            row = warehouse.connection.execute("SELECT MAX(date) FROM v_kline_day").fetchone()
-            last_date = row[0] if row and row[0] else None
+            last_date = warehouse.max_trade_date("day")
             if last_date:
                 begin_date = int(last_date)
                 logger.info("Incremental daily sync from last warehouse date: %s", begin_date)
@@ -1292,7 +1243,6 @@ def _run_sync_kline_daily() -> None:
         factor_result = sync_adjustment_factors(
             from_date=_DEFAULT_BEGIN_DATE,
             to_date=end_date,
-            periods=("daily",),
             settings=settings,
             warehouse=warehouse,
         )
@@ -1301,7 +1251,6 @@ def _run_sync_kline_daily() -> None:
                 "sync_adjustment_factors(daily) failed: %s",
                 factor_result.errors,
             )
-        _sync_to_remote()
     except Exception as e:  # noqa: BLE001
         logger.exception("scheduled sync_kline_daily failed: %s", e)
 
@@ -1313,23 +1262,12 @@ def _run_sync_kline_weekly() -> None:
         end_date = int(datetime.now().strftime("%Y%m%d"))
         begin_date = 20200101
         try:
-            warehouse.refresh_views()
-            row = warehouse.connection.execute("SELECT MAX(date) FROM v_kline_week").fetchone()
-            last_date = row[0] if row and row[0] else None
+            last_date = warehouse.max_trade_date("week")
             if last_date:
                 begin_date = int(last_date)
         except Exception:
             logger.warning("scheduled sync_kline_weekly: failed to probe last date, using 20200101")
         sync_kline_weekly(from_date=begin_date, to_date=end_date)
-        sync_adjustment_factors(
-            from_date=_DEFAULT_BEGIN_DATE,
-            to_date=end_date,
-            periods=("weekly",),
-            refresh=False,
-            settings=settings,
-            warehouse=warehouse,
-        )
-        _sync_to_remote()
     except Exception as e:  # noqa: BLE001
         logger.exception("scheduled sync_kline_weekly failed: %s", e)
 
@@ -1341,55 +1279,19 @@ def _run_sync_kline_monthly() -> None:
         end_date = int(datetime.now().strftime("%Y%m%d"))
         begin_date = 20200101
         try:
-            warehouse.refresh_views()
-            row = warehouse.connection.execute("SELECT MAX(date) FROM v_kline_month").fetchone()
-            last_date = row[0] if row and row[0] else None
+            last_date = warehouse.max_trade_date("month")
             if last_date:
                 begin_date = int(last_date)
         except Exception:
             logger.warning("scheduled sync_kline_monthly: failed to probe last date, using 20200101")
         sync_kline_monthly(from_date=begin_date, to_date=end_date)
-        sync_adjustment_factors(
-            from_date=_DEFAULT_BEGIN_DATE,
-            to_date=end_date,
-            periods=("monthly",),
-            refresh=False,
-            settings=settings,
-            warehouse=warehouse,
-        )
-        _sync_to_remote()
     except Exception as e:  # noqa: BLE001
         logger.exception("scheduled sync_kline_monthly failed: %s", e)
-
-
-def _sync_to_remote() -> None:
-    """Push updated L3 data to the remote adshare-api server."""
-    project_root = Path(__file__).resolve().parents[1]
-    script = project_root / "scripts" / "sync_to_remote.sh"
-    if not script.exists():
-        logger.warning("sync_to_remote: script not found at %s", script)
-        return
-    logger.info("sync_to_remote: starting %s", script)
-    try:
-        result = subprocess.run(
-            ["/bin/bash", str(script)],
-            capture_output=True, text=True, check=False, timeout=1800,
-        )
-        if result.returncode == 0:
-            logger.info("sync_to_remote: success\n%s", result.stdout)
-        else:
-            logger.error(
-                "sync_to_remote: failed (exit %s)\nstdout:\n%s\nstderr:\n%s",
-                result.returncode, result.stdout, result.stderr,
-            )
-    except Exception as e:
-        logger.exception("sync_to_remote: error running script: %s", e)
 
 
 def _run_sync_meta_codes() -> None:
     try:
         sync_meta_codes()
-        _sync_to_remote()
     except Exception as e:  # noqa: BLE001
         logger.exception("scheduled sync_meta_codes failed: %s", e)
 
@@ -1397,34 +1299,27 @@ def _run_sync_meta_codes() -> None:
 def _run_sync_meta_calendar() -> None:
     try:
         sync_meta_calendar()
-        _sync_to_remote()
     except Exception as e:  # noqa: BLE001
         logger.exception("scheduled sync_meta_calendar failed: %s", e)
 
 
-def _run_repair_kline() -> None:
+def _run_schema_verify() -> None:
+    """Scheduled PostgreSQL schema verification.
+
+    The earlier "repair_kline" / "repair_financial" routines rewrote Parquet
+    files, but the warehouse is now PostgreSQL-backed and the only safe
+    "repair" available idempotently is :meth:`initialize_schema`, which
+    covers every table — K-line, reference, financial. We keep two cron
+    entries (kline-day, financial-day) so users can still stagger them via
+    env, but both invoke this single function.
+    """
     try:
-        from adshare.historical.maintenance import (
-            repair_kline_directory, repair_codes_table,
-        )
         settings = get_worker_settings()
         warehouse = get_warehouse(settings)
-        r1 = repair_kline_directory(dry_run=False, warehouse=warehouse)
-        r2 = repair_codes_table(dry_run=False, warehouse=warehouse)
-        logger.info("scheduled maintenance: kline %s | codes %s", r1.summary(), r2.summary())
+        warehouse.initialize_schema()
+        logger.info("scheduled PostgreSQL schema verification completed")
     except Exception as e:  # noqa: BLE001
-        logger.exception("scheduled repair_kline failed: %s", e)
-
-
-def _run_repair_financial() -> None:
-    try:
-        from adshare.historical.maintenance import repair_financial_table
-        settings = get_worker_settings()
-        warehouse = get_warehouse(settings)
-        r = repair_financial_table(dry_run=False, warehouse=warehouse)
-        logger.info("scheduled maintenance: financial %s", r.summary())
-    except Exception as e:  # noqa: BLE001
-        logger.exception("scheduled repair_financial failed: %s", e)
+        logger.exception("scheduled schema verification failed: %s", e)
 
 
 def _run_sync_financial() -> None:
@@ -1497,7 +1392,7 @@ def main() -> int:
     logger.info("AmazingData Batch starting...")
     logger.info("SDK: %s", settings.amazingdata_connection_string)
     logger.info("Redis: %s", settings.redis_url)
-    logger.info("Warehouse: %s", settings.historical_path)
+    logger.info("PostgreSQL: %s", settings.database_url.rsplit("@", 1)[-1])
     logger.info("=" * 50)
 
     if not _init_sdk_login():
@@ -1509,8 +1404,10 @@ def main() -> int:
         if settings.historical_enabled:
             warehouse = get_warehouse(settings)
             health = warehouse.health()
-            logger.info("Historical warehouse ready: root=%s duckdb=%s",
-                        health["root"], health["duckdb_connected"])
+            logger.info(
+                "PostgreSQL repository ready: connected=%s",
+                health["database_connected"],
+            )
         else:
             logger.info("Historical warehouse disabled")
     except Exception as e:
@@ -1537,7 +1434,7 @@ def main() -> int:
 
     if warehouse is not None:
         for period in ("day", "week", "month"):
-            _write_period_metadata(period, warehouse.root, warehouse, 0)
+            _publish_period_freshness(period, warehouse, 0)
         logger.info("Historical freshness initialized from existing warehouse")
 
     scheduler_obj = get_scheduler()

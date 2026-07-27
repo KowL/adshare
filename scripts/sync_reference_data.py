@@ -17,7 +17,6 @@ from adshare.core.config import get_settings
 from adshare.core.logging import setup_logging, get_logger
 from adshare.historical.warehouse import get_warehouse
 from amazingdata.batch import (
-    sync_financial,
     sync_shareholder,
     sync_index_component,
 )
@@ -80,7 +79,7 @@ def main() -> int:
         return 1
 
     warehouse = get_warehouse(settings)
-    logger.info("Warehouse ready: %s", warehouse.root)
+    logger.info("PostgreSQL ready: %s", settings.database_url.rsplit("@", 1)[-1])
 
     handlers = {
         "all": [_sync_financial_all, _sync_shareholder, _sync_index],

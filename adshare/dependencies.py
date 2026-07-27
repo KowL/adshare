@@ -19,12 +19,8 @@ from adshare.services.fundamental_analysis import (
 from adshare.services.limit_up import (
     LimitDownService,
     LimitUpService,
-    MarketActivityService,
-    StrongStockPoolService,
     get_limit_down_service,
     get_limit_up_service,
-    get_market_activity_service,
-    get_strong_stock_pool_service,
 )
 from adshare.services.market_data import MarketDataService, get_market_data_service
 from adshare.services.realtime_broadcast import (
@@ -83,16 +79,6 @@ def get_limit_up_service_dep() -> LimitUpService:
 def get_limit_down_service_dep() -> LimitDownService:
     """Provide the limit-down service."""
     return get_limit_down_service()
-
-
-def get_market_activity_service_dep() -> MarketActivityService:
-    """Provide the market activity service."""
-    return get_market_activity_service()
-
-
-def get_strong_stock_pool_service_dep() -> StrongStockPoolService:
-    """Provide the strong stock pool service."""
-    return get_strong_stock_pool_service()
 
 
 # ---------------------------------------------------------------------------

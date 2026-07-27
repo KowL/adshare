@@ -65,7 +65,7 @@ class Settings(BaseSettings):
     metrics_path: str = Field(default="/metrics", alias="METRICS_PATH")
 
     # ------------------------------------------------------------------
-    # Data layer (shared: API reads L3, worker writes L3)
+    # Data layer (shared: API reads PostgreSQL, worker writes PostgreSQL)
     # ------------------------------------------------------------------
     kline_max_limit: int = Field(default=10000, alias="KLINE_MAX_LIMIT")
     max_codes_per_query: int = Field(default=50, alias="MAX_CODES_PER_QUERY")
@@ -96,15 +96,31 @@ class Settings(BaseSettings):
     realtime_enabled: bool = Field(default=True, alias="REALTIME_ENABLED")
 
     historical_enabled: bool = Field(default=True, alias="HISTORICAL_ENABLED")
+    database_url: str = Field(
+        default="postgresql://adshare:adshare@localhost:5432/adshare",
+        alias="DATABASE_URL",
+    )
+    database_pool_min_size: int = Field(default=1, alias="DATABASE_POOL_MIN_SIZE")
+    database_pool_max_size: int = Field(default=10, alias="DATABASE_POOL_MAX_SIZE")
+    database_connect_timeout: int = Field(default=10, alias="DATABASE_CONNECT_TIMEOUT")
+    database_query_timeout: int = Field(default=30, alias="DATABASE_QUERY_TIMEOUT")
+    database_query_max_rows: int = Field(default=100000, alias="DATABASE_QUERY_MAX_ROWS")
+    database_auto_migrate: bool = Field(default=True, alias="DATABASE_AUTO_MIGRATE")
+
+    # Kept as read-only compatibility knobs for callers that have not yet
+    # renamed HISTORICAL_ENABLED. No file-backed warehouse is used anymore.
     historical_path: str = Field(default="./data", alias="HISTORICAL_PATH")
     historical_retention_years: int = Field(default=0, alias="HISTORICAL_RETENTION_YEARS")
 
-    duckdb_mode: str = Field(default="memory", alias="DUCKDB_MODE")
-    duckdb_file_path: str = Field(
-        default="./data/duckdb/adshare.duckdb", alias="DUCKDB_FILE_PATH"
-    )
-    duckdb_max_rows: int = Field(default=100000, alias="DUCKDB_MAX_ROWS")
-    duckdb_query_timeout: int = Field(default=30, alias="DUCKDB_QUERY_TIMEOUT")
+    @property
+    def duckdb_max_rows(self) -> int:
+        """Compatibility alias for the historical SQL endpoint."""
+        return self.database_query_max_rows
+
+    @property
+    def duckdb_query_timeout(self) -> int:
+        """Compatibility alias for callers migrated in a later release."""
+        return self.database_query_timeout
 
     @property
     def redis_url(self) -> str:

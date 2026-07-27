@@ -22,17 +22,25 @@ from adshare.core.logging import get_logger
 logger = get_logger(__name__)
 
 
+# Tushare Pro reserves specific error codes; mirror the ones clients expect
+# so an auth failure surfaces as `code: 20001/20002` instead of an HTTP 401.
+_TUSHARE_ERR_AUTH_MISSING = 20001
+_TUSHARE_ERR_AUTH_INVALID = 20002
+
+
 # ---------------------------------------------------------------------------
 # Authentication
 # ---------------------------------------------------------------------------
 
 
-async def tushare_auth(request: Request) -> str:
-    """Tushare-aware auth dependency.
+async def check_tushare_auth(request: Request) -> "str | JSONResponse":
+    """Validate the Tushare Pro token.
 
-    If auth is disabled, allow anonymous requests.
-    If auth is enabled, accept the token from the request body, the
-    X-API-Key header, or the api_key query parameter.
+    Returns the token string on success. On failure, returns a
+    ``JSONResponse`` with HTTP **200** carrying the Tushare Pro error
+    envelope — clients like the official ``tushare`` SDK inspect ``code``
+    rather than HTTP status, so the body must be returned even for auth
+    errors.
     """
     settings = get_settings()
     if not settings.auth_enabled:
@@ -53,15 +61,35 @@ async def tushare_auth(request: Request) -> str:
         token = request.query_params.get("api_key", "")
 
     if not token:
-        raise AuthenticationError("API key required. Pass token in body, X-API-Key header or api_key query parameter.")
+        return tushare_error_response(
+            "API key required. Pass token in body, X-API-Key header or api_key query parameter.",
+            code=_TUSHARE_ERR_AUTH_MISSING,
+        )
 
     valid_key = settings.api_key
     if not valid_key:
-        raise AuthenticationError("Server misconfiguration: API key not set")
+        return tushare_error_response(
+            "Server misconfiguration: API key not set",
+            code=_TUSHARE_ERR_AUTH_INVALID,
+        )
     if token != valid_key:
-        raise AuthorizationError("Invalid API key")
+        return tushare_error_response("Invalid API key", code=_TUSHARE_ERR_AUTH_INVALID)
 
     return token
+
+
+# Backward-compat shim — kept so any external caller that still imports the
+# old name doesn't break. The FastAPI dependency binding is removed; the
+# unified entry calls ``check_tushare_auth`` directly so the response can
+# stay HTTP 200 per the Tushare Pro protocol.
+async def tushare_auth(request: Request) -> str:
+    """Deprecated. Use :func:`check_tushare_auth` instead."""
+    result = await check_tushare_auth(request)
+    if isinstance(result, JSONResponse):
+        raise AuthenticationError(
+            "auth failed (call check_tushare_auth directly to get the JSONResponse)"
+        )
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -73,7 +101,7 @@ def tushare_success(fields: Optional[Sequence[str]] = None, items: Optional[list
     """Build a successful tushare Pro response payload."""
     return {
         "code": 0,
-        "msg": "",
+        "msg": "Success",
         "data": {
             "fields": list(fields or []),
             "items": list(items or []),
@@ -87,8 +115,39 @@ def tushare_empty() -> dict[str, Any]:
 
 
 def tushare_error(msg: str, code: int = -1) -> dict[str, Any]:
-    """Build a tushare Pro error response."""
+    """Build a tushare Pro error envelope (raw dict — no HTTP status)."""
     return {"code": code, "msg": msg, "data": None}
+
+
+def tushare_error_response(msg: str, code: int = -1) -> JSONResponse:
+    """Build a tushare Pro error response with HTTP 200.
+
+    Per the Tushare Pro protocol, error conditions are reported via the
+    ``code`` field of the JSON body; the HTTP status must stay 200 so the
+    official ``tushare`` SDK parses the envelope.
+    """
+    return JSONResponse(status_code=200, content=tushare_error(msg, code=code))
+
+
+# Column names whose int values represent YYYYMMDD dates and must be
+# serialised as strings in the response.
+_DATE_STRING_COLUMNS = {
+    "trade_date",
+    "list_date",
+    "delist_date",
+    "cal_date",
+    "ann_date",
+    "actual_ann_date",
+    "pre_date",
+    "next_date",
+}
+
+
+def _is_yyyymmdd_int(value: Any) -> bool:
+    """Return True if ``value`` looks like a YYYYMMDD int (19900101–20991231)."""
+    if isinstance(value, (int,)) and not isinstance(value, bool):
+        return 19900101 <= value <= 20991231
+    return False
 
 
 def df_to_tushare_payload(df: pd.DataFrame) -> dict[str, Any]:
@@ -99,7 +158,13 @@ def df_to_tushare_payload(df: pd.DataFrame) -> dict[str, Any]:
     df = df.copy()
     for col in df.columns:
         if pd.api.types.is_datetime64_any_dtype(df[col]):
+            # Datetime columns (e.g. realtime `trade_time`) keep wall-clock format.
             df[col] = df[col].dt.strftime("%Y-%m-%d %H:%M:%S")
+        elif col in _DATE_STRING_COLUMNS and pd.api.types.is_integer_dtype(df[col]):
+            # Date columns stored as int YYYYMMDD must become "YYYYMMDD" strings.
+            df[col] = df[col].astype(object).where(pd.notna(df[col]), None).map(
+                lambda v: f"{int(v):08d}" if isinstance(v, (int,)) and not isinstance(v, bool) else v
+            )
         else:
             df[col] = df[col].astype(object).where(pd.notna(df[col]), None)
 
@@ -231,11 +296,19 @@ def extract_tushare_params(body: dict[str, Any]) -> tuple[str, dict[str, Any], O
 
 
 def handle_tushare_exception(exc: Exception) -> JSONResponse:
-    """Map a domain exception to a tushare Pro error response and HTTP status."""
-    status = (
-        map_exception_to_http_status(exc)
-        if isinstance(exc, AdshareException)
-        else 500
-    )
+    """Map a domain exception to a tushare Pro error response.
+
+    Per the Tushare Pro protocol the HTTP status is always 200 and the
+    actual outcome is reported via the ``code`` field. Domain exceptions
+    map to specific negative codes (mirroring the type's HTTP status for
+    observability, e.g. ``InvalidParameterError`` → ``-400``).
+    """
+    if isinstance(exc, AdshareException):
+        status = map_exception_to_http_status(exc)
+        # Use a code derived from the HTTP status so 4xx/5xx surface in the
+        # body, e.g. -400 for parameter errors, -500 for upstream issues.
+        code = -status if isinstance(status, int) and 100 <= status < 1000 else -1
+    else:
+        code = -500
     msg = str(exc) or type(exc).__name__
-    return JSONResponse(status_code=status, content=tushare_error(msg))
+    return JSONResponse(status_code=200, content=tushare_error(msg, code=code))

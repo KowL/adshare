@@ -24,13 +24,12 @@
    - 异常收敛：新增 `ServiceError` 基类 + `map_exception_to_http_status` 支持实例级 status_code；
      `main.py` 注册全局 `AdshareException` handler；tushare 路由复用规范映射
 3. **tushare 股票数据 API 适配**
-   - 服务端统一入口：`POST /tushare`
-   - RESTful 分类入口：`/tushare/stock/*`
-   - 项目根目录 `tushare.py` 客户端适配文件（兼容已有 `import tushare as ts` 代码）
+   - 服务端统一入口：`POST /tushare`(根据 `api_name` 分发,无 RESTful 子路径)
+   - 项目根目录 `tushare.py` 客户端适配文件(兼容已有 `import tushare as ts` 代码)
    - 旧 `/dataapi` 已废弃并返回迁移提示
 2. **依赖注入改造**
    - 统一在 `adshare/dependencies.py` 提供 `get_*_dep` provider
-   - 改造路由：`tushare/stock.py`、`technical.py`、`fundamental.py`、`factor.py`、`historical.py`、`stock_data.py`、`realtime.py`
+   - 改造路由：`tushare/stock.py`、`technical.py`、`fundamental.py`、`factor.py`、`realtime.py`
    - 测试统一使用 `app.dependency_overrides` 注入 fake，移除对全局工厂的 monkeypatch
 3. **回归测试**
    - 核心测试：`296 passed, 1 skipped, 2 deselected`（Python 3.9 环境）
@@ -93,11 +92,13 @@
 
 ### 2. 定时任务数量断言不一致
 
-- **位置**：`tests/test_historical.py::TestScheduler::test_init_scheduler_enabled`
+- **位置**：`tests/test_scheduler.py::TestScheduler::test_init_scheduler_enabled`（文件已重命名）
 - **现象**：期望 7 个定时任务，实际只有 6 个（缺少 `sync_financial`）
-- **建议**：
-  - 确认 `sync_financial` 是否被有意移除或重命名
-  - 同步更新测试断言或调度器注册逻辑
+- **说明**：当前 `sync_financial` 在调度器中作为占位注册（weekday=sun, 05:00）但
+  handler 已禁用（HDF5 cache 体积过大），因此 cron ID 仍可见但 `_run_sync_financial`
+  仅作一次性手动运行入口。`schema_verify_*_weekly` 是双 cron 复用同一
+  `_run_schema_verify` 函数，与此处预期不符的情况不同。
+- **建议**：调整测试只断言 6 个有效任务，或将 `sync_financial` cron 完全移除。
 - **优先级**：低
 
 ### 3. 认证错误码边界不一致
@@ -146,7 +147,7 @@
 - **现状**：部分路由对 `HistoricalWarehouse` 未启用、空数据、参数错误的返回码存在差异
 - **进展（本轮）**：`main.py` 已注册全局 `AdshareException` handler；分析类服务异常统一为
   `ServiceError`；tushare 路由复用 `map_exception_to_http_status`
-- **剩余**：`stock_data.py` 等路由仍有逐端点 `try/except → 500`，可逐步改为抛领域异常交给全局 handler
+- **剩余**：`/tushare/*` 子路由仍有逐端点 `try/except → 500`，可逐步改为抛领域异常交给全局 handler
 - **优先级**：低
 
 ---

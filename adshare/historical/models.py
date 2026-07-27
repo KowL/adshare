@@ -1,17 +1,17 @@
-"""Parquet schema definitions and DataFrame validation for the L3 warehouse.
+"""Schema definitions and DataFrame validation for the historical warehouse.
 
-Schemas are derived from `docs/historical-data-architecture.md` §3.2.
-
-The file layout is one Parquet file per (period, code) — all years merged
-into a single file. Validation removes logically invalid rows (high<low,
-etc.) so that downstream DuckDB queries operate on clean data.
+The historical warehouse is now backed by PostgreSQL (see
+:mod:`adshare.historical.warehouse`); this module only owns the canonical
+column lists, dtype hints, and row-level validation routines used by both
+the worker sync jobs (:mod:`amazingdata.batch`) and the API query path.
+Validation removes logically invalid rows (high<low, etc.) so downstream
+queries operate on clean data.
 """
 
 from __future__ import annotations
 
 import time
-from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -124,36 +124,6 @@ def normalize_period(period: str) -> str:
             f"unsupported period '{period}'; expected one of: {sorted(set(PERIOD_ALIASES.values()))}"
         )
     return PERIOD_ALIASES[key]
-
-
-def period_to_subdir(period: str) -> str:
-    """Alias for :func:`normalize_period` that always returns the subdir name."""
-    return normalize_period(period)
-
-
-def kline_file_path(
-    root: Path | str,
-    period: str,
-    code: str,
-    year: Optional[int] = None,
-) -> Path:
-    """Return the Parquet file path for one (period, code) tuple.
-
-    The ``year`` argument is accepted for backward compatibility but is
-    ignored — the flat layout stores all years in a single file per code.
-    The code is sanitized so the resulting filename is filesystem-safe.
-    """
-    del year  # flat layout: ignore year
-    subdir = normalize_period(period)
-    safe_code = _safe_code(code)
-    return Path(root) / "A_share" / subdir / f"{safe_code}.parquet"
-
-
-def _safe_code(code: str) -> str:
-    """Replace filesystem-unsafe characters in a stock code."""
-    if not code:
-        raise ValueError("code cannot be empty")
-    return "".join(c if c.isalnum() or c in "-_." else "_" for c in code)
 
 
 def _coerce_bool(series: pd.Series) -> pd.Series:
@@ -468,50 +438,6 @@ def _infer_board(code: str) -> str:
     if clean.startswith("60") or clean.startswith("00"):
         return "主板"
     return "主板"
-
-
-def write_metadata(
-    root: Path | str,
-    period: str,
-    *,
-    file_count: int,
-    total_rows: int,
-    first_date: Optional[int] = None,
-    last_date: Optional[int] = None,
-    last_sync_at: Optional[int] = None,
-) -> Path:
-    """Write a per-period ``_metadata.json`` file summarizing the warehouse."""
-    import json
-
-    root = Path(root)
-    subdir = normalize_period(period)
-    period_dir = root / "A_share" / subdir
-    period_dir.mkdir(parents=True, exist_ok=True)
-    meta_path = period_dir / "_metadata.json"
-    payload: Dict[str, Any] = {
-        "version": "2.0",
-        "schema": {
-            "columns": list(KLINE_COLUMNS),
-            "dtypes": KLINE_DTYPES,
-        },
-        "period": subdir,
-        "file_count": int(file_count),
-        "total_rows": int(total_rows),
-        "first_date": int(first_date) if first_date is not None else None,
-        "last_date": int(last_date) if last_date is not None else None,
-        "last_sync_at": int(last_sync_at or time.time()),
-    }
-    meta_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
-    return meta_path
-
-
-def summarize_kline_files(files: Iterable[Path]) -> Dict[str, Any]:
-    """Return aggregate statistics for a set of K-line Parquet files."""
-    files = list(files)
-    return {
-        "file_count": len(files),
-        "total_bytes": sum(f.stat().st_size for f in files if f.exists()),
-    }
 
 
 # ----------------------------------------------------------------------

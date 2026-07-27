@@ -38,6 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from adshare.core.cache import get_cache_manager  # noqa: E402
 from amazingdata.config import get_worker_settings  # noqa: E402
 from adshare.core.logging import setup_logging, get_logger  # noqa: E402
+from adshare.historical.warehouse import get_warehouse  # noqa: E402
 from adshare.core.realtime_keys import (  # noqa: E402
     CHANNEL_INDEX,
     CHANNEL_KLINE_PREFIX,
@@ -118,27 +119,20 @@ class RealtimePublisher:
             "start_time": None,
         }
 
-    def _load_cached_codes(
+    def _load_database_codes(
         self,
         suffixes: Tuple[str, ...] = (".SH", ".SZ"),
         fallback: Optional[List[str]] = None,
     ) -> List[str]:
-        """Load codes from the cached ``meta/codes.parquet`` file.
+        """Load codes from PostgreSQL.
 
         This avoids creating a BaseData connection, which is critical when
         the TGW account only allows a single concurrent connection that is
         already used by SubscribeData.
         """
         try:
-            root = Path(get_worker_settings().historical_path).resolve()
-            path = root / "meta" / "codes.parquet"
-            if not path.exists():
-                logger.warning("Cached codes file not found: %s", path)
-                return fallback or []
-
-            import pandas as pd
-
-            df = pd.read_parquet(path)
+            settings = get_worker_settings()
+            df = get_warehouse(settings).query_codes(is_listed=True)
             if df is None or df.empty or "code" not in df.columns:
                 return fallback or []
 
@@ -148,7 +142,7 @@ class RealtimePublisher:
                 return fallback or []
             return codes
         except Exception as e:
-            logger.warning("Failed to load cached codes: %s", e)
+            logger.warning("Failed to load codes from PostgreSQL: %s", e)
             return fallback or []
 
     # ------------------------------------------------------------------
@@ -166,7 +160,7 @@ class RealtimePublisher:
             # Load the full A-share code list directly from the SDK's
             # daily-fresh code table. ``EXTRA_STOCK_A_SH_SZ`` = SH/SZ
             # A-shares only (BJ excluded, per project data scope).
-            # Fall back to the cached meta/codes.parquet (maintained by
+            # Fall back to PostgreSQL master.stock (maintained by
             # batch.sync_meta_codes) if the SDK call fails.
             try:
                 sdk_codes = adapter.get_code_list("EXTRA_STOCK_A_SH_SZ")
@@ -183,14 +177,14 @@ class RealtimePublisher:
             except Exception as e:
                 logger.warning(
                     "Failed to fetch A-share codes from SDK (%s); "
-                    "falling back to cached meta/codes.parquet", e,
+                    "falling back to PostgreSQL master.stock", e,
                 )
-                self._code_list = self._load_cached_codes(
+                self._code_list = self._load_database_codes(
                     suffixes=(".SH", ".SZ"),
                     fallback=["000001.SZ", "600000.SH", "600519.SH"],
                 )
                 logger.info(
-                    "Realtime publisher: loaded %s A-share codes from cache",
+                    "Realtime publisher: loaded %s A-share codes from PostgreSQL",
                     len(self._code_list),
                 )
 

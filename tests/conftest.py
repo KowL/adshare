@@ -259,24 +259,9 @@ def client(fake_adapter, monkeypatch):
         def __init__(self):
             self._base = FakeLimitUpService()
 
-    class FakeStrongStockPoolService(_lu_mod.StrongStockPoolService):
-        def __init__(self):
-            self.adapter = fake_adapter
-            self.warehouse = None
-            self.batch_size = 200
-            self._base = FakeLimitUpService()
-
-        def _get_kline_range(self, codes, begin_date, end_date):
-            df = fake_adapter.get_kline(",".join(codes), begin_date, end_date, "day")
-            if "kline_time" in df.columns:
-                df = df.copy()
-                df["date"] = df["kline_time"].dt.strftime("%Y%m%d").astype(int)
-            return df
-
     fake_limit_up = FakeLimitUpService()
     fake_limit_down = FakeLimitDownService()
     fake_market_activity = FakeMarketActivityService()
-    fake_strong_pool = FakeStrongStockPoolService()
 
     app = create_app()
 
@@ -284,8 +269,6 @@ def client(fake_adapter, monkeypatch):
     app.dependency_overrides[_deps_mod.get_market_data_service_dep] = lambda: fake_md
     app.dependency_overrides[_deps_mod.get_limit_up_service_dep] = lambda: fake_limit_up
     app.dependency_overrides[_deps_mod.get_limit_down_service_dep] = lambda: fake_limit_down
-    app.dependency_overrides[_deps_mod.get_market_activity_service_dep] = lambda: fake_market_activity
-    app.dependency_overrides[_deps_mod.get_strong_stock_pool_service_dep] = lambda: fake_strong_pool
     if hasattr(_deps_mod, "get_technical_analysis_service_dep"):
         app.dependency_overrides[_deps_mod.get_technical_analysis_service_dep] = lambda: _ta_mod.TechnicalAnalysisService(
             market_data_service=fake_md

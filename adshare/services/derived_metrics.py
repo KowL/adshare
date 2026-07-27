@@ -272,21 +272,44 @@ def derive_suspensions(df: pd.DataFrame) -> pd.DataFrame:
 def convert_volume_to_lots(df: pd.DataFrame) -> pd.DataFrame:
     """Convert volume from shares (股) to lots (手 = 100 shares).
 
-    Pro data platform uses 'vol' in lots (手) while adshare warehouse
-    stores volume in shares (股).
+    Pro data platform uses 'vol' in lots (手) with float precision, while
+    adshare warehouse stores volume in shares (股). E.g. 5,251,527 shares
+    become 52,515.27 lots.
 
     Args:
         df: DataFrame with 'volume' column.
 
     Returns:
-        DataFrame with 'vol' column (lots) and 'volume' dropped.
+        DataFrame with 'vol' column (float lots) and 'volume' dropped.
     """
     if df is None or df.empty:
         return df
 
     df = df.copy()
     if "volume" in df.columns:
-        df["vol"] = (df["volume"] / 100).round(0).astype(int)
+        df["vol"] = (df["volume"] / 100).astype(float).round(2)
+    return df
+
+
+def convert_amount_to_thousands(df: pd.DataFrame) -> pd.DataFrame:
+    """Convert amount from yuan (元) to thousands of yuan (千元).
+
+    Pro data platform uses 'amount' in 千元 (thousands of yuan) while
+    adshare warehouse stores amount in raw yuan. E.g. 4,606,973.77 元
+    become 4,606.974 千元.
+
+    Args:
+        df: DataFrame with 'amount' column.
+
+    Returns:
+        DataFrame with 'amount' column (in 千元) — column is replaced in place.
+    """
+    if df is None or df.empty:
+        return df
+
+    df = df.copy()
+    if "amount" in df.columns:
+        df["amount"] = (df["amount"] / 1000).astype(float).round(3)
     return df
 
 
@@ -568,6 +591,110 @@ def build_limit_list(up_items: list, down_items: list, trade_date: int) -> pd.Da
         "open_times", "up_stat", "limit", "swing", "board",
         "volume", "amount", "pre_close",
     ]
+    return df[[c for c in cols if c in df.columns]]
+
+
+_LIMIT_TYPE_CODE_SUFFIX = {
+    "U": (".SH", ".SZ", ".BJ"),
+    "D": (".SH", ".SZ", ".BJ"),
+    "Z": (".SH", ".SZ", ".BJ"),
+}
+
+
+def _build_limit_list_d_row(item, trade_date: int, limit_flag: str) -> dict:
+    """Build a single ``limit_list_d`` row from a LimitUpItem / LimitDownItem."""
+    code = str(getattr(item, "code", ""))
+    suffix = _ts_code_suffix(code)
+    limit_days = (
+        getattr(item, "limitUpDays", None)
+        if limit_flag == "U"
+        else getattr(item, "limitDownDays", None)
+    )
+    if limit_days is None:
+        limit_days = 1
+
+    if limit_flag == "U":
+        up_stat = f"1/{int(limit_days)}"
+        open_times = 0
+    elif limit_flag == "D":
+        up_stat = ""
+        open_times = 0
+    else:
+        up_stat = ""
+        open_times = 0
+
+    return {
+        "trade_date": int(trade_date),
+        "ts_code": f"{code}{suffix}",
+        "industry": getattr(item, "industry", "") or "",
+        "name": getattr(item, "name", ""),
+        "close": getattr(item, "price", 0.0),
+        "pct_chg": round(getattr(item, "changePct", 0.0) * 100, 2),
+        "amount": getattr(item, "amount", 0.0),
+        "limit_amount": None,
+        "float_mv": None,
+        "total_mv": None,
+        "turnover_ratio": None,
+        "fd_amount": None,
+        "first_time": getattr(item, "firstTime", "") or "",
+        "last_time": getattr(item, "finalTime", "") or "",
+        "open_times": open_times,
+        "up_stat": up_stat,
+        "limit_times": int(limit_days),
+        "limit": limit_flag,
+    }
+
+
+def _ts_code_suffix(code: str) -> str:
+    if not code:
+        return ".SZ"
+    if code.startswith(("60", "68", "88", "89")):
+        return ".SH"
+    if code.startswith(("8", "4", "92", "93")):
+        return ".BJ"
+    return ".SZ"
+
+
+def build_limit_list_d(
+    up_items: list,
+    down_items: list,
+    trade_date: int,
+) -> pd.DataFrame:
+    """Build Pro-style ``limit_list_d`` DataFrame.
+
+    Reference: https://tushare.pro/document/2?doc_id=298
+
+    Output columns (matching the official spec):
+        trade_date, ts_code, industry, name, close, pct_chg, amount,
+        limit_amount, float_mv, total_mv, turnover_ratio, fd_amount,
+        first_time, last_time, open_times, up_stat, limit_times, limit.
+
+    Args:
+        up_items: LimitUpItem list — closes hit upper limit.
+        down_items: LimitDownItem list — closes hit lower limit.
+        trade_date: YYYYMMDD int for the queried trading day.
+
+    Returns:
+        DataFrame with the spec-mandated column order. Fields that the
+        adshare warehouse cannot derive (``limit_amount``, ``float_mv``,
+        ``total_mv``, ``turnover_ratio``, ``fd_amount``) are returned as
+        ``None`` so the wire shape stays stable across brokers.
+    """
+    rows: list[dict] = []
+    for item in up_items:
+        rows.append(_build_limit_list_d_row(item, trade_date, "U"))
+    for item in down_items:
+        rows.append(_build_limit_list_d_row(item, trade_date, "D"))
+
+    cols = [
+        "trade_date", "ts_code", "industry", "name", "close", "pct_chg",
+        "amount", "limit_amount", "float_mv", "total_mv", "turnover_ratio",
+        "fd_amount", "first_time", "last_time", "open_times",
+        "up_stat", "limit_times", "limit",
+    ]
+    if not rows:
+        return pd.DataFrame(columns=cols)
+    df = pd.DataFrame(rows)
     return df[[c for c in cols if c in df.columns]]
 
 

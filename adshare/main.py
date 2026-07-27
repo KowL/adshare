@@ -2,7 +2,7 @@
 
 This is the API-only service. It does NOT connect to AmazingData SDK directly.
 It reads from:
-- L3 historical warehouse (Parquet/DuckDB) for historical data
+- PostgreSQL for historical data
 - Redis for real-time data (written by amazingdata.realtime)
 """
 
@@ -23,18 +23,14 @@ from adshare.core.exceptions import AdshareException, map_exception_to_http_stat
 from adshare.core.logging import setup_logging
 from adshare.core.metrics import REQUEST_COUNT, REQUEST_DURATION, SERVICE_INFO, get_metrics
 from adshare.core.ratelimit import get_limiter
-from adshare.historical.admin import router as historical_admin_router
 from adshare.historical.warehouse import get_warehouse
 from adshare.routers import (
     factor,
     financial,
     fundamental,
     health,
-    historical,
-    market,
     realtime,
     status,
-    stock_data,
     technical,
     tushare,
 )
@@ -51,14 +47,14 @@ async def lifespan(app: FastAPI):
     # Set service info for metrics
     SERVICE_INFO.info({"version": settings.app_version, "name": settings.app_name})
 
-    # Initialise historical warehouse (L3) — API reads from local Parquet files
+    # Initialise PostgreSQL repository.
     try:
         if settings.historical_enabled:
             warehouse = get_warehouse(settings)
             health_info = warehouse.health()
             print(
-                f"📦 Historical warehouse ready: root={health_info['root']} "
-                f"duckdb_connected={health_info['duckdb_connected']}"
+                f"🐘 PostgreSQL repository ready: "
+                f"connected={health_info['database_connected']}"
             )
         else:
             print("ℹ️  Historical warehouse disabled (HISTORICAL_ENABLED=false)")
@@ -145,17 +141,12 @@ def create_app() -> FastAPI:
 
     app.include_router(health.router)
     app.include_router(status.router, dependencies=protected)
-    app.include_router(market.router, dependencies=protected)
     app.include_router(financial.router, dependencies=protected)
     app.include_router(technical.router, dependencies=protected)
     app.include_router(fundamental.router, dependencies=protected)
     app.include_router(factor.router, dependencies=protected)
     app.include_router(realtime.router, dependencies=protected)
-    app.include_router(stock_data.router, dependencies=protected)
     app.include_router(tushare.router)
-    if settings.historical_enabled:
-        app.include_router(historical.router, dependencies=protected)
-        app.include_router(historical_admin_router, dependencies=protected)
 
     # Metrics endpoint
     if settings.metrics_enabled:

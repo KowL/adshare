@@ -34,36 +34,34 @@ print(df.head())
 
 ## 服务端路由
 
-### 统一入口（tushare Pro 协议）
+adshare 仅暴露一个 tushare 兼容入口，完全对齐官方 Tushare Pro 协议。
+
+### 统一入口
 
 ```
 POST /tushare
-Body: {"api_name": "daily", "token": "...", "params": {...}, "fields": ""}
+Body: {"api_name": "<name>", "token": "...", "params": {...}, "fields": ""}
 ```
 
-服务端根据 `api_name` 自动分发到股票或指数等分类处理器。
+服务端根据 `api_name` 自动分发到对应处理器。常见的 `api_name` 列表：
 
-### RESTful 分类入口
+| `api_name` | 说明 |
+|------------|------|
+| `daily` | 日线行情 |
+| `weekly` | 周线行情 |
+| `monthly` | 月线行情 |
+| `stock_basic` | 股票基础信息 |
+| `trade_cal` | 交易日历 |
+| `adj_factor` | 复权因子 |
+| `suspend_d` | 停牌信息 |
+| `limit_list` | 涨跌停股票池 |
+| `limit_list_d` | 涨跌停详情(同花顺版),支持 `limit_type` 过滤 U/D/Z |
+| `index_basic` | 指数基础信息（待实现） |
+| `index_daily` | 指数日线（待实现） |
+| `rt_k` | 实时 Level-1 快照 |
+| `rt_min` | 实时分钟 K 线 |
 
-#### 股票数据 `/tushare/stock/*`
-
-| 路由 | api_name | 说明 |
-|------|----------|------|
-| `/tushare/stock/daily` | `daily` | 日线行情 |
-| `/tushare/stock/weekly` | `weekly` | 周线行情 |
-| `/tushare/stock/monthly` | `monthly` | 月线行情 |
-| `/tushare/stock/stock_basic` | `stock_basic` | 股票基础信息 |
-| `/tushare/stock/trade_cal` | `trade_cal` | 交易日历 |
-| `/tushare/stock/adj_factor` | `adj_factor` | 复权因子 |
-| `/tushare/stock/suspend_d` | `suspend_d` | 停牌信息 |
-| `/tushare/stock/limit_list` | `limit_list` | 涨跌停股票池 |
-
-#### 指数数据 `/tushare/index/*`（预留扩展）
-
-| 路由 | api_name | 说明 |
-|------|----------|------|
-| `/tushare/index/basic` | `index_basic` | 指数基础信息（待实现） |
-| `/tushare/index/daily` | `index_daily` | 指数日线（待实现） |
+> 之前的 RESTful 路径 `/tushare/stock/*` / `/tushare/index/*` / `/tushare/realtime/*` 已下线，调用方请改用 `POST /tushare` + `api_name` 字段。
 
 ## 公共参数
 
@@ -100,14 +98,17 @@ Body: {"api_name": "daily", "token": "...", "params": {...}, "fields": ""}
 
 ## 错误码
 
-| HTTP 状态码 | 含义 |
-|-------------|------|
-| 400 | 参数错误 |
-| 401 | 认证失败 |
-| 403 | 无权限 |
-| 404 | 数据不存在或仓库未启用 |
-| 500 | 服务端内部错误 |
-| 501 | 接口未实现 |
+`POST /tushare` 始终返回 HTTP `200`，实际错误通过响应体的 `code` 字段表达（与 Tushare Pro 官方协议一致）。调用方应优先根据 `code` 判断成功/失败，仅在网络层异常时依赖 HTTP 状态码。
+
+| body `code` | HTTP 状态 | 含义 |
+|-------------|-----------|------|
+| `0` | 200 | 成功 |
+| `20001` | 200 | 缺少 `token`（未配置 `AUTH_ENABLED` 时仍会校验） |
+| `20002` | 200 | `token` 无效 |
+| `-400` | 200 | 参数缺失或格式错误 |
+| `-501` | 200 | `api_name` 不存在或未实现 |
+| `-404` | 200 | 数据不存在或仓库未启用 |
+| `-500` | 200 | 服务端内部错误（SDK/仓库异常） |
 
 ## 与原 `/dataapi` 的关系
 

@@ -1,20 +1,12 @@
-"""Tushare Pro compatible API router.
+"""Tushare Pro compatible router.
 
-Provides two access patterns:
+Single-entry protocol matching the official Tushare Pro HTTP API:
 
-1. Unified tushare Pro protocol entry point::
+* ``POST /tushare`` — body ``{"api_name": "...", "token": "...", "params": {...}, "fields": ""}``
 
-       POST /tushare
-       Body: {"api_name": "daily", "token": "...", "params": {...}, "fields": ""}
-
-   The server dispatches to the appropriate category handler based on
-   ``api_name``.
-
-2. RESTful category endpoints::
-
-       GET/POST /tushare/stock/daily
-       GET/POST /tushare/stock/stock_basic
-       GET/POST /tushare/index/basic
+The server dispatches to the appropriate handler based on ``api_name``.
+All handlers live in this package's submodules and are registered in
+their ``HANDLERS`` dicts.
 """
 
 from __future__ import annotations
@@ -22,15 +14,16 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
+from starlette.responses import JSONResponse
 
 from adshare import dependencies as deps
 from adshare.core.exceptions import NotImplementedApiError
 from adshare.core.logging import get_logger
 from adshare.routers.tushare.common import (
+    check_tushare_auth,
     extract_tushare_params,
     handle_tushare_exception,
     parse_request_body,
-    tushare_auth,
 )
 from adshare.routers.tushare import index, realtime, stock
 from adshare.services.limit_up import LimitDownService, LimitUpService
@@ -38,21 +31,10 @@ from adshare.services.market_data import MarketDataService
 
 logger = get_logger(__name__)
 
-router = APIRouter(prefix="/tushare", tags=["tushare"], dependencies=[Depends(tushare_auth)])
-
-# Register category routers
-router.include_router(stock.router)
-router.include_router(index.router)
-router.include_router(realtime.router)
-
-
-# ---------------------------------------------------------------------------
-# Unified entry point
-# ---------------------------------------------------------------------------
+router = APIRouter(prefix="/tushare", tags=["tushare"])
 
 
 @router.post("")
-@router.post("/")
 async def tushare_unified_entry(
     request: Request,
     service: MarketDataService = Depends(deps.get_market_data_service_dep),
@@ -60,6 +42,12 @@ async def tushare_unified_entry(
     down_service: LimitDownService = Depends(deps.get_limit_down_service_dep),
 ):
     """Tushare Pro protocol compatible unified entry point."""
+    # Auth check is performed in-handler so the response stays HTTP 200
+    # on failure (Tushare Pro clients inspect ``code``, not HTTP status).
+    auth_result = await check_tushare_auth(request)
+    if isinstance(auth_result, JSONResponse):
+        return auth_result
+
     try:
         body = await parse_request_body(request)
         api_name, params, fields, token = extract_tushare_params(body)

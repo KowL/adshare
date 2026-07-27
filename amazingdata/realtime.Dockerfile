@@ -13,10 +13,10 @@ FROM adshare-base:latest
 
 WORKDIR /app
 
-# Install worker-level Python deps (Redis client + adapter libs)
-# NOTE: no pyarrow/duckdb here — realtime doesn't touch the warehouse.
+# Install worker-level Python deps (Redis, PostgreSQL fallback, adapter libs)
 RUN pip install --no-cache-dir \
     redis>=5.0 \
+    "psycopg[binary,pool]>=3.2.0,<4.0" \
     pydantic>=2.9 \
     pydantic-settings>=2.6 \
     python-dotenv>=1.0 \

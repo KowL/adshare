@@ -1,4 +1,4 @@
-"""Tushare Pro compatible realtime endpoints (``rt_k`` / ``rt_min``).
+"""Tushare Pro compatible realtime handlers (``rt_k`` / ``rt_min``).
 
 Reads the realtime data that the worker (:mod:`amazingdata.realtime`)
 writes into Redis and repackages it in the tushare Pro response shape:
@@ -8,8 +8,7 @@ writes into Redis and repackages it in the tushare Pro response shape:
   ``REALTIME_KLINE_HIST_KEY`` Redis Stream
 
 Both handlers are registered in ``HANDLERS`` for the unified
-``POST /tushare`` entry point and exposed as REST routes under
-``/tushare/realtime/*``. They ignore the ``service``/``up_service``/
+``POST /tushare`` entry point. They ignore the ``service``/``up_service``/
 ``down_service`` kwargs injected by the unified entry and go through
 ``get_cache_manager()`` directly.
 """
@@ -20,8 +19,6 @@ import json
 from datetime import datetime
 from typing import Any, Optional
 
-from fastapi import APIRouter, Request
-
 from adshare.core.cache import get_cache_manager
 from adshare.core.config import get_settings
 from adshare.core.exceptions import InvalidParameterError
@@ -31,11 +28,8 @@ from adshare.core.realtime_keys import (
     REALTIME_QUOTE_KEY,
 )
 from adshare.routers.tushare.common import (
-    extract_tushare_params,
-    handle_tushare_exception,
     parse_code_param,
     parse_int_param,
-    parse_request_body,
     tushare_empty,
     tushare_success,
 )
@@ -49,7 +43,6 @@ from adshare.services.realtime_tushare_mapper import (
 )
 
 logger = get_logger(__name__)
-router = APIRouter(prefix="/realtime", tags=["tushare-realtime"])
 
 
 # ---------------------------------------------------------------------------
@@ -207,42 +200,6 @@ def _decode_stream_entries(entries: list) -> list[dict]:
         except (ValueError, TypeError):
             continue
     return rows
-
-
-# ---------------------------------------------------------------------------
-# RESTful route wrappers
-# ---------------------------------------------------------------------------
-
-
-async def _extract_from_request(
-    request: Request, api_name: str
-) -> tuple[dict[str, Any], Optional[list[str]]]:
-    """Parse request body and return (params, fields)."""
-    body = await parse_request_body(request)
-    _, params, fields, _ = extract_tushare_params({**body, "api_name": api_name})
-    return params, fields
-
-
-@router.post("/rt_k")
-@router.get("/rt_k")
-async def tushare_rt_k(request: Request):
-    """Tushare Pro ``rt_k`` endpoint."""
-    try:
-        params, fields = await _extract_from_request(request, "rt_k")
-        return handle_rt_k(params, fields)
-    except Exception as exc:
-        return handle_tushare_exception(exc)
-
-
-@router.post("/rt_min")
-@router.get("/rt_min")
-async def tushare_rt_min(request: Request):
-    """Tushare Pro ``rt_min`` endpoint."""
-    try:
-        params, fields = await _extract_from_request(request, "rt_min")
-        return handle_rt_min(params, fields)
-    except Exception as exc:
-        return handle_tushare_exception(exc)
 
 
 # ---------------------------------------------------------------------------

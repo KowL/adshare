@@ -310,7 +310,7 @@
 
 **响应格式**: `{"code": 0, "msg": "", "data": {"fields": [...], "items": [[...], ...]}}`
 
-**支持的 api_name**（stock 类 8 个）:
+**支持的 api_name**（stock / realtime 类 11 个）:
 
 | api_name | 说明 |
 |----------|------|
@@ -320,15 +320,23 @@
 | `adj_factor` | 复权因子 |
 | `suspend_d` | 每日停复牌 |
 | `limit_list` | 涨跌停榜单 |
+| `limit_list_d` | 涨跌停详情（同花顺版），支持 `limit_type=U/D/Z` |
+| `rt_k` | 实时 Level-1 快照（Redis 实时数据） |
+| `rt_min` | 实时分钟 K 线（Redis 实时数据） |
 
-指数类 `index_basic` / `index_daily` 已预留 `/tushare/index/*` 命名空间，暂未实现（返回未支持错误）。
+指数类 `index_basic` / `index_daily` 已预留 `api_name`,暂未实现(返回未支持错误)。
 
-### 7.2 REST 分类路由
+### 7.2 路由收敛
 
-| 端点 | 方法 | 说明 |
-|------|------|------|
-| `/tushare/stock/{api_name}` | GET / POST | 上述 8 个 stock 接口的 REST 形式，如 `/tushare/stock/daily` |
-| `/tushare/index/{api_name}` | GET / POST | 指数接口占位 |
+历史版本曾提供 `/tushare/stock/*` / `/tushare/index/*` / `/tushare/realtime/*` RESTful 路径
+作为 `POST /tushare` 的便利形式,但与官方 Tushare Pro 协议不一致,已下线。
+所有调用方请改用 `POST /tushare` + `api_name` 字段,例如:
+
+```bash
+curl -X POST http://localhost:8000/tushare \
+  -H "Content-Type: application/json" \
+  -d '{"api_name":"daily","token":"...","params":{"ts_code":"000001.SZ","start_date":"20240101","end_date":"20240131"}}'
+```
 
 ### 7.3 认证
 
@@ -370,29 +378,28 @@
 
 ## 9. 历史数仓 (Historical)
 
-**路由前缀**: `/historical`
+L3 历史仓库已统一为 PostgreSQL 15+（psycopg 连接池），由 `amazingdata-batch` worker
+按 APScheduler 周期写入；API 进程只读查询。旧 Parquet/DuckDB 路径已下线,
+详细数据模型见 `docs/postgresql-data-architecture.md`。
 
-本地 L3 数仓：Parquet 扁平布局（`data/A_share/{daily,weekly,monthly}/{code}.parquet`）+ DuckDB 查询，
-由 `amazingdata-batch` worker 每日 17:10（Asia/Shanghai）同步。
+历史仓库没有独立的 HTTP 路由——所有查询都走 `POST /tushare` 的统一入口：
 
-### 9.1 数据查询
+| `api_name` | 数据 |
+|------------|------|
+| `daily` / `weekly` / `monthly` | K 线（`market.daily_bar` 等表） |
+| `stock_basic` | 股票主数据（`master.stock`） |
+| `trade_cal` | 交易日历（`market.trade_calendar`） |
+| `adj_factor` | 复权因子（已合并进 K 线 `adj_factor` 列） |
+
+### 9.1 仓库运维
 
 | 端点 | 方法 | 说明 |
 |------|------|------|
-| `/kline` | GET | 历史 K 线（`codes` 多代码，`period=day/week/month`） |
-| `/calendar` | GET | 交易日历 |
-| `/codes` | GET | 代码元数据（板块 / 上市状态过滤） |
-| `/sql` | POST | DuckDB SQL 自由查询 |
+| `/status/data-freshness` | GET | 各表行数 / 最新日期 / 同步任务状态 |
+| `/health` | GET | 服务整体健康（含 PostgreSQL 连通性） |
 
-### 9.2 运维管理
-
-| 端点 | 方法 | 说明 |
-|------|------|------|
-| `/historical/admin/health` | GET | 数仓健康状态 |
-| `/historical/admin/stats` | GET | 数仓聚合统计 |
-| `/historical/admin/repair` | POST | 触发数据修复任务 |
-
-> 设置 `HISTORICAL_ENABLED=false` 可整体关闭数仓（不挂载以上路由）。
+> 设置 `HISTORICAL_ENABLED=false` 可整体关闭数仓（不查询 PostgreSQL）。手动同步、
+> 修复、schema verify 均通过 `amazingdata-batch` 容器执行，详见 `deployment-guide.md`。
 
 ---
 
@@ -435,17 +442,16 @@
 
 ## 11. 功能对照表: adshare API ↔ AmazingData SDK
 
-| adshare 端点 | AmazingData 类 | SDK 方法 | 手册章节 |
-|--------------|----------------|----------|----------|
-| `/market/codes` | `BaseData` | `get_code_list()` | §3.5.2.2 |
-| `/market/calendar` | `BaseData` | `get_calendar()` | §3.5.2.8 |
-| `/market/kline` | `MarketData` | `query_kline()` | §3.5.4.2 |
-| `/market/snapshot` | `MarketData` | `query_snapshot()` | §3.5.4.1 |
-| `/market/stock/basic` | `InfoData` | `get_stock_basic()` | §3.5.2.9 |
-| `/financial/statement?type=balance` | `InfoData` | `get_balance_sheet()` | §3.5.5.1 |
-| `/financial/statement?type=income` | `InfoData` | `get_income()` | §3.5.5.3 |
-| `/financial/statement?type=cashflow` | `InfoData` | `get_cash_flow()` | §3.5.5.2 |
-| `/financial/shareholder` | `InfoData` | `get_share_holder()` | §3.5.6.1 |
+| tushare `api_name` | AmazingData 类 | SDK 方法 | 手册章节 |
+|--------------------|----------------|----------|----------|
+| `stock_basic` | `BaseData` / `InfoData` | `get_code_list()` / `get_stock_basic()` | §3.5.2.2 / §3.5.2.9 |
+| `trade_cal` | `BaseData` | `get_calendar()` | §3.5.2.8 |
+| `daily` / `weekly` / `monthly` | `MarketData` | `query_kline()` | §3.5.4.2 |
+| `limit_list` / `limit_list_d` | `MarketData` | `query_limit_list()` | §3.5.4.x |
+| `adj_factor` | `MarketData` | `query_adj_factor()` | §3.5.4.x |
+| `rt_k` | `MarketData` | `SubscribeData(Snapshot)` | §3.5.4.1 |
+| `rt_min` | `MarketData` | `SubscribeData(KLine)` | §3.5.4.x |
+| `shareholder`（参考数据） | `InfoData` | `get_share_holder()` | §3.5.6.1 |
 
 > **注意**: 技术分析与基本面分析的 57+90 个指标为 adshare **原生实现**，不直接调用 SDK 的时序算子，因此跨平台可用。
 > 财务接口（`/financial/*`）当前已禁用，表中对应 SDK 方法仅作恢复时的参考。

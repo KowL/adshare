@@ -44,20 +44,48 @@ curl http://localhost:8000/health
 curl http://localhost:8000/login/status
 ```
 
-### Market Data
+### Market Data (Tushare Pro compatible)
 
 ```bash
-# Code list
-curl http://localhost:8000/market/codes
+# Stock basic info (POST /tushare with api_name dispatch)
+curl -X POST http://localhost:8000/tushare \
+  -H "Content-Type: application/json" \
+  -d '{"api_name":"stock_basic","token":"your-api-key","params":{"ts_code":"000001.SZ"}}'
 
-# K-line
-curl "http://localhost:8000/market/kline?codes=000001.SZ&begin_date=20240101&end_date=20241231&period=day"
+# Daily K-line
+curl -X POST http://localhost:8000/tushare \
+  -H "Content-Type: application/json" \
+  -d '{"api_name":"daily","token":"your-api-key","params":{"ts_code":"000001.SZ","start_date":"20240101","end_date":"20241231"}}'
 
-# Snapshot
-curl "http://localhost:8000/market/snapshot?codes=000001.SZ"
+# Trading calendar
+curl -X POST http://localhost:8000/tushare \
+  -H "Content-Type: application/json" \
+  -d '{"api_name":"trade_cal","token":"your-api-key","params":{"exchange":"SSE","start_date":"20240101","end_date":"20241231"}}'
 
-# Stock basic info
-curl "http://localhost:8000/market/stock/basic?codes=000001.SZ"
+# Limit-up / limit-down board stocks (limit_list_d)
+curl -X POST http://localhost:8000/tushare \
+  -H "Content-Type: application/json" \
+  -d '{"api_name":"limit_list_d","token":"your-api-key","params":{"trade_date":"20240615","limit_type":"U"}}'
+```
+
+### Real-time Data
+
+```bash
+# Snapshot quote
+curl "http://localhost:8000/realtime/quote/000001.SZ"
+
+# Multi-code quotes
+curl "http://localhost:8000/realtime/quotes?codes=000001.SZ,600000.SH"
+
+# Real-time K-line
+curl "http://localhost:8000/realtime/kline/000001.SZ?period=min5"
+```
+
+### Status
+
+```bash
+curl http://localhost:8000/status
+curl http://localhost:8000/status/data-freshness
 ```
 
 ### Financial Data
@@ -84,44 +112,66 @@ import requests
 base = "http://localhost:8000"
 headers = {"X-API-Key": "your-api-key"}  # if auth enabled
 
-# Get K-line
-r = requests.get(f"{base}/market/kline", params={
-    "codes": "000001.SZ",
-    "begin_date": "20240101",
-    "end_date": "20241231",
-    "period": "day"
+# Get daily K-line via the unified Tushare Pro entry point
+r = requests.post(f"{base}/tushare", json={
+    "api_name": "daily",
+    "token": "your-api-key",
+    "params": {
+        "ts_code": "000001.SZ",
+        "start_date": "20240101",
+        "end_date": "20241231",
+    },
 }, headers=headers)
 data = r.json()
-print(f"Total bars: {data['count']}")
-for bar in data["data"][:3]:
-    print(f"  {bar['date']}: open={bar['open']}, close={bar['close']}")
+items = data["data"]["items"]
+print(f"Total bars: {len(items)}")
+for bar in items[:3]:
+    print(f"  {bar[0]}: open={bar[1]}, close={bar[2]}")
 
 # Get stock basic info
-r = requests.get(f"{base}/market/stock/basic", params={"codes": "000001.SZ"})
+r = requests.post(f"{base}/tushare", json={
+    "api_name": "stock_basic",
+    "token": "your-api-key",
+    "params": {"ts_code": "000001.SZ"},
+}, headers=headers)
 basic = r.json()
-print(f"Name: {basic['data'][0]['name']}, List date: {basic['data'][0]['list_date']}")
+print(basic["data"]["items"][0])
 ```
 
 ## TypeScript Example
 
 ```typescript
 const base = "http://localhost:8000";
-const headers = { "X-API-Key": "your-api-key" }; // if auth enabled
+const headers = { "Content-Type": "application/json", "X-API-Key": "your-api-key" };
 
-// Get K-line
-const params = new URLSearchParams({
-  codes: "000001.SZ",
-  begin_date: "20240101",
-  end_date: "20241231",
-  period: "day",
+// Get daily K-line via the unified Tushare Pro entry point
+const res = await fetch(`${base}/tushare`, {
+  method: "POST",
+  headers,
+  body: JSON.stringify({
+    api_name: "daily",
+    token: "your-api-key",
+    params: {
+      ts_code: "000001.SZ",
+      start_date: "20240101",
+      end_date: "20241231",
+    },
+  }),
 });
-const res = await fetch(`${base}/market/kline?${params}`, { headers });
 const data = await res.json();
-console.log(`Total bars: ${data.count}`);
+console.log(`Total bars: ${data.data.items.length}`);
 
 // Get trading calendar
-const cal = await fetch(`${base}/market/calendar?market=SH`).then(r => r.json());
-console.log(`Trading days: ${cal.calendar.slice(0, 5).join(", ")}...`);
+const cal = await fetch(`${base}/tushare`, {
+  method: "POST",
+  headers,
+  body: JSON.stringify({
+    api_name: "trade_cal",
+    token: "your-api-key",
+    params: { exchange: "SSE", start_date: "20240101", end_date: "20240131" },
+  }),
+}).then(r => r.json());
+console.log(`Trading days: ${cal.data.items.slice(0, 5).map(r => r[1]).join(", ")}...`);
 ```
 
 ## Error Handling

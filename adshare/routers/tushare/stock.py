@@ -1,6 +1,7 @@
-"""Tushare Pro compatible stock data endpoints.
+"""Tushare Pro compatible stock data handlers.
 
-Routes under ``/tushare/stock/*`` return the tushare Pro response shape:
+Handlers are invoked by the unified ``POST /tushare`` entry point via the
+``HANDLERS`` registry. Each handler returns the tushare Pro response shape:
 ``{"code": 0, "msg": "", "data": {"fields": [...], "items": [...]}}``.
 """
 
@@ -9,25 +10,22 @@ from __future__ import annotations
 from typing import Any, Optional
 
 import pandas as pd
-from fastapi import APIRouter, Depends, Request
 
-from adshare import dependencies as deps
 from adshare.core.exceptions import InvalidParameterError
 from adshare.core.logging import get_logger
 from adshare.routers.tushare.common import (
     df_to_tushare_payload,
-    extract_tushare_params,
     filter_fields,
-    handle_tushare_exception,
     parse_code_param,
     parse_date_param,
     parse_int_param,
-    parse_request_body,
 )
 from adshare.services.derived_metrics import (
     aggregate_kline_period,
     build_limit_list,
+    build_limit_list_d,
     compute_price_changes,
+    convert_amount_to_thousands,
     convert_volume_to_lots,
     derive_suspensions,
     map_adj_factor_fields,
@@ -41,7 +39,6 @@ from adshare.services.limit_up import LimitDownService, LimitUpService
 from adshare.services.market_data import MarketDataService
 
 logger = get_logger(__name__)
-router = APIRouter(prefix="/stock", tags=["tushare-stock"])
 
 
 # ---------------------------------------------------------------------------
@@ -99,19 +96,15 @@ def _fetch_kline(
     if limit is not None:
         df = df.iloc[:limit]
     df = convert_volume_to_lots(df)
+    df = convert_amount_to_thousands(df)
     df = map_kline_fields(df)
+    if "trade_date" in df.columns:
+        df = df.sort_values("trade_date").reset_index(drop=True)
     return df
 
 
-async def _extract_from_request(request: Request, api_name: str) -> tuple[dict[str, Any], Optional[list[str]]]:
-    """Parse request body and return (params, fields)."""
-    body = await parse_request_body(request)
-    _, params, fields, _ = extract_tushare_params({**body, "api_name": api_name})
-    return params, fields
-
-
 # ---------------------------------------------------------------------------
-# Core handlers (used by both RESTful routes and the unified /tushare entry)
+# Core handlers (invoked by the unified /tushare entry point)
 # ---------------------------------------------------------------------------
 
 
@@ -205,13 +198,11 @@ def handle_adj_factor(
     if not codes:
         raise InvalidParameterError("ts_code is required")
 
-    result = service.get_kline(
+    df = service.get_adjustment_factors(
         codes=codes,
         begin_date=start_date,
         end_date=end_date,
-        period="day",
     )
-    df = result.df
     if df is None or df.empty:
         return df_to_tushare_payload(pd.DataFrame())
 
@@ -269,122 +260,93 @@ def handle_limit_list(
     return df_to_tushare_payload(df)
 
 
-# ---------------------------------------------------------------------------
-# RESTful route wrappers
-# ---------------------------------------------------------------------------
+def _ts_code_matches(item, ts_code: Optional[str]) -> bool:
+    """Return True if the item's code matches the ``ts_code`` filter.
+
+    Accepts either a fully-qualified ``ts_code`` (``000001.SZ``) or a
+    bare code (``000001``). The ``LimitUpItem.code`` field stores bare
+    codes, so we compare against the suffix-stripped form.
+    """
+    if not ts_code:
+        return True
+    code = str(getattr(item, "code", ""))
+    target = str(ts_code).strip()
+    if "." in target:
+        target_bare = target.split(".", 1)[0]
+    else:
+        target_bare = target
+    return code == target or code == target_bare
 
 
-@router.post("/daily")
-@router.get("/daily")
-async def tushare_daily(
-    request: Request,
-    service: MarketDataService = Depends(deps.get_market_data_service_dep),
-):
-    """Tushare Pro ``daily`` endpoint."""
-    try:
-        params, fields = await _extract_from_request(request, "daily")
-        return handle_daily(params, fields, service)
-    except Exception as exc:
-        return handle_tushare_exception(exc)
+def _exchange_matches(item, exchange: Optional[str]) -> bool:
+    """Return True if the item's code is on the requested exchange."""
+    if not exchange:
+        return True
+    code = str(getattr(item, "code", ""))
+    bare = code.split(".", 1)[0] if "." in code else code
+    e = str(exchange).strip().upper()
+    if e in {"SH", "SSE"}:
+        return bare.startswith(("60", "68", "88", "89"))
+    if e in {"SZ", "SZSE"}:
+        return bare.startswith(("00", "30"))
+    if e in {"BJ", "BSE"}:
+        return bare.startswith(("8", "4", "92", "93"))
+    return True
 
 
-@router.post("/weekly")
-@router.get("/weekly")
-async def tushare_weekly(
-    request: Request,
-    service: MarketDataService = Depends(deps.get_market_data_service_dep),
-):
-    """Tushare Pro ``weekly`` endpoint."""
-    try:
-        params, fields = await _extract_from_request(request, "weekly")
-        return handle_weekly(params, fields, service)
-    except Exception as exc:
-        return handle_tushare_exception(exc)
+def handle_limit_list_d(
+    params: dict[str, Any],
+    fields: Optional[list[str]],
+    up_service: LimitUpService,
+    down_service: LimitDownService,
+    **kwargs,
+) -> dict[str, Any]:
+    """Handler for the ``limit_list_d`` API.
 
+    Spec: https://tushare.pro/document/2?doc_id=298
 
-@router.post("/monthly")
-@router.get("/monthly")
-async def tushare_monthly(
-    request: Request,
-    service: MarketDataService = Depends(deps.get_market_data_service_dep),
-):
-    """Tushare Pro ``monthly`` endpoint."""
-    try:
-        params, fields = await _extract_from_request(request, "monthly")
-        return handle_monthly(params, fields, service)
-    except Exception as exc:
-        return handle_tushare_exception(exc)
+    Filters:
+      * ``trade_date`` (YYYYMMDD; defaults to today)
+      * ``ts_code`` (e.g. ``000001.SZ``)
+      * ``limit_type`` (``U`` / ``D`` / ``Z``) — only the requested types
+        are included; ``Z`` (炸板) requires additional computation that is
+        currently beyond the warehouse snapshots.
+      * ``exchange`` (``SH`` / ``SZ`` / ``BJ``)
+    """
+    from adshare.services.limit_up import _today_int
 
+    trade_date = parse_date_param(params.get("trade_date")) or _today_int()
+    ts_code = params.get("ts_code")
+    limit_type = str(params.get("limit_type") or "").upper() or None
+    exchange = params.get("exchange")
 
-@router.post("/stock_basic")
-@router.get("/stock_basic")
-async def tushare_stock_basic(
-    request: Request,
-    service: MarketDataService = Depends(deps.get_market_data_service_dep),
-):
-    """Tushare Pro ``stock_basic`` endpoint."""
-    try:
-        params, fields = await _extract_from_request(request, "stock_basic")
-        return handle_stock_basic(params, fields, service)
-    except Exception as exc:
-        return handle_tushare_exception(exc)
+    up_stocks: list = []
+    down_stocks: list = []
 
+    if limit_type in (None, "U", "Z"):
+        up_response = up_service.get_limit_up(date=trade_date)
+        up_stocks = [
+            item for item in up_response.stocks
+            if _ts_code_matches(item, ts_code) and _exchange_matches(item, exchange)
+        ]
+    if limit_type in (None, "D"):
+        down_response = down_service.get_limit_down(date=trade_date)
+        down_stocks = [
+            item for item in down_response.stocks
+            if _ts_code_matches(item, ts_code) and _exchange_matches(item, exchange)
+        ]
 
-@router.post("/trade_cal")
-@router.get("/trade_cal")
-async def tushare_trade_cal(
-    request: Request,
-    service: MarketDataService = Depends(deps.get_market_data_service_dep),
-):
-    """Tushare Pro ``trade_cal`` endpoint."""
-    try:
-        params, fields = await _extract_from_request(request, "trade_cal")
-        return handle_trade_cal(params, fields, service)
-    except Exception as exc:
-        return handle_tushare_exception(exc)
+    if limit_type == "Z":
+        # 炸板: stocks that *touched* the upper-limit price intraday but
+        # failed to close there. The current limit-up pipeline only emits
+        # stocks whose close hit the limit, so emit an explicit empty frame
+        # rather than misleading values.
+        up_stocks = []
+        down_stocks = []
 
-
-@router.post("/adj_factor")
-@router.get("/adj_factor")
-async def tushare_adj_factor(
-    request: Request,
-    service: MarketDataService = Depends(deps.get_market_data_service_dep),
-):
-    """Tushare Pro ``adj_factor`` endpoint."""
-    try:
-        params, fields = await _extract_from_request(request, "adj_factor")
-        return handle_adj_factor(params, fields, service)
-    except Exception as exc:
-        return handle_tushare_exception(exc)
-
-
-@router.post("/suspend_d")
-@router.get("/suspend_d")
-async def tushare_suspend_d(
-    request: Request,
-    service: MarketDataService = Depends(deps.get_market_data_service_dep),
-):
-    """Tushare Pro ``suspend_d`` endpoint."""
-    try:
-        params, fields = await _extract_from_request(request, "suspend_d")
-        return handle_suspend_d(params, fields, service)
-    except Exception as exc:
-        return handle_tushare_exception(exc)
-
-
-@router.post("/limit_list")
-@router.get("/limit_list")
-async def tushare_limit_list(
-    request: Request,
-    up_service: LimitUpService = Depends(deps.get_limit_up_service_dep),
-    down_service: LimitDownService = Depends(deps.get_limit_down_service_dep),
-):
-    """Tushare Pro ``limit_list`` endpoint."""
-    try:
-        params, fields = await _extract_from_request(request, "limit_list")
-        return handle_limit_list(params, fields, up_service, down_service)
-    except Exception as exc:
-        return handle_tushare_exception(exc)
+    df = build_limit_list_d(up_stocks, down_stocks, trade_date)
+    df = filter_fields(df, fields)
+    return df_to_tushare_payload(df)
 
 
 # ---------------------------------------------------------------------------
@@ -401,4 +363,5 @@ HANDLERS: dict[str, Any] = {
     "adj_factor": handle_adj_factor,
     "suspend_d": handle_suspend_d,
     "limit_list": handle_limit_list,
+    "limit_list_d": handle_limit_list_d,
 }

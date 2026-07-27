@@ -1,5 +1,6 @@
-# adshare (package stub)
+# amazingdata (package stub)
 
-This file exists so that `pyproject.toml`'s `readme = "../README.md"`
+This file exists so that `amazingdata/pyproject.toml`'s `readme = "README.md"`
 reference resolves when hatch builds the wheel inside the Docker image.
-The real project README lives at the repository root.
+The real AmazingData worker README lives in this directory at
+`amazingdata/README.md`.

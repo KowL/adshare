@@ -1,7 +1,7 @@
-"""Historical data warehouse module (L3 cache).
+"""PostgreSQL historical market-data repository.
 
-Provides persistent Parquet storage of K-line, calendar, and code metadata
-on top of DuckDB for in-process SQL queries.
+Provides persistent PostgreSQL storage of K-line, calendar, code metadata,
+and less frequently queried AmazingData reference datasets.
 
 This package is read-only with respect to data sources: the sync jobs that
 populate the warehouse live in the worker package
@@ -19,18 +19,9 @@ from adshare.historical.models import (
     standardize_kline_df,
     standardize_calendar_df,
     standardize_codes_df,
-    kline_file_path,
-    period_to_subdir,
     normalize_period,
 )
 from adshare.historical.warehouse import HistoricalWarehouse, get_warehouse
-from adshare.historical.maintenance import (
-    MaintenanceResult,
-    repair_kline_directory,
-    repair_codes_table,
-    repair_financial_table,
-    repair_all,
-)
 
 __all__ = [
     "KLINE_COLUMNS",
@@ -43,14 +34,7 @@ __all__ = [
     "standardize_kline_df",
     "standardize_calendar_df",
     "standardize_codes_df",
-    "kline_file_path",
-    "period_to_subdir",
     "normalize_period",
     "HistoricalWarehouse",
     "get_warehouse",
-    "MaintenanceResult",
-    "repair_kline_directory",
-    "repair_codes_table",
-    "repair_financial_table",
-    "repair_all",
 ]

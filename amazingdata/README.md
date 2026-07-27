@@ -9,7 +9,7 @@ TGW 单连接账户约束：同一账号在同一时刻只能持有一个 SDK se
 | 入口 | 镜像 | 进程职责 |
 |------|------|---------|
 | `amazingdata.realtime` | `amazingdata-realtime` | 盘中：订阅 snapshot / index / kline → Redis + Pub/Sub |
-| `amazingdata.batch` | `amazingdata-batch` | 盘后：APScheduler 驱动 K线/meta/参考数据 → L3 warehouse (Parquet + DuckDB) |
+| `amazingdata.batch` | `amazingdata-batch` | 盘后：APScheduler 驱动 K线/meta/参考数据 → PostgreSQL |
 
 两个进程物理隔离。单账号时代需要外部调度切换容器来互斥；现在 realtime / batch 各用各的 TGW 账号（见下文「配置」），可同时运行。
 
@@ -47,7 +47,7 @@ cp amazingdata/realtime.env.example amazingdata/realtime.env   # 填 realtime �
 cp amazingdata/batch.env.example amazingdata/batch.env         # 填 batch 专用账号 + Redis
 ```
 
-非敏感的容器内路径（`HISTORICAL_PATH=/app/data`、`PYTHONPATH=/app` 等）直接写在 compose 的 `environment:` 里；`WorkerSettings` 仍保留读 `amazingdata/.env` 作为本地开发兜底，进程环境变量优先级更高。
+`batch.env` 中的 `DATABASE_URL` 必须指向 adshare-api 使用的同一个 PostgreSQL。`WorkerSettings` 仍保留读 `amazingdata/.env` 作为本地开发兜底，进程环境变量优先级更高。
 
 ### 一次性：构建 base 镜像（3-5 分钟）
 
@@ -64,7 +64,7 @@ bin/build-base.sh 1.1          # tag: adshare-base:1.1
 docker compose -f amazingdata/docker-compose.batch.yml up -d
 ```
 
-镜像内执行 `python -m amazingdata.batch`：登录 SDK → 初始化 warehouse → 启动 APScheduler → 阻塞等信号。
+镜像内执行 `python -m amazingdata.batch`：登录 SDK → 初始化 PostgreSQL schema/连接池 → 启动 APScheduler → 阻塞等信号。
 
 ### 启动 realtime（盘中模式）
 

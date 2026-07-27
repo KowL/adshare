@@ -1,6 +1,6 @@
 # amazingdata/batch.Dockerfile
 # Batch service — APScheduler drives periodic sync jobs (K-line / meta /
-# reference) into the local Parquet warehouse. Separate container from
+# reference) directly into PostgreSQL. Separate container from
 # realtime; same SDK session constraint applies.
 #
 # Build:
@@ -12,10 +12,10 @@ FROM adshare-base:latest
 
 WORKDIR /app
 
-# Install worker-level Python deps (warehouse + scheduler)
+# Install worker-level Python deps (PostgreSQL + scheduler)
 # Note: numba/scipy/statsmodels/pydantic are inherited from base image.
 RUN pip install --no-cache-dir \
-    "duckdb>=1.0.0,<2.0" \
+    "psycopg[binary,pool]>=3.2.0,<4.0" \
     "pandas==2.0.3" \
     "numpy==1.26.4" \
     "pyarrow==15.0.0" \

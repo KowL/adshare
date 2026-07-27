@@ -1,5 +1,5 @@
 # amazingdata/docker-compose.batch.yml
-# Batch sync service (盘后): APScheduler -> L3 warehouse.
+# Batch sync service (盘后): APScheduler -> PostgreSQL.
 #
 # Config: amazingdata/batch.env (gitignored) — batch-dedicated TGW account
 # + Redis credentials. realtime and batch use SEPARATE TGW accounts, so
@@ -27,8 +27,9 @@ services:
       - batch.env
     environment:
       - HISTORICAL_ENABLED=true
-      - HISTORICAL_PATH=/app/data
-      - DUCKDB_MODE=${DUCKDB_MODE:-memory}
+      - DATABASE_POOL_MIN_SIZE=${DATABASE_POOL_MIN_SIZE:-1}
+      - DATABASE_POOL_MAX_SIZE=${DATABASE_POOL_MAX_SIZE:-8}
+      - DATABASE_AUTO_MIGRATE=${DATABASE_AUTO_MIGRATE:-true}
       - ADSHARE_LOG_LEVEL=${ADSHARE_LOG_LEVEL:-INFO}
       - ADSHARE_LOG_DIR=/app/logs
       # Pin timezone to Asia/Shanghai so APScheduler cron (configured in CST)
@@ -40,8 +41,11 @@ services:
       - ../data:/app/data
       - ../cache:/app/cache
       - ../logs:/app/logs
-      # Mount host-managed SSH key + known_hosts so sync_to_remote.sh can
-      # rsync warehouse data to root@8.148.216.30. Key files are gitignored
-      # (`.batch-ssh/` is excluded by .gitignore). Source: ~/.batch-ssh/.
-      - ../.batch-ssh:/root/.ssh:ro
+    networks:
+      - adshare
     restart: unless-stopped
+
+networks:
+  adshare:
+    external: true
+    name: ${ADSHARE_NETWORK:-adshare_default}

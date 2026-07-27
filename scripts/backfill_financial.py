@@ -1,4 +1,4 @@
-"""Backfill financial reference data into the L3 warehouse.
+"""Backfill financial reference data into PostgreSQL.
 
 Runs directly in the current process using the existing SDK connection
 with _SDK_CALL_LOCK protection.  This matches the original amazingdata
@@ -90,11 +90,10 @@ def _all_codes() -> List[str]:
     from adshare.historical.warehouse import get_warehouse
     settings = get_settings()
     warehouse = get_warehouse(settings)
-    codes_path = warehouse.root / "meta" / "codes.parquet"
-    if not codes_path.exists():
+    df = warehouse.query_codes(is_listed=True)
+    if df.empty:
         sync_meta_codes()
-    import pandas as pd
-    df = pd.read_parquet(codes_path)
+        df = warehouse.query_codes(is_listed=True)
     return df["code"].tolist()
 
 

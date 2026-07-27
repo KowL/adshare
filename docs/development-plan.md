@@ -4,6 +4,12 @@
 > 更新日期: 2026-06-11  
 > 状态: Phase 3 已完成（P0+P1 核心优化、涨停榜服务化、双服务架构、L3 扁平化均已落地）
 
+> **架构变更说明（2026-07-27）**：本文档记录的 L3 Parquet/DuckDB 历史仓、RESTful
+> `/market/*` `/historical/*` `/stock_data/*` 路由已被实际架构超越。当前架构：
+> PostgreSQL 仓库（`docs/postgresql-data-architecture.md`）、统一 Tushare 入口
+> `POST /tushare`（`docs/tushare-migration.md`）。本文保留作为历史规划记录，
+> 仍能在仓库 git log 中找到扁平化迁移 / 双服务拆分等已完成任务的提交记录。
+
 ---
 
 ## 1. 项目愿景

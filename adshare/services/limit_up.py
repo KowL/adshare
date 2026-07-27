@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
-from pathlib import Path
 from typing import Optional, Sequence
 
 import numpy as np
@@ -14,10 +13,7 @@ from adshare.core.config import get_settings
 from adshare.core.logging import get_logger
 from adshare.historical.models import (
     CODES_COLUMNS,
-    kline_file_path,
     standardize_codes_df,
-    standardize_kline_df,
-    validate_kline_df,
 )
 from adshare.historical.warehouse import get_warehouse
 from adshare.models.schemas import (
@@ -494,10 +490,7 @@ def _iter_target_rows_with_pre_close(kline: pd.DataFrame, target_date: int):
 
 
 def _persist_codes(df: pd.DataFrame, warehouse) -> None:
-    path = warehouse.meta_dir() / "codes.parquet"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(path, engine="pyarrow", compression="zstd", index=False)
-    warehouse.refresh_views()
+    warehouse.upsert_stocks(standardize_codes_df(df))
 
 
 def _persist_kline_to_warehouse(df: pd.DataFrame, warehouse) -> None:
@@ -505,23 +498,8 @@ def _persist_kline_to_warehouse(df: pd.DataFrame, warehouse) -> None:
         return
     if "code" not in df.columns:
         return
-    root = Path(warehouse.root)
     for code, code_df in df.groupby(df["code"].astype(str)):
-        std = standardize_kline_df(code_df, code=code)
-        if std.empty:
-            continue
-        path = kline_file_path(root, "day", code)
-        if path.exists():
-            try:
-                existing = pd.read_parquet(path)
-                std = pd.concat([existing, std], ignore_index=True)
-            except Exception as e:  # noqa: BLE001
-                logger.warning("Failed to read existing K-line file %s: %s", path, e)
-        std = validate_kline_df(std)
-        if std.empty:
-            continue
-        path.parent.mkdir(parents=True, exist_ok=True)
-        std.to_parquet(path, engine="pyarrow", compression="zstd", index=False)
+        warehouse.upsert_kline(str(code), "day", code_df)
 
 
 def _lookback_begin_date(target_date: int, days: int = 14) -> int:
@@ -879,7 +857,6 @@ class StrongStockPoolService:
             volume = int(row.get("volume", 0) or 0)
             amount = float(row.get("amount", 0) or 0)
             high = float(row.get("high", 0) or 0)
-            low = float(row.get("low", 0) or 0)
 
             if pre_close <= 0:
                 continue
