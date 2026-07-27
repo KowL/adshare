@@ -1,0 +1,35 @@
+# Root build context for amazingdata/base.Dockerfile, batch.Dockerfile and
+# realtime.Dockerfile (compose build context: project root).
+#
+# Secrets must never be baked into images — runtime config comes from
+# compose `env_file` (batch.env / realtime.env) and adshare's env_file.
+**/.env
+**/.env.*
+!**/.env.example
+**/*.env
+!**/*.env.example
+
+# Python noise
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+
+# VCS / tooling
+.git/
+.pytest_cache/
+.ruff_cache/
+.venv/
+.venv-test-pandas/
+.worktrees/
+
+# Local data / runtime output (mounted at runtime, never part of the image)
+data/
+logs/
+cache/
+
+# Not needed by any Dockerfile (builds COPY only adshare/, amazingdata/,
+# scripts/, amazingdata/wheels/)
+docs/
+tests/
+skills/
+bin/
