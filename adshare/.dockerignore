@@ -1,0 +1,14 @@
+# Never bake secrets into the image — runtime config comes from env_file.
+.env
+.env.*
+!.env.example
+
+# Python noise
+__pycache__/
+*.pyc
+*.pyo
+
+# Build/compose metadata is not needed inside the image
+Dockerfile
+.dockerignore
+docker-compose.yml

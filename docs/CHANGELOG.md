@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Changed (2026-07-28)
+
+- **`adshare/Dockerfile` hardened and slimmed.** Runtime deps now install from a pinned `adshare/requirements.lock` (regenerate with `uv pip compile adshare/pyproject.toml --python-version 3.11 --python-platform linux -o adshare/requirements.lock`) instead of floating `>=` ranges via a stub `pip install .`; `gcc`/`libhdf5-dev` dropped (all pinned deps ship manylinux wheels; PyTables bundles HDF5); apt sources switched to the Tsinghua mirror; the container runs as non-root uid 10001; the duplicate in-image `HEALTHCHECK` removed (compose is the single source of truth); `TZ` stays only in the image `ENV`. New `adshare/.dockerignore` keeps `.env*` secrets, `__pycache__`, and build metadata out of the image — previously `adshare/.env` was baked into an image layer. On Linux hosts the bind-mounted `cache/` and `logs/` dirs must be writable by uid 10001 (`chown -R 10001:10001 cache logs`).
+- **`adshare/pyproject.toml`: `readme` field dropped** — it only existed to satisfy hatch validation via the `README.adshare-stub.md` placeholder; both the field and the stub file are gone.
+- **Deleted `adshare/.env.remote-api`** (stale per-environment credential copy).
+
 ### Changed (2026-07-27)
 
 - **Tushare router consolidated to a single `POST /tushare` entry point.** All `*_D` RESTful handlers (`/tushare/stock/daily`, `/tushare/index/...`, etc.) removed; the unified dispatcher routes by `api_name` field. Matches the official Tushare Pro protocol.

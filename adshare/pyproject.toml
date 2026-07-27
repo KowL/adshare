@@ -6,7 +6,6 @@ build-backend = "hatchling.build"
 name = "adshare"
 version = "0.1.0"
 description = "AmazingData share service - FastAPI middleware that exposes the L3 historical warehouse + Redis real-time state as HTTP REST API and MCP."
-readme = "README.adshare-stub.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}
 authors = [

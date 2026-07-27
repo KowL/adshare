@@ -7,58 +7,59 @@
 # Or via compose:
 #   docker compose -f adshare/docker-compose.yml build
 #
-# Self-contained: pyproject.toml sits next to this Dockerfile and declares
-# all runtime dependencies. No external build-context needed.
+# Dependencies are pinned in requirements.lock (generated from pyproject.toml):
+#   uv pip compile adshare/pyproject.toml --python-version 3.11 \
+#     --python-platform linux -o adshare/requirements.lock
+# Re-run that command after changing pyproject.toml dependencies.
 #
-# Notes:
-#   - pyproject.toml references `readme = "README.adshare-stub.md"`, which
-#     hatch validates when building the wheel; at runtime the package
-#     doesn't read it. Keep the filename intact when COPYing.
+# Secrets: .env files are excluded via .dockerignore — runtime config is
+# injected by compose `env_file`, never baked into the image.
 
 ARG BASE_IMAGE=python:3.11-slim
 
 FROM ${BASE_IMAGE}
 
-WORKDIR /app
+# PIP_INDEX_URL replaces `pip config set` (which wrote /root/.pip/pip.conf and
+# would stop working for the non-root runtime user).
+ENV TZ=Asia/Shanghai \
+    PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
 
-# Use Tsinghua pip mirror for faster downloads in CN
-RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
-
-# Pin timezone to Asia/Shanghai so structlog timestamps and any
-# naive datetime.now() calls match the worker's CST schedule.
-ENV TZ=Asia/Shanghai
-
-# System deps (gcc for any C-extension deps, curl for healthcheck, libhdf5 for tables,
-# tzdata so the ENV TZ resolves to a real zoneinfo entry).
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
+# Runtime system deps only: curl for the compose healthcheck, tzdata so the
+# ENV TZ resolves to a real zoneinfo entry. No gcc / libhdf5-dev — every pinned
+# dependency ships a manylinux wheel (PyTables wheels bundle HDF5), so no
+# compiler toolchain belongs in the runtime image.
+# apt sources are switched to the Tsinghua mirror for CN build speed
+# (trixie uses deb822 debian.sources; older bases fall back to sources.list).
+RUN sed -i 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null \
+    || sed -i 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list \
+    && apt-get update && apt-get install -y --no-install-recommends \
     curl \
-    libhdf5-dev \
     tzdata \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* \
     && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
-# Install adshare and all its declared dependencies.
-# pyproject.toml is self-contained under adshare/.
-COPY pyproject.toml ./
+WORKDIR /app
 
-# pyproject.toml declares `readme = "README.adshare-stub.md"` — hatch
-# validates that path when building the wheel, so copy it under its real
-# name. (Not read at runtime.)
-COPY README.adshare-stub.md ./
+# Install pinned third-party dependencies. This layer is cached as long as
+# requirements.lock is unchanged.
+COPY requirements.lock ./
+RUN pip install --no-cache-dir -r requirements.lock
 
-RUN pip install --no-cache-dir .
+# Non-root runtime user.
+RUN useradd --uid 10001 --home /app app
 
-# Copy application code
+# Copy application code (secrets excluded by .dockerignore).
 COPY . ./adshare/
 
-# Runtime directories
-RUN mkdir -p cache logs data
+# Runtime directories (cache/ and logs/ are bind-mounted by compose; on the
+# Linux host they must be writable by uid 10001).
+RUN mkdir -p cache logs data && chown -R app:app /app
+
+USER app
 
 EXPOSE 8000
 
-# Healthcheck: API exposes /health
-HEALTHCHECK --interval=30s --timeout=30s --start-period=60s --retries=5 \
-    CMD curl -f http://localhost:8000/health || exit 1
-
+# No HEALTHCHECK here — docker-compose.yml defines the single source of truth.
 CMD ["uvicorn", "adshare.main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -46,9 +46,8 @@ services:
       - DATABASE_URL=${DATABASE_URL:-postgresql://adshare:adshare@localhost:5432/adshare}
       - DATABASE_AUTO_MIGRATE=${DATABASE_AUTO_MIGRATE:-true}
       - HISTORICAL_ENABLED=${HISTORICAL_ENABLED:-true}
-      # Pin timezone to Asia/Shanghai so structlog timestamps and any
-      # naive datetime.now() calls match the worker's CST schedule.
-      - TZ=Asia/Shanghai
+      # TZ=Asia/Shanghai is set in the image (Dockerfile ENV); no need to
+      # repeat it here.
     volumes:
       - ../cache:/app/cache
       - ../logs:/app/logs
