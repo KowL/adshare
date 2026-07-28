@@ -101,6 +101,66 @@ def test_round_trip_and_idempotent_upsert(postgres_warehouse):
     assert warehouse.max_trade_date("day") == 20260724
 
 
+def test_factor_timeline_reconcile_preserves_original_created_at(
+    postgres_warehouse,
+):
+    warehouse = postgres_warehouse
+    initial = pd.DataFrame(
+        {
+            "date": [20260701, 20260710, 20260723],
+            "adj_factor": [84.5, 85.0, 85.25],
+        }
+    )
+    assert (
+        warehouse.replace_adjustment_factor_timeline("000001.SZ", initial)
+        == 3
+    )
+
+    with warehouse._pool.connection() as conn:
+        conn.execute(
+            """
+            UPDATE market.adjustment_factor
+               SET created_at = TIMESTAMPTZ '2026-01-01 00:00:00+08',
+                   source_updated_at = TIMESTAMPTZ '2026-01-01 00:00:00+08',
+                   updated_at = TIMESTAMPTZ '2026-01-01 00:00:00+08'
+            """
+        )
+        conn.commit()
+
+    replacement = pd.DataFrame(
+        {
+            "date": [20260701, 20260723, 20260724],
+            "adj_factor": [84.5, 85.5, 85.5],
+        }
+    )
+    assert (
+        warehouse.replace_adjustment_factor_timeline(
+            "000001.SZ", replacement
+        )
+        == 3
+    )
+
+    rows = warehouse.execute_sql(
+        """
+        SELECT effective_date, adj_factor,
+               created_at = TIMESTAMPTZ '2026-01-01 00:00:00+08'
+                   AS kept_created_at,
+               source_updated_at = TIMESTAMPTZ '2026-01-01 00:00:00+08'
+                   AS kept_source_updated_at
+          FROM market.adjustment_factor
+         ORDER BY effective_date
+        """
+    )
+    assert rows["effective_date"].astype(str).tolist() == [
+        "2026-07-01",
+        "2026-07-23",
+        "2026-07-24",
+    ]
+    assert rows["adj_factor"].astype(float).tolist() == [84.5, 85.5, 85.5]
+    assert rows["kept_created_at"].tolist() == [True, True, False]
+    assert rows["kept_source_updated_at"].tolist() == [True, False, False]
+
+
 def test_calendar_reference_and_read_only_sql(postgres_warehouse):
     warehouse = postgres_warehouse
     warehouse.upsert_calendar(
@@ -206,13 +266,16 @@ def test_adjustment_factors_are_stored_once_and_joined_to_bars(
         def get_adjustment_factors(self, **kwargs):
             return pd.DataFrame(
                 {
-                    "code": ["000001.SZ", "000001.SZ"],
-                    "date": [20260701, 20260723],
-                    "adj_factor": [84.5, 85.25],
+                    "code": ["000001.SZ"] * 4,
+                    "date": [20260701, 20260702, 20260723, 20260724],
+                    "adj_factor": [84.5, 84.5, 85.25, 85.25],
                 }
             )
 
-    settings = SimpleNamespace(max_codes_per_query=50)
+    settings = SimpleNamespace(
+        max_codes_per_query=50,
+        amazingdata_local_path="/tmp/amazingdata-factor-test",
+    )
     result = sync_adjustment_factors(
         from_date=20260701,
         to_date=20260724,
@@ -230,6 +293,10 @@ def test_adjustment_factors_are_stored_once_and_joined_to_bars(
         "ORDER BY effective_date"
     )
     assert len(rows) == 2
+    assert rows["effective_date"].astype(str).tolist() == [
+        "2026-07-01",
+        "2026-07-23",
+    ]
     weekly = warehouse.query_kline(
         ["000001.SZ"], 20260724, 20260724, "week"
     )

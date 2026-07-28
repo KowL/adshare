@@ -112,6 +112,17 @@ class DataSourceAdapter(Protocol):
         """Return cumulative adjustment factors in canonical long form."""
         ...
 
+    def get_adjustment_events(
+        self,
+        codes: str,
+        begin_date: int,
+        end_date: int,
+        local_path: str,
+        refresh: bool = True,
+    ) -> pd.DataFrame:
+        """Return dates flagged as ex-right or ex-dividend."""
+        ...
+
     def get_stock_basic(
         self, codes: Optional[str] = None, summary_only: bool = False
     ) -> pd.DataFrame:

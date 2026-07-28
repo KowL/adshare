@@ -310,6 +310,86 @@ class AmazingDataAdapter:
         ]
         return result.sort_values(["code", "date"]).reset_index(drop=True)
 
+    def get_adjustment_events(
+        self,
+        codes: str,
+        begin_date: int,
+        end_date: int,
+        local_path: str,
+        refresh: bool = True,
+    ) -> pd.DataFrame:
+        """Return ex-right/ex-dividend flags for a recent trading window."""
+        code_list = [
+            code.strip()
+            for code in str(codes).split(",")
+            if code.strip()
+        ]
+        if not code_list:
+            return pd.DataFrame(
+                columns=["code", "date", "is_ex_right", "is_ex_dividend"]
+            )
+
+        def _fetch():
+            self._get_client()
+            self._ensure_info_data()
+            return self._info_data.get_history_stock_status(
+                code_list=code_list,
+                local_path=local_path,
+                is_local=not refresh,
+                begin_date=int(begin_date),
+                end_date=int(end_date),
+            )
+
+        raw = self._with_retry(_fetch)
+        frames = []
+        if isinstance(raw, dict):
+            for code, frame in raw.items():
+                if isinstance(frame, pd.DataFrame) and not frame.empty:
+                    item = frame.copy()
+                    if not {
+                        "MARKET_CODE", "SECURITY_CODE", "SECUCODE", "code"
+                    } & set(item.columns):
+                        item["code"] = str(code)
+                    frames.append(item)
+        elif isinstance(raw, pd.DataFrame) and not raw.empty:
+            frames = [raw.copy()]
+        if not frames:
+            return pd.DataFrame(
+                columns=["code", "date", "is_ex_right", "is_ex_dividend"]
+            )
+
+        result = pd.concat(frames, ignore_index=True)
+        aliases = {
+            "MARKET_CODE": "code",
+            "SECURITY_CODE": "code",
+            "SECUCODE": "code",
+            "TRADE_DATE": "date",
+            "IS_XR_SEC": "is_ex_right",
+            "IS_WD_SEC": "is_ex_dividend",
+        }
+        result = result.rename(
+            columns={key: value for key, value in aliases.items() if key in result.columns}
+        )
+        for column in ("code", "date", "is_ex_right", "is_ex_dividend"):
+            if column not in result.columns:
+                result[column] = pd.NA
+        result["code"] = result["code"].astype(str)
+        parsed_dates = pd.to_datetime(
+            result["date"].astype(str), errors="coerce"
+        )
+        result["date"] = pd.to_numeric(
+            parsed_dates.dt.strftime("%Y%m%d"), errors="coerce"
+        )
+        result = result.dropna(subset=["code", "date"])
+        result["date"] = result["date"].astype(int)
+        result = result[
+            result["code"].isin(code_list)
+            & result["date"].between(int(begin_date), int(end_date))
+        ]
+        return result[
+            ["code", "date", "is_ex_right", "is_ex_dividend"]
+        ].reset_index(drop=True)
+
     def get_kline(
         self,
         codes: str,

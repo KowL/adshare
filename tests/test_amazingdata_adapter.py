@@ -40,10 +40,24 @@ class NoMarketCalendarBaseData(FakeBaseData):
         return [20240102, 20240103]
 
 
+class FakeInfoData:
+    def get_history_stock_status(self, **kwargs):
+        self.history_status_args = kwargs
+        return pd.DataFrame(
+            {
+                "MARKET_CODE": ["000001.SZ", "600000.SH"],
+                "TRADE_DATE": ["2024-06-14", "2024-06-14"],
+                "IS_XR_SEC": ["1", "0"],
+                "IS_WD_SEC": ["0", "1"],
+            }
+        )
+
+
 def make_adapter(base_data) -> AmazingDataAdapter:
     adapter = object.__new__(AmazingDataAdapter)
     adapter.settings = SimpleNamespace(ad_max_retries=1, ad_retry_delay=0)
     adapter._base_data = base_data
+    adapter._info_data = None
     adapter._market_data = None
     adapter._client = object()
     adapter._login_info = {"status": True}
@@ -113,3 +127,40 @@ def test_get_adjustment_factors_normalizes_sdk_wide_frame():
         "/tmp/amazingdata-factor-cache",
         False,
     )
+
+
+def test_get_adjustment_events_normalizes_history_status_flags():
+    adapter = make_adapter(FakeBaseData())
+    info_data = FakeInfoData()
+    adapter._info_data = info_data
+    adapter._ensure_info_data = lambda: None
+
+    result = adapter.get_adjustment_events(
+        codes="000001.SZ,600000.SH",
+        begin_date=20240610,
+        end_date=20240614,
+        local_path="/tmp/amazingdata-status-cache",
+        refresh=True,
+    )
+
+    assert result.to_dict("records") == [
+        {
+            "code": "000001.SZ",
+            "date": 20240614,
+            "is_ex_right": "1",
+            "is_ex_dividend": "0",
+        },
+        {
+            "code": "600000.SH",
+            "date": 20240614,
+            "is_ex_right": "0",
+            "is_ex_dividend": "1",
+        },
+    ]
+    assert info_data.history_status_args == {
+        "code_list": ["000001.SZ", "600000.SH"],
+        "local_path": "/tmp/amazingdata-status-cache",
+        "is_local": False,
+        "begin_date": 20240610,
+        "end_date": 20240614,
+    }

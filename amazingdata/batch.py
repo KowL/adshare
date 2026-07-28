@@ -34,7 +34,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, List, Optional, Sequence
 
@@ -134,6 +134,7 @@ def _init_sdk_login(max_wait_seconds: float = 1800.0) -> bool:
 # ============================================================
 
 _DEFAULT_BEGIN_DATE = 20200101
+_FACTOR_HISTORY_BEGIN_DATE = 19900101
 _DEFAULT_INDEX_CODES = ["000300.SH", "000905.SH", "000016.SH", "000688.SH"]
 
 # The AmazingData C extension crashes with
@@ -247,7 +248,44 @@ class SyncResult:
         return asdict(self)
 
 
-def _record_sync_result(
+def _start_sync_job(
+    warehouse: HistoricalWarehouse,
+    result: SyncResult,
+    *,
+    data_type: str,
+    sync_mode: str = "INCREMENTAL",
+) -> dict:
+    """Insert a ``RUNNING`` row for the sync and return a context dict.
+
+    The returned dict has two keys:
+
+    * ``job_id`` — the ``market.sync_job.id`` (or ``None`` if the insert
+      failed; callers can still proceed, the finalize step will fall
+      back to a direct INSERT).
+    * ``finalize`` — a callable the caller invokes once the sync has
+      finished. It accepts optional overrides for any completion field;
+      the defaults are derived from ``result``.
+    """
+    job_id = warehouse.start_sync_job(
+        job_name=result.job, data_type=data_type, sync_mode=sync_mode,
+    )
+    if job_id is None:
+        logger.warning(
+            "sync_job start row not created for %s/%s; "
+            "completion will fall back to direct INSERT",
+            result.job, data_type,
+        )
+    return {
+        "job_id": job_id,
+        "finalized": False,
+        "payload": _build_sync_completion_payload(
+            result, data_type=data_type,
+        ),
+    }
+
+
+def _finalize_sync_job(
+    ctx: dict,
     warehouse: HistoricalWarehouse,
     result: SyncResult,
     *,
@@ -255,27 +293,51 @@ def _record_sync_result(
     range_start: Optional[int] = None,
     range_end: Optional[int] = None,
 ) -> None:
-    """Persist an auditable completion row without masking the sync outcome."""
+    """Finalize the sync_job row (started by ``_start_sync_job``).
+
+    Builds the completion payload (allowing ``range_start`` /
+    ``range_end`` overrides), then either UPDATEs the existing row or
+    INSERTs a new one if the start row never landed. Safe to call once;
+    subsequent calls are no-ops.
+    """
+    if ctx.get("finalized"):
+        return
+    ctx["finalized"] = True
+    payload = _build_sync_completion_payload(
+        result, data_type=data_type,
+        range_start=range_start, range_end=range_end,
+    )
     try:
-        status = (
-            "SUCCESS"
-            if result.success
-            else ("PARTIAL_SUCCESS" if result.succeeded else "FAILED")
-        )
-        warehouse.record_sync_job(
-            job_name=result.job,
-            data_type=data_type,
-            status=status,
-            range_start=range_start,
-            range_end=range_end,
-            records_read=result.rows,
-            records_inserted=result.rows,
-            records_failed=result.failed,
-            started_at=result.started_at,
-            error_message="\n".join(result.errors)[:10000] or None,
-        )
+        warehouse.record_sync_job(job_id=ctx["job_id"], **payload)
     except Exception as exc:  # noqa: BLE001
         logger.warning("failed to record sync job %s: %s", result.job, exc)
+
+
+def _build_sync_completion_payload(
+    result: SyncResult,
+    *,
+    data_type: str,
+    range_start: Optional[int] = None,
+    range_end: Optional[int] = None,
+) -> dict:
+    """Translate a SyncResult into a record_sync_job kwargs dict."""
+    status = (
+        "SUCCESS"
+        if result.success
+        else ("PARTIAL_SUCCESS" if result.succeeded else "FAILED")
+    )
+    return dict(
+        job_name=result.job,
+        data_type=data_type,
+        status=status,
+        range_start=range_start,
+        range_end=range_end,
+        records_read=result.rows,
+        records_inserted=result.rows,
+        records_failed=result.failed,
+        started_at=result.started_at,
+        error_message="\n".join(result.errors)[:10000] or None,
+    )
 
 
 # ============================================================
@@ -389,9 +451,14 @@ def sync_kline(
         result.finished_at = time.time()
         result.success = result.failed == 0
         _publish_period_freshness(period, warehouse, rows_written)
-        _record_sync_result(
-            warehouse,
-            result,
+        _finalize_sync_job(
+            _start_sync_job(
+                warehouse, result,
+                data_type=normalize_period(period).upper().replace("DAILY", "DAILY_BAR")
+                .replace("WEEKLY", "WEEKLY_BAR")
+                .replace("MONTHLY", "MONTHLY_BAR"),
+            ),
+            warehouse, result,
             data_type=normalize_period(period).upper().replace("DAILY", "DAILY_BAR")
             .replace("WEEKLY", "WEEKLY_BAR")
             .replace("MONTHLY", "MONTHLY_BAR"),
@@ -450,9 +517,14 @@ def sync_kline(
     result.finished_at = time.time()
     result.success = result.failed == 0
     _publish_period_freshness(period, warehouse, rows_written)
-    _record_sync_result(
-        warehouse,
-        result,
+    _finalize_sync_job(
+        _start_sync_job(
+            warehouse, result,
+            data_type=normalize_period(period).upper().replace("DAILY", "DAILY_BAR")
+            .replace("WEEKLY", "WEEKLY_BAR")
+            .replace("MONTHLY", "MONTHLY_BAR"),
+        ),
+        warehouse, result,
         data_type=normalize_period(period).upper().replace("DAILY", "DAILY_BAR")
         .replace("WEEKLY", "WEEKLY_BAR")
         .replace("MONTHLY", "MONTHLY_BAR"),
@@ -578,6 +650,55 @@ def sync_kline_monthly(
     )
 
 
+def _compress_factor_changes(factors: pd.DataFrame) -> pd.DataFrame:
+    """Keep the first factor and dates where its stored value changes."""
+    if factors is None or factors.empty:
+        return pd.DataFrame(columns=["date", "adj_factor"])
+    result = factors[["date", "adj_factor"]].copy()
+    result["date"] = pd.to_numeric(result["date"], errors="coerce")
+    result["adj_factor"] = pd.to_numeric(
+        result["adj_factor"], errors="coerce"
+    ).round(10)
+    result = (
+        result.dropna(subset=["date", "adj_factor"])
+        .drop_duplicates("date", keep="last")
+        .sort_values("date")
+    )
+    result["date"] = result["date"].astype(int)
+    changed = result["adj_factor"].ne(result["adj_factor"].shift())
+    return result.loc[changed, ["date", "adj_factor"]].reset_index(drop=True)
+
+
+def _flag_is_true(value: Any) -> bool:
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "t", "yes", "y"}
+
+
+def _recent_factor_event_start(
+    warehouse: HistoricalWarehouse,
+    end_date: int,
+    sessions: int,
+) -> int:
+    calendar = warehouse.query_calendar(
+        market="SH", end_date=end_date
+    )
+    if not calendar.empty:
+        trading = calendar[
+            calendar["is_trading_day"].fillna(False).astype(bool)
+        ]
+        dates = (
+            pd.to_numeric(trading["date"], errors="coerce")
+            .dropna()
+            .astype(int)
+            .sort_values()
+        )
+        if not dates.empty:
+            return int(dates.iloc[-max(1, int(sessions))])
+    end = datetime.strptime(str(int(end_date)), "%Y%m%d")
+    return int((end - timedelta(days=max(7, int(sessions) * 2))).strftime("%Y%m%d"))
+
+
 def sync_adjustment_factors(
     *,
     from_date: Optional[int] = None,
@@ -585,16 +706,19 @@ def sync_adjustment_factors(
     codes: Optional[Sequence[str]] = None,
     batch_size: Optional[int] = None,
     refresh: bool = True,
+    event_driven: bool = False,
+    event_lookback_sessions: int = 5,
     settings: Optional[WorkerSettings] = None,
     warehouse: Optional[HistoricalWarehouse] = None,
     adapter=None,
 ) -> SyncResult:
-    """Fetch cumulative factors and upsert ``market.adjustment_factor``.
+    """Refresh canonical sparse timelines in ``market.adjustment_factor``.
 
     AmazingData returns adjustment factors as a wide date-by-stock matrix.
     Requesting the whole market at once and stacking that matrix can require
-    several gigabytes of transient memory, so factors are fetched and
-    transformed in bounded stock batches.
+    several gigabytes of transient memory, so factors are fetched in bounded
+    stock batches. In event-driven mode only stocks with recent ex-right/
+    ex-dividend flags (plus stocks missing a baseline) are requested.
     """
     settings = settings or get_worker_settings()
     warehouse = warehouse or get_warehouse(settings)
@@ -604,6 +728,68 @@ def sync_adjustment_factors(
     if codes is None:
         codes = _load_codes_from_meta(warehouse=warehouse, settings=settings)
     code_list = [_ensure_code_suffix(code) for code in (codes or [])]
+
+    local_path = Path(settings.amazingdata_local_path)
+    local_path.mkdir(parents=True, exist_ok=True)
+    if event_driven and code_list:
+        event_begin = _recent_factor_event_start(
+            warehouse, end_date, event_lookback_sessions
+        )
+        try:
+            with _SDK_CALL_LOCK:
+                events = adapter_obj.get_adjustment_events(
+                    codes=",".join(code_list),
+                    begin_date=event_begin,
+                    end_date=end_date,
+                    local_path=str(local_path),
+                    refresh=refresh,
+                )
+        except Exception as exc:  # noqa: BLE001
+            result = SyncResult(
+                job="sync_adjustment_factors",
+                started_at=time.time(),
+                finished_at=time.time(),
+                success=False,
+                total=len(code_list),
+                failed=len(code_list),
+                errors=[f"adjustment event detection failed: {exc}"],
+            )
+            _finalize_sync_job(
+                _start_sync_job(
+                    warehouse, result, data_type="ADJUSTMENT_FACTOR"
+                ),
+                warehouse,
+                result,
+                data_type="ADJUSTMENT_FACTOR",
+                range_start=event_begin,
+                range_end=end_date,
+            )
+            return result
+
+        affected: set[str] = set()
+        if isinstance(events, pd.DataFrame) and not events.empty:
+            for record in events.to_dict("records"):
+                if _flag_is_true(record.get("is_ex_right")) or _flag_is_true(
+                    record.get("is_ex_dividend")
+                ):
+                    affected.add(_ensure_code_suffix(str(record.get("code", ""))))
+        missing = set(
+            warehouse.query_codes_without_adjustment_factors(code_list)
+        )
+        code_list = sorted((affected | missing) & set(code_list))
+        logger.info(
+            "adjustment factor event scan range=[%s,%s] affected=%d "
+            "missing_baseline=%d selected=%d",
+            event_begin,
+            end_date,
+            len(affected),
+            len(missing),
+            len(code_list),
+        )
+        # An affected stock is rebuilt from its full vendor timeline so a
+        # historical correction can remove obsolete change points as well.
+        begin_date = _FACTOR_HISTORY_BEGIN_DATE
+
     result = SyncResult(
         job="sync_adjustment_factors",
         started_at=time.time(),
@@ -612,10 +798,18 @@ def sync_adjustment_factors(
     if not code_list:
         result.success = True
         result.finished_at = time.time()
+        _finalize_sync_job(
+            _start_sync_job(
+                warehouse, result, data_type="ADJUSTMENT_FACTOR"
+            ),
+            warehouse,
+            result,
+            data_type="ADJUSTMENT_FACTOR",
+            range_start=begin_date,
+            range_end=end_date,
+        )
         return result
 
-    local_path = Path(settings.amazingdata_local_path)
-    local_path.mkdir(parents=True, exist_ok=True)
     factor_batch_size = max(
         1, int(batch_size or settings.max_codes_per_query)
     )
@@ -659,14 +853,13 @@ def sync_adjustment_factors(
             try:
                 code_factors = (
                     factors[factors["code"] == code][["date", "adj_factor"]]
-                    .drop_duplicates("date", keep="last")
-                    .sort_values("date")
                 )
-                if code_factors.empty:
+                sparse_factors = _compress_factor_changes(code_factors)
+                if sparse_factors.empty:
                     result.skipped += 1
                     continue
-                written = warehouse.upsert_adjustment_factors(
-                    code, code_factors
+                written = warehouse.replace_adjustment_factor_timeline(
+                    code, sparse_factors
                 )
                 if written <= 0:
                     result.skipped += 1
@@ -692,9 +885,9 @@ def sync_adjustment_factors(
 
     result.success = result.failed == 0
     result.finished_at = time.time()
-    _record_sync_result(
-        warehouse,
-        result,
+    _finalize_sync_job(
+        _start_sync_job(warehouse, result, data_type="ADJUSTMENT_FACTOR"),
+        warehouse, result,
         data_type="ADJUSTMENT_FACTOR",
         range_start=begin_date,
         range_end=end_date,
@@ -821,7 +1014,11 @@ def sync_meta_codes(
         logger.error("sync_meta_codes failed: %s", e)
         result.errors.append(str(e))
         result.finished_at = time.time()
-    _record_sync_result(warehouse, result, data_type="SECURITY")
+    _finalize_sync_job(
+        _start_sync_job(warehouse, result, data_type="SECURITY"),
+        warehouse, result,
+        data_type="SECURITY",
+    )
     return result
 
 
@@ -847,7 +1044,11 @@ def sync_meta_calendar(
         logger.error("sync_meta_calendar failed: %s", e)
         result.errors.append(str(e))
     result.finished_at = time.time()
-    _record_sync_result(warehouse, result, data_type="TRADE_CALENDAR")
+    _finalize_sync_job(
+        _start_sync_job(warehouse, result, data_type="TRADE_CALENDAR"),
+        warehouse, result,
+        data_type="TRADE_CALENDAR",
+    )
     return result
 
 
@@ -1241,8 +1442,10 @@ def _run_sync_kline_daily() -> None:
         logger.info("sync_kline_daily: succeeded=%s failed=%s rows=%s duration=%.2fs",
                     result.succeeded, result.failed, result.rows, result.duration)
         factor_result = sync_adjustment_factors(
-            from_date=_DEFAULT_BEGIN_DATE,
+            from_date=_FACTOR_HISTORY_BEGIN_DATE,
             to_date=end_date,
+            event_driven=True,
+            event_lookback_sessions=5,
             settings=settings,
             warehouse=warehouse,
         )

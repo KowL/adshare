@@ -384,6 +384,93 @@ class HistoricalWarehouse:
             rows,
         )
 
+    def replace_adjustment_factor_timeline(
+        self, code: str, factors: pd.DataFrame
+    ) -> int:
+        """Reconcile one stock's canonical sparse factor timeline atomically.
+
+        Existing rows are updated in place so their ``created_at`` remains the
+        time they first entered the warehouse. Rows no longer present in the
+        upstream canonical timeline are removed.
+        """
+        if factors is None or factors.empty:
+            return 0
+        canonical, _, _ = _exchange_parts(code)
+        self.ensure_stock(canonical)
+        now = datetime.now(timezone.utc)
+        rows = []
+        for record in factors.to_dict("records"):
+            effective_date = _date_from_int(record.get("date"))
+            raw_factor = _clean(record.get("adj_factor"))
+            try:
+                factor = Decimal(str(raw_factor))
+            except (ValueError, TypeError):
+                continue
+            if effective_date is not None and factor > 0:
+                rows.append((effective_date, factor, now))
+        if not rows:
+            return 0
+
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT stock_id FROM master.stock WHERE code = %s",
+                    (canonical,),
+                )
+                stock = cur.fetchone()
+                if stock is None:
+                    return 0
+                stock_id = stock["stock_id"]
+                cur.executemany(
+                    """
+                    INSERT INTO market.adjustment_factor AS current_factor (
+                        stock_id, effective_date, adj_factor, source_updated_at
+                    ) VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (stock_id, effective_date) DO UPDATE SET
+                        adj_factor = EXCLUDED.adj_factor,
+                        source_updated_at = EXCLUDED.source_updated_at,
+                        updated_at = NOW()
+                    WHERE current_factor.adj_factor
+                          IS DISTINCT FROM EXCLUDED.adj_factor
+                    """,
+                    [
+                        (stock_id, effective_date, factor, source_updated_at)
+                        for effective_date, factor, source_updated_at in rows
+                    ],
+                )
+                cur.execute(
+                    """
+                    DELETE FROM market.adjustment_factor
+                     WHERE stock_id = %s
+                       AND effective_date <> ALL(%s::DATE[])
+                    """,
+                    (stock_id, [effective_date for effective_date, _, _ in rows]),
+                )
+            conn.commit()
+        return len(rows)
+
+    def query_codes_without_adjustment_factors(
+        self, codes: Optional[Sequence[str]] = None
+    ) -> list[str]:
+        sql = """
+            SELECT s.code
+              FROM master.stock s
+              LEFT JOIN market.adjustment_factor f
+                ON f.stock_id = s.stock_id
+             WHERE s.listing_status = 'LISTED'
+               AND f.stock_id IS NULL
+        """
+        params: list[Any] = []
+        if codes:
+            canonical = [_exchange_parts(code)[0] for code in codes]
+            sql += " AND s.code = ANY(%s)"
+            params.append(canonical)
+        sql += " ORDER BY s.code"
+        df = self._fetch_df(sql, params)
+        if df.empty:
+            return []
+        return [str(code) for code in df["code"].tolist()]
+
     def upsert_calendar(self, df: pd.DataFrame) -> int:
         if df is None or df.empty:
             return 0
@@ -462,11 +549,44 @@ class HistoricalWarehouse:
             rows,
         )
 
-    def record_sync_job(
+    def start_sync_job(
         self,
         *,
         job_name: str,
         data_type: str,
+        sync_mode: str = "INCREMENTAL",
+    ) -> Optional[int]:
+        """Insert a RUNNING row at the start of a sync and return its id.
+
+        Returns ``None`` if the insert failed for any reason (DB outage,
+        unique-violation, etc.). Callers should treat a ``None`` return
+        as "could not track this run" rather than as a hard failure —
+        the sync itself should still proceed and the completion update
+        can fall back to ``record_sync_job`` which inserts the row
+        directly if the start row never landed.
+        """
+        sql = """
+            INSERT INTO market.sync_job (
+                job_name, data_type, source_code, sync_mode, job_status
+            ) VALUES (%s, %s, 'AMAZINGDATA', %s, 'RUNNING')
+            RETURNING id
+        """
+        try:
+            with self._pool.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(sql, (job_name, data_type, sync_mode))
+                    row = cur.fetchone()
+                conn.commit()
+            return int(row["id"]) if row else None
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("failed to start sync_job %s/%s: %s", job_name, data_type, exc)
+            return None
+
+    def record_sync_job(
+        self,
+        *,
+        job_name: Optional[str] = None,
+        data_type: Optional[str] = None,
         status: str,
         sync_mode: str = "INCREMENTAL",
         range_start: Optional[int] = None,
@@ -476,7 +596,54 @@ class HistoricalWarehouse:
         records_failed: int = 0,
         started_at: Optional[float] = None,
         error_message: Optional[str] = None,
+        job_id: Optional[int] = None,
     ) -> int:
+        """Finalize a sync_job row.
+
+        With ``job_id``: UPDATE the existing row to its terminal status
+        (``SUCCESS`` / ``PARTIAL_SUCCESS`` / ``FAILED`` / ``CANCELLED``).
+        Without ``job_id`` (legacy callers / start row was lost):
+        INSERT a terminal row, preserving the original started_at if
+        supplied.
+        """
+        if job_id is not None:
+            sql = """
+                UPDATE market.sync_job SET
+                    job_status = %s,
+                    range_start = COALESCE(%s, range_start),
+                    range_end = COALESCE(%s, range_end),
+                    records_read = %s,
+                    records_inserted = %s,
+                    records_failed = %s,
+                    completed_at = NOW(),
+                    error_message = %s
+                WHERE id = %s
+            """
+            params = (
+                status,
+                _date_from_int(range_start),
+                _date_from_int(range_end),
+                int(records_read),
+                int(records_inserted),
+                int(records_failed),
+                error_message,
+                int(job_id),
+            )
+            with self._pool.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(sql, params)
+                    affected = cur.rowcount
+                conn.commit()
+            if affected > 0:
+                return int(job_id)
+            # The start row vanished (manual delete? concurrency?).
+            # Fall through to INSERT below so we never lose the audit
+            # trail of a completed sync.
+            logger.warning(
+                "start_sync_job row id=%s missing at finalize; falling back to INSERT",
+                job_id,
+            )
+
         started = datetime.fromtimestamp(started_at, timezone.utc) if started_at else datetime.now(timezone.utc)
         return self._execute_many(
             """
@@ -577,15 +744,22 @@ class HistoricalWarehouse:
         canonical = [_exchange_parts(code)[0] for code in codes]
         return self._fetch_df(
             """
-            SELECT s.code,
-                   TO_CHAR(f.effective_date, 'YYYYMMDD')::INTEGER AS date,
-                   f.adj_factor,
-                   EXTRACT(EPOCH FROM f.source_updated_at)::BIGINT AS sync_at
-              FROM market.adjustment_factor f
-              JOIN master.stock s ON s.stock_id = f.stock_id
-             WHERE s.code = ANY(%s)
-               AND f.effective_date BETWEEN %s AND %s
-             ORDER BY s.code, f.effective_date
+            SELECT b.stock_code AS code,
+                   TO_CHAR(b.trade_date, 'YYYYMMDD')::INTEGER AS date,
+                   af.adj_factor,
+                   EXTRACT(EPOCH FROM af.source_updated_at)::BIGINT AS sync_at
+              FROM market.daily_bar b
+              LEFT JOIN LATERAL (
+                  SELECT f.adj_factor, f.source_updated_at
+                    FROM market.adjustment_factor f
+                   WHERE f.stock_id = b.stock_id
+                     AND f.effective_date <= b.trade_date
+                   ORDER BY f.effective_date DESC
+                   LIMIT 1
+              ) af ON TRUE
+             WHERE b.stock_code = ANY(%s)
+               AND b.trade_date BETWEEN %s AND %s
+             ORDER BY b.stock_code, b.trade_date
             """,
             [
                 canonical,
