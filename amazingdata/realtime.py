@@ -22,7 +22,6 @@ TGW 单连接账户约束:
 
 from __future__ import annotations
 
-import json
 import math
 import signal
 import sys
@@ -39,19 +38,14 @@ from adshare.core.cache import get_cache_manager  # noqa: E402
 from amazingdata.config import get_worker_settings  # noqa: E402
 from adshare.core.logging import setup_logging, get_logger  # noqa: E402
 from adshare.historical.warehouse import get_warehouse  # noqa: E402
-from adshare.core.realtime_keys import (  # noqa: E402
-    CHANNEL_INDEX,
-    CHANNEL_KLINE_PREFIX,
-    CHANNEL_QUOTE,
-    REALTIME_INDEX_KEY,
-    REALTIME_KLINE_HIST_KEY,
-    REALTIME_KLINE_KEY,
-    REALTIME_QUOTE_KEY,
-)
 
 from amazingdata.adapters.amazingdata import get_adapter  # noqa: E402
 from amazingdata.adapters.base import DataSourceAdapter, SubscriptionSource  # noqa: E402
 from amazingdata.heartbeat import HeartbeatWriter  # noqa: E402
+from amazingdata.realtime_buffer import (  # noqa: E402
+    RealtimeEvent,
+    RealtimeRedisWriter,
+)
 
 logger = get_logger("amazingdata.realtime")
 
@@ -108,11 +102,13 @@ class RealtimePublisher:
         self._index_code_list: List[str] = []
         self._running = False
         self._subscribe_thread: Optional[threading.Thread] = None
+        self._writer: Optional[RealtimeRedisWriter] = None
         self._start_time: float = time.time()
         self._last_tick_time: float = 0.0
 
         self.stats: Dict[str, Any] = {
             "total_received": 0,
+            "enqueued": 0,
             "saved_to_redis": 0,
             "published": 0,
             "failed": 0,
@@ -210,8 +206,25 @@ class RealtimePublisher:
             self._subscribe_data = adapter.create_subscription_source()
             self._setup_callbacks()
 
+            settings = get_worker_settings()
+            self._writer = RealtimeRedisWriter(
+                cache=get_cache_manager(),
+                max_pending=settings.realtime_writer_max_pending,
+                batch_size=settings.realtime_writer_batch_size,
+                flush_interval=settings.realtime_writer_flush_ms / 1000.0,
+                kline_history_ttl=settings.realtime_kline_history_ttl,
+                kline_max_bars=settings.realtime_kline_max_bars,
+            )
+            self._writer.start()
+
             self.stats["start_time"] = datetime.now().isoformat()
-            logger.info("Realtime publisher initialized (run in caller thread)")
+            logger.info(
+                "Realtime publisher initialized "
+                "(SDK pending=%s, Redis pending=%s, batch=%s)",
+                settings.realtime_sdk_max_pending,
+                settings.realtime_writer_max_pending,
+                settings.realtime_writer_batch_size,
+            )
             return True
         except Exception as e:
             logger.error("Realtime publisher initialization failed: %s", e)
@@ -237,6 +250,8 @@ class RealtimePublisher:
                     self._subscribe_data.stop()
             except Exception as e:
                 logger.warning("Error stopping SubscribeData: %s", e)
+        if self._writer is not None:
+            self._writer.stop()
         logger.info("Realtime publisher shutdown")
 
     # ------------------------------------------------------------------
@@ -284,124 +299,90 @@ class RealtimePublisher:
 
     def _handle_snapshot(self, data: Any, period: int) -> None:
         try:
-            self._last_tick_time = time.time()
-            self.stats["total_received"] += 1
             code = self._extract_code(data)
             if not code:
                 return
             serialized = self._serialize_data(data)
-            cache = get_cache_manager()
-            if cache.set_realtime_market(serialized, REALTIME_QUOTE_KEY, code):
-                self.stats["saved_to_redis"] += 1
-            msg = json.dumps(
-                {
-                    "type": "quote",
-                    "code": code,
-                    "data": serialized,
-                    "timestamp": datetime.now().isoformat(),
-                }
-            )
-            cache.redis.publish(CHANNEL_QUOTE, msg)
-            self.stats["published"] += 1
+            self._enqueue_event("quote", code, None, serialized)
         except Exception as e:
             logger.error("Handle snapshot error: %s", e)
             self.stats["failed"] += 1
 
     def _handle_index_snapshot(self, data: Any, period: int) -> None:
         try:
-            self._last_tick_time = time.time()
-            self.stats["total_received"] += 1
             code = self._extract_code(data)
             if not code:
                 return
             serialized = self._serialize_data(data)
-            cache = get_cache_manager()
-            if cache.set_realtime_market(serialized, REALTIME_INDEX_KEY, code):
-                self.stats["saved_to_redis"] += 1
-            msg = json.dumps(
-                {
-                    "type": "index",
-                    "code": code,
-                    "data": serialized,
-                    "timestamp": datetime.now().isoformat(),
-                }
-            )
-            cache.redis.publish(CHANNEL_INDEX, msg)
-            self.stats["published"] += 1
+            self._enqueue_event("index", code, None, serialized)
         except Exception as e:
             logger.error("Handle index snapshot error: %s", e)
             self.stats["failed"] += 1
 
     def _handle_kline(self, data: Any, period: int, period_str: str) -> None:
         try:
-            self._last_tick_time = time.time()
-            self.stats["total_received"] += 1
             code = self._extract_code(data)
             if not code:
                 return
             serialized = self._serialize_data(data)
-            cache = get_cache_manager()
-            if cache.set_realtime_market(
-                serialized, REALTIME_KLINE_KEY, period_str, code
-            ):
-                self.stats["saved_to_redis"] += 1
-            self._append_kline_stream(cache, code, period_str, serialized)
-            msg = json.dumps(
-                {
-                    "type": "kline",
-                    "code": code,
-                    "period": period_str,
-                    "data": serialized,
-                    "timestamp": datetime.now().isoformat(),
-                }
-            )
-            cache.redis.publish(f"{CHANNEL_KLINE_PREFIX}{period_str}", msg)
-            self.stats["published"] += 1
+            self._enqueue_event("kline", code, period_str, serialized)
         except Exception as e:
             logger.error("Handle kline error: %s", e)
             self.stats["failed"] += 1
 
-    def _append_kline_stream(
+    def _enqueue_event(
         self,
-        cache: Any,
+        kind: str,
         code: str,
-        period_str: str,
+        period: Optional[str],
         serialized: Dict[str, Any],
     ) -> None:
-        """Accumulate the bar into the per-code+freq Redis Stream.
-
-        The Stream backs the tushare ``rt_min`` endpoint (recent N bars);
-        the single-key SETEX above is kept unchanged for
-        ``/realtime/kline/{code}``.
-        """
-        try:
-            settings = get_worker_settings()
-            stream_key = cache._make_key(
-                "realtime", f"{REALTIME_KLINE_HIST_KEY}:{period_str}", code
+        """Queue a tick without performing network I/O in the SDK callback."""
+        self._last_tick_time = time.time()
+        self.stats["total_received"] += 1
+        if self._writer is None:
+            raise RuntimeError("Realtime Redis writer is not initialized")
+        accepted = self._writer.submit(
+            RealtimeEvent(
+                kind=kind,
+                code=code,
+                period=period,
+                data=serialized,
+                received_at=self._last_tick_time,
             )
-            cache.redis.xadd(
-                stream_key,
+        )
+        if accepted:
+            self.stats["enqueued"] += 1
+        else:
+            self.stats["failed"] += 1
+
+    def snapshot_stats(self) -> Dict[str, Any]:
+        """Return counters combined with bounded-queue telemetry."""
+        result = dict(self.stats)
+        if self._writer is not None:
+            writer = self._writer.snapshot()
+            result["saved_to_redis"] = writer["written"]
+            result["published"] = writer["written"]
+            result["failed"] += writer["write_failed"]
+            result.update(
                 {
-                    "trade_time": self._kline_time_ms(serialized),
-                    "data": json.dumps(serialized),
-                },
-                maxlen=settings.realtime_kline_max_bars,
-                approximate=True,
+                    "writer_queue_depth": writer["queue_depth"],
+                    "writer_coalesced": writer["coalesced"],
+                    "writer_dropped": writer["dropped"],
+                    "writer_batches": writer["batches"],
+                }
             )
-            cache.redis.expire(stream_key, settings.realtime_kline_history_ttl)
-        except Exception as e:
-            logger.error("Append kline stream error (%s %s): %s", code, period_str, e)
-
-    @staticmethod
-    def _kline_time_ms(serialized: Dict[str, Any]) -> int:
-        """Extract the bar time as epoch milliseconds from a serialized kline."""
-        raw = serialized.get("kline_time") or serialized.get("trade_time")
-        if raw:
-            try:
-                return int(datetime.fromisoformat(str(raw)).timestamp() * 1000)
-            except (ValueError, TypeError, OverflowError):
-                pass
-        return int(time.time() * 1000)
+        executor = getattr(
+            getattr(self._subscribe_data, "threadpool", None),
+            "snapshot",
+            None,
+        )
+        if callable(executor):
+            sdk = executor()
+            result["sdk_queue_depth"] = sdk["outstanding"]
+            result["sdk_dropped"] = sdk["dropped"]
+            result["failed"] += sdk["dropped"]
+        return result
 
     # ------------------------------------------------------------------
     # Helpers
@@ -499,7 +480,7 @@ def main() -> int:
             "tick_age_sec": (
                 round(tick_age, 3) if tick_age is not None else None
             ),
-            "stats": dict(publisher.stats),
+            "stats": publisher.snapshot_stats(),
             "codes_count": len(publisher._code_list),
             "index_codes_count": len(publisher._index_code_list),
             "periods": list(getattr(settings, "realtime_kline_periods", []) or []),
@@ -508,7 +489,7 @@ def main() -> int:
 
     def _counter_snapshot() -> Dict[str, Any]:
         assert publisher is not None
-        return dict(publisher.stats)
+        return publisher.snapshot_stats()
 
     heartbeat = HeartbeatWriter(
         service_name="amazingdata-realtime",

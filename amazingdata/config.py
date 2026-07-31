@@ -57,6 +57,23 @@ class WorkerSettings(BaseSettings):
     # Realtime subscription
     # ------------------------------------------------------------------
     realtime_enabled: bool = Field(default=True, alias="REALTIME_ENABLED")
+    realtime_sdk_workers: int = Field(default=10, alias="REALTIME_SDK_WORKERS")
+    realtime_sdk_max_pending: int = Field(
+        default=4096,
+        alias="REALTIME_SDK_MAX_PENDING",
+    )
+    realtime_writer_max_pending: int = Field(
+        default=20000,
+        alias="REALTIME_WRITER_MAX_PENDING",
+    )
+    realtime_writer_batch_size: int = Field(
+        default=1000,
+        alias="REALTIME_WRITER_BATCH_SIZE",
+    )
+    realtime_writer_flush_ms: int = Field(
+        default=50,
+        alias="REALTIME_WRITER_FLUSH_MS",
+    )
 
     # ------------------------------------------------------------------
     # Sync scheduler (batch mode)
@@ -64,7 +81,7 @@ class WorkerSettings(BaseSettings):
     sync_schedule_enabled: bool = Field(default=True, alias="SYNC_SCHEDULE_ENABLED")
     sync_on_start: bool = Field(default=False, alias="SYNC_ON_START")
     sync_kline_daily_hour: int = Field(default=17, alias="SYNC_KLINE_DAILY_HOUR")
-    sync_kline_daily_minute: int = Field(default=10, alias="SYNC_KLINE_DAILY_MINUTE")
+    sync_kline_daily_minute: int = Field(default=0, alias="SYNC_KLINE_DAILY_MINUTE")
     sync_kline_weekly_hour: int = Field(default=19, alias="SYNC_KLINE_WEEKLY_HOUR")
     sync_kline_weekly_minute: int = Field(default=30, alias="SYNC_KLINE_WEEKLY_MINUTE")
     sync_kline_monthly_hour: int = Field(default=20, alias="SYNC_KLINE_MONTHLY_HOUR")

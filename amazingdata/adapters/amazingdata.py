@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 
 from amazingdata.config import WorkerSettings, get_worker_settings
+from amazingdata.realtime_buffer import BoundedThreadPoolExecutor
 from adshare.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -653,9 +654,22 @@ class AmazingDataAdapter:
         The returned object satisfies
         :class:`~amazingdata.adapters.base.SubscriptionSource`
         (``register`` / ``run`` / ``stop``). Requires an active session.
+
+        AmazingData 1.1.8 creates an unbounded ``ThreadPoolExecutor`` inside
+        ``SubscribeData``. Replace it before callbacks start so a slow
+        downstream consumer cannot retain raw native ticks without limit.
         """
         client = self._get_client()
-        return client.SubscribeData()
+        workers = self.settings.realtime_sdk_workers
+        source = client.SubscribeData(pool_num=workers)
+        vendor_executor = getattr(source, "threadpool", None)
+        if vendor_executor is not None:
+            vendor_executor.shutdown(wait=False, cancel_futures=True)
+        source.threadpool = BoundedThreadPoolExecutor(
+            max_workers=workers,
+            max_pending=self.settings.realtime_sdk_max_pending,
+        )
+        return source
 
     # ============================================================
     # Health Check

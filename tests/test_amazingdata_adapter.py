@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pandas as pd
 
 from amazingdata.adapters.amazingdata import AmazingDataAdapter
+from amazingdata.realtime_buffer import BoundedThreadPoolExecutor
 
 
 class FakeBaseData:
@@ -164,3 +165,21 @@ def test_get_adjustment_events_normalizes_history_status_flags():
         "begin_date": 20240610,
         "end_date": 20240614,
     }
+
+
+def test_subscription_source_replaces_vendor_unbounded_executor():
+    old_executor = SimpleNamespace(shutdown=lambda **kwargs: None)
+    source = SimpleNamespace(threadpool=old_executor)
+    client = SimpleNamespace(SubscribeData=lambda **kwargs: source)
+    adapter = make_adapter(FakeBaseData())
+    adapter._client = client
+    adapter._get_client = lambda: client
+    adapter.settings.realtime_sdk_workers = 3
+    adapter.settings.realtime_sdk_max_pending = 12
+
+    result = adapter.create_subscription_source()
+
+    assert result is source
+    assert isinstance(source.threadpool, BoundedThreadPoolExecutor)
+    assert source.threadpool.snapshot()["outstanding"] == 0
+    source.threadpool.shutdown()

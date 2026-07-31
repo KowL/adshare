@@ -33,6 +33,8 @@ services:
       - DATABASE_AUTO_MIGRATE=false
       - ADSHARE_LOG_LEVEL=${ADSHARE_LOG_LEVEL:-INFO}
       - ADSHARE_LOG_DIR=/app/logs
+      # Limit glibc arena retention in the multi-threaded native SDK.
+      - MALLOC_ARENA_MAX=2
       # Pin timezone to Asia/Shanghai so APScheduler cron (configured in CST)
       # fires at the intended local hour instead of UTC.
       - TZ=Asia/Shanghai
@@ -43,6 +45,8 @@ services:
       - ../logs:/app/logs
     networks:
       - adshare
+    mem_limit: 4g
+    memswap_limit: 4g
     restart: unless-stopped
 
 networks:
