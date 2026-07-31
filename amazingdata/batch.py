@@ -1433,8 +1433,19 @@ def _run_sync_kline_daily() -> None:
         try:
             last_date = warehouse.max_trade_date("day")
             if last_date:
-                begin_date = int(last_date)
-                logger.info("Incremental daily sync from last warehouse date: %s", begin_date)
+                # 永久修复 (2026-07-31): begin_date = max_date + 1。
+                # 旧逻辑 begin_date = max_date 时, 当 end_date 也是 max_date (同一天),
+                # SDK 拿到 begin_date == end_date 的请求, 若 TGW 当天未发布,
+                # 会回退返回 begin_date (即昨天) 的 DataFrame,
+                # 被 ON CONFLICT DO UPDATE 误算成 succeeded (假阳性),
+                # 今天的日志会显示 succeeded=5197 但 daily_bar.trade_date = today 行数 = 0。
+                # 改成 max_date + 1 后, begin_date > max_date, SDK 端不会触发回退;
+                # 若 TGW 当天确实没数据, 直接返回空 DataFrame, succeeded 会是 0,
+                # sync_job 会暴露 job_status=failed/empty, 不再伪装成功。
+                begin_date = int(
+                    (datetime.strptime(str(last_date), "%Y%m%d").date() + timedelta(days=1)).strftime("%Y%m%d")
+                )
+                logger.info("Incremental daily sync from max_date+1: %s (max_date=%s)", begin_date, last_date)
         except Exception as e:
             logger.warning("Failed to probe last warehouse date, using default begin_date=20200101: %s", e)
 
@@ -1467,7 +1478,12 @@ def _run_sync_kline_weekly() -> None:
         try:
             last_date = warehouse.max_trade_date("week")
             if last_date:
-                begin_date = int(last_date)
+                # 永久修复 (2026-07-31): 同 daily 的 max_date + 1 修复,
+                # 避免 begin_date == end_date (本周还没结算) 时 SDK 回退到上周, 假阳性。
+                begin_date = int(
+                    (datetime.strptime(str(last_date), "%Y%m%d").date() + timedelta(days=1)).strftime("%Y%m%d")
+                )
+                logger.info("Incremental weekly sync from max_date+1: %s (max_date=%s)", begin_date, last_date)
         except Exception:
             logger.warning("scheduled sync_kline_weekly: failed to probe last date, using 20200101")
         sync_kline_weekly(from_date=begin_date, to_date=end_date)
@@ -1484,7 +1500,11 @@ def _run_sync_kline_monthly() -> None:
         try:
             last_date = warehouse.max_trade_date("month")
             if last_date:
-                begin_date = int(last_date)
+                # 永久修复 (2026-07-31): 同 daily/weekly 的 max_date + 1 修复。
+                begin_date = int(
+                    (datetime.strptime(str(last_date), "%Y%m%d").date() + timedelta(days=1)).strftime("%Y%m%d")
+                )
+                logger.info("Incremental monthly sync from max_date+1: %s (max_date=%s)", begin_date, last_date)
         except Exception:
             logger.warning("scheduled sync_kline_monthly: failed to probe last date, using 20200101")
         sync_kline_monthly(from_date=begin_date, to_date=end_date)
