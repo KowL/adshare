@@ -194,6 +194,47 @@ def test_calendar_reference_and_read_only_sql(postgres_warehouse):
         warehouse.execute_sql("DELETE FROM market.daily_bar")
 
 
+def test_weekly_and_monthly_bars_stored_under_period_end_date(postgres_warehouse):
+    """SDK labels week/month bars with the period's first trading day; the
+    warehouse must store them under the period's last trading day."""
+    warehouse = postgres_warehouse
+    warehouse.upsert_calendar(
+        pd.DataFrame(
+            {
+                "date": [
+                    20260727, 20260728, 20260729, 20260730, 20260731,
+                ],
+                "market": ["SH"] * 5,
+                "is_trading_day": [True] * 5,
+                "weekday": [0, 1, 2, 3, 4],
+            }
+        )
+    )
+
+    weekly = pd.DataFrame(
+        {
+            "date": [20260727],  # week labelled with Monday by the SDK
+            "open": [11.1],
+            "high": [11.5],
+            "low": [11.0],
+            "close": [11.4],
+            "volume": [1000],
+            "amount": [11400.0],
+        }
+    )
+    assert warehouse.upsert_kline("000001.SZ", "week", weekly) == 1
+    rows = warehouse.query_kline(["000001.SZ"], 20260727, 20260731, "week")
+    assert rows["date"].tolist() == [20260731]
+    assert warehouse.max_trade_date("week") == 20260731
+
+    monthly = weekly.copy()
+    monthly["date"] = [20260701]  # month labelled with its first trading day
+    assert warehouse.upsert_kline("000001.SZ", "month", monthly) == 1
+    rows = warehouse.query_kline(["000001.SZ"], 20260701, 20260731, "month")
+    assert rows["date"].tolist() == [20260731]
+    assert warehouse.max_trade_date("month") == 20260731
+
+
 def test_amazingdata_batch_writes_directly_to_postgres(postgres_warehouse):
     warehouse = postgres_warehouse
 

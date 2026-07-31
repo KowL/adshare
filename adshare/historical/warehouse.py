@@ -11,10 +11,11 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
+import time
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Sequence
+from typing import Any, Dict, Iterable, Mapping, Optional, Sequence
 
 import pandas as pd
 
@@ -29,6 +30,42 @@ _BAR_TABLES = {
     "weekly": "market.weekly_bar",
     "monthly": "market.monthly_bar",
 }
+
+# TTL for the in-memory trade-calendar cache used by the period-end remap.
+_TRADING_DAYS_CACHE_TTL = 3600.0
+
+
+def build_period_end_map(
+    dates: Iterable[date],
+    period: str,
+    trading_days: Sequence[date],
+) -> Dict[date, date]:
+    """Map each date to the last trading day of its ISO week / calendar month.
+
+    AmazingData labels weekly/monthly bars with the *first* trading day of
+    the period — per stock, so suspended stocks drift to mid-week dates.
+    The warehouse normalizes to the market convention shared by Tushare,
+    ``aggregate_kline_period`` and ``amazingdata.freshness``: the period's
+    last trading day.  Dates whose period has no observed trading day are
+    left unmapped (caller keeps the original label).
+    """
+    if period not in ("weekly", "monthly") or not trading_days:
+        return {}
+
+    def _key(d: date) -> tuple:
+        if period == "weekly":
+            return tuple(d.isocalendar()[:2])
+        return (d.year, d.month)
+
+    ends: Dict[tuple, date] = {}
+    for day in sorted(trading_days):
+        ends[_key(day)] = day  # ascending order — last trading day wins
+    out: Dict[date, date] = {}
+    for d in dates:
+        end = ends.get(_key(d))
+        if end is not None:
+            out[d] = end
+    return out
 
 
 def _date_from_int(value: Any) -> Optional[date]:
@@ -95,6 +132,8 @@ class HistoricalWarehouse:
     def __init__(self, settings: Optional[Settings] = None) -> None:
         self.settings = settings or get_settings()
         self._max_rows = int(self.settings.database_query_max_rows)
+        self._trading_days_cache: Optional[list[date]] = None
+        self._trading_days_cached_at: float = 0.0
         self._pool = self._create_pool()
         if self.settings.database_auto_migrate:
             self.initialize_schema()
@@ -298,13 +337,25 @@ class HistoricalWarehouse:
             return 0
         canonical, _, _ = _exchange_parts(code)
         self.ensure_stock(canonical)
-        table = _BAR_TABLES[normalize_period(period)]
-        rows: list[tuple[Any, ...]] = []
-        now = datetime.now(timezone.utc)
+        period_kind = normalize_period(period)
+        table = _BAR_TABLES[period_kind]
+        records: list[tuple[Mapping[str, Any], date]] = []
         for record in std.to_dict("records"):
             trade_date = _date_from_int(record.get("date"))
             if trade_date is None:
                 continue
+            records.append((record, trade_date))
+        # Weekly/monthly bars arrive labelled with the period's *first*
+        # trading day; store them under the period's last trading day.
+        end_map: Dict[date, date] = {}
+        if period_kind in ("weekly", "monthly"):
+            end_map = build_period_end_map(
+                (td for _, td in records), period_kind, self._trading_days()
+            )
+        rows: list[tuple[Any, ...]] = []
+        now = datetime.now(timezone.utc)
+        for record, trade_date in records:
+            trade_date = end_map.get(trade_date, trade_date)
             rows.append((
                 canonical, trade_date,
                 _clean(record.get("open")), _clean(record.get("high")),
@@ -474,6 +525,7 @@ class HistoricalWarehouse:
     def upsert_calendar(self, df: pd.DataFrame) -> int:
         if df is None or df.empty:
             return 0
+        self._trading_days_cache = None
         now = datetime.now(timezone.utc)
         rows = []
         for record in df.to_dict("records"):
@@ -496,6 +548,45 @@ class HistoricalWarehouse:
             """,
             rows,
         )
+
+    def _trading_days(self) -> list[date]:
+        """Trading days for the period-end remap, cached briefly in memory.
+
+        Primary source is ``daily_bar`` itself: its distinct dates are the
+        trading days the pipeline has actually observed, which keeps weekly
+        and monthly labels consistent with the API's ``aggregate_kline_period``
+        ("last actual trading day in the period") and immune to a stale
+        ``trade_calendar`` (observed in production lagging a day behind).
+        Falls back to the calendar only when no daily bars exist yet.
+        """
+        now = time.time()
+        if (
+            self._trading_days_cache is not None
+            and now - self._trading_days_cached_at < _TRADING_DAYS_CACHE_TTL
+        ):
+            return self._trading_days_cache
+        df = None
+        try:
+            df = self._fetch_df(
+                "SELECT DISTINCT trade_date FROM market.daily_bar ORDER BY trade_date"
+            )
+            if df.empty:
+                df = self._fetch_df(
+                    "SELECT DISTINCT trade_date FROM market.trade_calendar "
+                    "WHERE is_trading_day ORDER BY trade_date"
+                )
+        except Exception as e:  # noqa: BLE001 - remap must never block writes
+            logger.warning("failed to load trading days for period-end remap: %s", e)
+            return self._trading_days_cache or []
+        days: list[date] = []
+        for value in df["trade_date"].tolist() if not df.empty else []:
+            if isinstance(value, datetime):
+                value = value.date()
+            if isinstance(value, date):
+                days.append(value)
+        self._trading_days_cache = days
+        self._trading_days_cached_at = now
+        return days
 
     def upsert_reference(self, data_type: str, df: pd.DataFrame) -> int:
         if df is None or df.empty:
